@@ -1,20 +1,26 @@
 diff --git a/e2e/tests/dashboard-code-highlighting.spec.ts b/e2e/tests/dashboard-code-highlighting.spec.ts
 new file mode 100644
-index 000000000..6a24f4633
+index 000000000..0d4c2e3b4
 --- /dev/null
 +++ b/e2e/tests/dashboard-code-highlighting.spec.ts
-@@ -0,0 +1,192 @@
+@@ -0,0 +1,217 @@
 +import { expect, layer } from "@effect/vitest";
-+import { Effect, Schema } from "effect";
++import { Effect, Schedule, Schema } from "effect";
 +import type { Page } from "playwright";
 +import { randomUUID } from "node:crypto";
 +import { Actors } from "../support/actors.ts";
 +import { Api, body } from "../support/api.ts";
 +import { Browser } from "../support/browser.ts";
++import { Evidence } from "../support/evidence.ts";
 +import { HostedLive, withHostedCase } from "../support/case.ts";
 +import { App } from "../support/contracts.ts";
 +import { scenarios } from "../test-plan.ts";
 +import { appsManifest } from "../support/apps-release.ts";
++
++/** The member could not read the shared app's skills yet. */
++class SkillsNotShared extends Schema.TaggedError<SkillsNotShared>()("SkillsNotShared", {
++  status: Schema.Number,
++}) {}
 +
 +/** Text without quotes or angle brackets, so the server's escaping leaves it unchanged. */
 +const snippets = {
@@ -96,6 +102,25 @@ index 000000000..6a24f4633
 +            })).status,
 +          ).toBe(200);
 +          const url = `/org/${actors.organization.slug}/apps/${app.id}?view=skills`;
++          // A page opened before the member can read the new app's skills shows none, which is not
++          // what this test is about: wait until the member's own read succeeds.
++          const evidence = yield* Evidence;
++          const refusals: number[] = [];
++          yield* api.request(actors.member, "GET", `${prefix}/${app.id}/skill-bundle`).pipe(
++            Effect.flatMap((response) => {
++              if (response.status === 200) return Effect.void;
++              refusals.push(response.status);
++              return Effect.fail(new SkillsNotShared({ status: response.status }));
++            }),
++            Effect.retry({
++              while: Schema.is(SkillsNotShared),
++              schedule: Schedule.spaced("250 millis"),
++              times: 120,
++            }),
++            Effect.ensuring(
++              Effect.suspend(() => evidence.json("member-skill-reads.json", { refusals })),
++            ),
++          );
 +
 +          yield* browser.login(actors.member);
 +          yield* browser.use("Set the viewport", (page) => page.setViewportSize(viewport));
