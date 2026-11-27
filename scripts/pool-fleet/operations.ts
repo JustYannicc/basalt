@@ -108,13 +108,7 @@ export const handoverLeft = (cloudflare: CloudflareAccess, worker: string, now: 
     Effect.orElseSucceed(() => "unread" as const),
   );
 
-/**
- * Whether the controller refused this checkout's signature for its code: `slot_controller_code`, or
- * `slot_identity` from a controller on code from before that reason.
- */
-export const refusedCode = (answer: string | undefined) =>
-  answer === "slot_controller_code" || answer === "slot_identity";
-/** A read the controller refused for its code: it runs other code than this checkout signs for. */
+/** A read the controller refused as slot_identity: it runs other code than this checkout signs for. */
 export const codeMismatch = (access: ControllerAccess, waitedMs?: number) =>
   refuse(
     "controller-code-mismatch",
@@ -124,8 +118,8 @@ export const codeMismatch = (access: ControllerAccess, waitedMs?: number) =>
 
 /**
  * Reads the controller until it settles, within one handover window: nothing is sent before. A
- * read lost on the way, a controller still on its old code (it refuses the new code's signature,
- * `refusedCode`) and lagging bindings wait. A typed refusal and any other Worker answer stand at
+ * read lost on the way, a controller still on its old code (it refuses the new code's signature as
+ * slot_identity) and lagging bindings wait. A typed refusal and any other Worker answer stand at
  * once. Past the window, a lost read refuses as controller-not-ready, old code as
  * controller-code-mismatch, and lagging bindings keep their own refusal. `onWait` hears why before
  * each wait, so every wait follows one read and one more read ends it. The bound is checked after
@@ -153,7 +147,7 @@ export const untilSettled = <A, E = unknown>(
       } else {
         const failure = outcome.failure;
         const answer = workerAnswer(failure);
-        if (failure instanceof FleetLaneRefused || (answer && !refusedCode(answer)))
+        if (failure instanceof FleetLaneRefused || (answer && answer !== "slot_identity"))
           return yield* Effect.fail(failure);
         wait = answer ? "old_code" : "read_lost";
         lagging = answer

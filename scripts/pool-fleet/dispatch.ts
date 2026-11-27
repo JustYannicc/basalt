@@ -24,7 +24,7 @@ import {
 } from "../../src/pool/runtime-fleet/failure-record.ts";
 import { decodeReadySignals } from "../../src/pool/runtime-ready-signals.ts";
 import { RecoveryRecord } from "../../src/pool/runtime-slots/recovery-record.ts";
-import { describeError, FleetLaneRefused, redact, refuse, workerAnswer } from "./errors.ts";
+import { describeError, FleetLaneRefused, redact, refuse } from "./errors.ts";
 import {
   checkRetireRow,
   codeMismatch,
@@ -32,7 +32,6 @@ import {
   configureOperationId,
   disableFleet,
   handoverLeft,
-  refusedCode,
   retireRow,
   step,
   untilSettled,
@@ -339,7 +338,7 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
         ? work.pipe(Effect.mapError((failure) => ({ cause: describeError(failure), evidence })))
         : work;
     if (Result.isFailure(probe)) {
-      const failure = refusedCode(workerAnswer(probe.failure))
+      const failure = /slot_identity/u.test(describeError(probe.failure))
         ? codeMismatch(access)
         : probe.failure;
       return yield* keepingWait(Effect.fail(failure));
