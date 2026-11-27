@@ -6,6 +6,7 @@ import { FetchHttpClient, HttpClient } from "effect/http";
 import { SqlClient, type SqlError } from "effect/sql";
 import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.ts";
 import type { BuildBusy as Busy } from "../../.upstream/packages/sdk/src/contracts/version.ts";
+import type { SourceError as SourceFailure } from "../../.upstream/packages/sdk/src/contracts/source.ts";
 import type { drainProvisioning as Drain } from "../../.upstream/apps/hosted/server/src/implementation/provisioning.ts";
 
 const upstream = fileURLToPath(new URL("../../.upstream/", import.meta.url));
@@ -13,6 +14,7 @@ const load = (path: string) => import(new URL(path, new URL(`file://${upstream}/
 const { StorageHost } = await load("packages/sdk/src/contracts/storage.ts");
 const { BuildBusy, VersionBuildFailed } = await load("packages/sdk/src/contracts/version.ts");
 const { RuntimeBuildFailed } = await load("packages/sdk/src/contracts/runtime.ts");
+const { SourceError } = await load("packages/sdk/src/contracts/source.ts");
 const { versionBuildFailed } = await load(
   "packages/sdk/src/implementation/version-build-failure.ts",
 );
@@ -107,6 +109,8 @@ const fixture = (
     readonly deploymentUnanswered?: boolean;
     /** The compiler's queue budget runs out: every alpha build answers BuildBusy. */
     readonly busy?: boolean;
+    /** Alpha's workspace cannot be read: every read fails with a SourceError of this reason. */
+    readonly sourceFailure?: SourceFailure["reason"];
   },
   feedUrl: string,
 ) => {
@@ -142,13 +146,15 @@ const fixture = (
           return { id: selected, files: state.versions.get(selected)! };
         }),
       workspace: ({ app: id }: { app: string }) =>
-        Effect.sync(() => {
-          const state = apps.get(id)!;
-          return {
-            revision: { code: "fixture", commit: state.workspaceCommit },
-            files: state.workspaceFiles,
-          };
-        }),
+        options.sourceFailure !== undefined && id === "alpha"
+          ? Effect.fail<SourceFailure>(new SourceError({ reason: options.sourceFailure }))
+          : Effect.sync(() => {
+              const state = apps.get(id)!;
+              return {
+                revision: { code: "fixture", commit: state.workspaceCommit },
+                files: state.workspaceFiles,
+              };
+            }),
       versions: ({ app: id }: { app: string }) =>
         Effect.sync(() =>
           [...apps.get(id)!.versions.keys()].map((version, index) => ({
@@ -269,6 +275,7 @@ export const withScenario = async (
     readonly invalidSource?: boolean;
     readonly deploymentUnanswered?: boolean;
     readonly busy?: boolean;
+    readonly sourceFailure?: SourceFailure["reason"];
   },
   run: (scenario: {
     readonly execute: Effect.Effect<void, Effect.Error<ReturnType<typeof Drain>>, never>;

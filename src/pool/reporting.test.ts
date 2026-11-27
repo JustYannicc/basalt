@@ -92,3 +92,38 @@ test("sixty authority ticks emit one content-free run event and no skipped noise
     },
   );
 });
+
+test("a job's split rides on its run event, whole counts only, even when the job fails", async () => {
+  const values = new Map<string, unknown>(),
+    events: unknown[] = [];
+  const storage = {
+    get: async <T>(key: string) => values.get(key) as T | undefined,
+    put: async (key: string, value: unknown) => {
+      values.set(key, value);
+    },
+  };
+  await assert.rejects(
+    reportWhenDue(
+      storage,
+      "model-history",
+      async (progress) => {
+        progress.rows = 400;
+        progress.split = { captureMs: 812, pages: 3, newRows: 401, sweptRows: -1, rollupMs: 0.5 };
+        throw new Error("fixture rollup outage");
+      },
+      0,
+      { report: (event) => events.push(event), clock: () => 0 },
+    ),
+    /fixture rollup outage/,
+  );
+  assert.deepEqual(events, [
+    {
+      job: "model-history",
+      state: "ran",
+      durationMs: 0,
+      rows: 400,
+      outcome: "failure",
+      split: { captureMs: 812, pages: 3, newRows: 401 },
+    },
+  ]);
+});
