@@ -189,7 +189,7 @@ export function fakeAccount({
         for (const due of pending.filter((row) => row.name === name && row.at <= firstPages)) {
           pending.splice(pending.indexOf(due), 1);
           live.manifests[name].delete(due.digest);
-          if (due.digest === DIGEST) live.tags[name] = [];
+          untag(name, due.digest);
         }
       }
       const digests = [...live.manifests[name].keys(), ...(cloudflare.ghosts ?? [])].sort();
@@ -259,6 +259,13 @@ export function fakeAccount({
     });
   }
 
+  /** Removes the tags of a Cloudflare-mode repository that name `digest`, as its delete does. */
+  function untag(name, digest) {
+    live.tags[name] = live.tags[name].filter(
+      (tag) => (cloudflare.tagged?.[tag] ?? DIGEST) !== digest,
+    );
+  }
+
   /** A manifest of the Cloudflare-mode registry: deleting a digest removes the tags naming it. */
   function cloudflareManifest(method, name, reference, accept) {
     const manifests = live.manifests[name];
@@ -288,7 +295,7 @@ export function fakeAccount({
         return new Response(null, init({ status: 202 }));
       }
       manifests.delete(digest);
-      if (digest === DIGEST) live.tags[name] = [];
+      untag(name, digest);
       return new Response(null, init({ status: 202 }));
     }
     if (found.read) return json({}, { status: found.read });

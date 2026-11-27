@@ -149,7 +149,7 @@ export function registryOperations(send) {
    * named it: the list is the read's positive control. A read that fails any other way, a 5xx or
    * a timeout, is `other` and counts as there. A request the stage did not send stops the read.
    *
-   * `gone` holds when every entry is absent; `kept` lists the entries the registry keeps when every
+   * `gone` holds when every entry is absent and the list names a digest entry; `kept` lists the entries the registry keeps when every
    * entry not absent is a digest entry whose manifest has a kept type, and is undefined otherwise. A
    * read cannot see a delete's refusal, so a deploy that finds a kept repository leaves it to the
    * next teardown to try again.
@@ -185,7 +185,9 @@ export function registryOperations(send) {
         : undefined;
     return Object.freeze({
       entries: Object.freeze(entries),
-      gone: entries.length > 0 && there.length === 0,
+      // A tag alone gives a delete nothing to address, so a list without a digest entry is never
+      // gone: the registry as recorded names every manifest by digest beside the tags.
+      gone: there.length === 0 && entries.some((row) => row.kind === "digest"),
       kept,
       // Closed counts only: what the list named, and what each read by reference answered.
       facts: Object.freeze({

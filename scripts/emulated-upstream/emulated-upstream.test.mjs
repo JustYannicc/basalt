@@ -1171,6 +1171,53 @@ test("a read addresses a digest as its delete does, and takes any stored type", 
   for (const call of reads) assert.doesNotMatch(call.url, /%3A/u, call.url);
 });
 
+test("tags alone, each reading 404, are never set apart: a delete has nothing to address", async () => {
+  const fake = listedOnly({ ghosts: [] });
+  const error = await account(fake.fetcher)
+    .destroy()
+    .then(
+      () => assert.fail("the destroy succeeded"),
+      (caught) => caught,
+    );
+  assert.match(
+    error.message,
+    /remain after teardown: registry repository .* \(2 tags, 0 digest entries\)$/u,
+  );
+  assert.equal(error.record.reads.at(-1).repositories[0].placed, "image");
+});
+
+test("a repository first seen set apart after the deletes had no delete pass, so it still counts", async () => {
+  const fake = listedOnly();
+  let first = true;
+  // The deletes' own inventory finds the repository's list empty; the read after finds it listed.
+  const fetcher = async (url, init) => {
+    if (first && new URL(url).pathname.endsWith("/tags/list")) {
+      first = false;
+      return Response.json({ name: `acct/${prefix}-mock`, tags: [] });
+    }
+    return fake.fetcher(url, init);
+  };
+  const error = await account(fetcher)
+    .destroy()
+    .then(
+      () => assert.fail("the destroy succeeded"),
+      (caught) => caught,
+    );
+  assert.match(error.message, /\(listed without a manifest, no delete pass in this run\)$/u);
+  assert.equal(registryCalls(fake, "DELETE").length, 0);
+});
+
+test("a repository whose name carries the prefix but is not a plain segment is never addressed", async () => {
+  const { calls, fetcher } = fakeAccount({
+    tags: { [`acct/${prefix}-mock.v2`]: ["h1"] },
+    cloudflare: { pageSize: 5, emptyEnd: true },
+  });
+  await assert.rejects(account(fetcher).destroy(), /may address/u);
+  const registry = calls.filter((call) => call.host === "registry.cloudflare.com");
+  assert.ok(registry.some((call) => call.path === "/v2/_catalog"));
+  assert.ok(!registry.some((call) => call.path.includes(".v2")), JSON.stringify(registry));
+});
+
 test("every read of a run goes to its one pull credential, so the list is its reads' control, and only deletes push", async () => {
   const fake = listedOnly();
   await destroyOn(fake);

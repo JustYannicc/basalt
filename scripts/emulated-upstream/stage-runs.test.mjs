@@ -580,6 +580,19 @@ async function runOf(env, fetcher, { now = () => NOW, wait = async () => {} } = 
   });
   return { code, printed, saved };
 }
+/** The account `fake`, refusing any registry credential that may push. */
+const pushRefused = (fake) => ({
+  ...fake,
+  fetcher: (url, init) =>
+    url.endsWith("/credentials") && JSON.parse(init.body).permissions.includes("push")
+      ? Promise.resolve(
+          Response.json(
+            { success: false, errors: [{ code: 10000, message: "x" }] },
+            { status: 403 },
+          ),
+        )
+      : fake.fetcher(url, init),
+});
 /** The stage deployed in an account whose registry answers as Cloudflare's does, per `cloudflare`. */
 const stageAccount = (cloudflare = {}, { lease } = {}) =>
   fakeAccount({
@@ -679,9 +692,24 @@ test("every exit of a destroy or an expiry leaves its file", async () => {
       1,
       "stopped-expire",
     ],
+    // An expiry whose token may mint pull but not push: its deletes fail, and it says so.
+    [
+      "expire, push refused",
+      expire,
+      pushRefused(stageAccount({}, { lease: NOW - 1 })),
+      1,
+      "stopped-expire",
+    ],
   ];
   for (const [name, env, fake, code, file] of cases) {
     const run = await runOf(env, fake.fetcher);
+    if (name === "expire, push refused") {
+      assert.match(
+        run.printed.join("\n"),
+        /remain after teardown: .*; failed: registry repository .*: Cloudflare POST containers\/registries failed \(403\)/u,
+      );
+      assert.equal(run.saved["stopped-expire"].registryDeletes[0].stopped, true);
+    }
     assert.equal(run.code, code, `${name}: ${run.printed.join("\n")}`);
     assert.ok(run.saved[file], `${name}: saved ${Object.keys(run.saved).join(", ")}`);
     if (env === expire || env.EMULATED_MODE === "expire")
