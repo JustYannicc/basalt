@@ -64,6 +64,7 @@ import { RuntimeStartupStop } from "./startup-stop.ts";
 import { RuntimeAbandonedStop } from "./abandoned-stop.ts";
 import { endedForGood, lastContainerEnd, markStopSent } from "./container-end.ts";
 import type { StartupStopIntent } from "./startup-abort-contract.ts";
+import { RuntimeCodeAdoption } from "./code-adoption.ts";
 
 export interface EndpointEnvironment extends RuntimeEnvironment {
   POOL_RUNTIME_APPLICATION_ID?: string;
@@ -84,6 +85,8 @@ export interface EndpointOptions {
   ownStorage?: OwnedRuntimeStorage;
   beforeStart?(witness: StartupWitness): Promise<void>;
   beforeBootstrap?(identity: SlotIdentity): Promise<void>;
+  /** Runs once an answer has been handed to the platform; by default a moment later. */
+  afterReply?(work: () => void): void;
 }
 
 /** Reads never start compute. Start owns one durable launch, and attestation never grants routing. */
@@ -108,6 +111,7 @@ export class RuntimeEndpoint {
   private modelLifetimes: RuntimeModelLifetimes;
   private leaseProofs = new Map<string, number>();
   private settleFailures = new Map<string, number>();
+  private adoption: RuntimeCodeAdoption;
   constructor(
     ctx: ControllerState,
     env: EndpointEnvironment,
@@ -143,6 +147,15 @@ export class RuntimeEndpoint {
     });
     this.wrap = wrap;
     this.options = options;
+    const abort = ctx.abort;
+    this.adoption = new RuntimeCodeAdoption({
+      own: code,
+      role,
+      storage: ctx.storage,
+      activity: this.activity,
+      ...(abort ? { abort: (reason: string) => abort.call(ctx, reason) } : {}),
+      ...(options.afterReply ? { afterReply: options.afterReply } : {}),
+    });
     this.forcedStop = new RuntimeForcedStop({
       ctx,
       store: this.store,
@@ -239,13 +252,22 @@ export class RuntimeEndpoint {
       throw new SlotRefused("identity");
     if (!this.ctx.container || !this.env.POOL_DEPLOYMENT_KEY) throw new SlotRefused("selection");
   }
-  private async proof(envelope: string): Promise<AdmissionProof> {
+  /** With `adopts`, a proof signed by other controller code still adopts it before the refusal. */
+  private async proof(envelope: string, adopts = false): Promise<AdmissionProof> {
     const proof = decodeAdmissionProof(
       await openEnvelope(this.env.POOL_DEPLOYMENT_KEY ?? "", runtimeAttestationFormat, envelope),
     );
     this.bound(proof.target);
-    if (!sameControllerCode(proof.controllerCode, this.code)) throw new SlotRefused("identity");
+    if (!sameControllerCode(proof.controllerCode, this.code)) {
+      // Refused either way; whether this object adopts only decides where the next read runs.
+      if (adopts) await this.adopt(proof.target, proof.controllerCode).catch(() => undefined);
+      throw new SlotRefused("controller_code");
+    }
     return proof;
+  }
+  /** Since when this slot's object adopts `caller`'s code; see `RuntimeCodeAdoption`. */
+  private async adopt(target: SlotTarget, caller: ControllerCode) {
+    return this.adoption.adopt((await this.store.read(target)).record, caller);
   }
   admit(envelope: string) {
     return this.serialize(async () => {
@@ -441,8 +463,15 @@ export class RuntimeEndpoint {
     await this.channel.keepAlive();
     return health;
   }
-  async witness(target: SlotTarget) {
+  async witness(target: SlotTarget, controllerCode?: ControllerCode) {
     this.bound(target);
+    // Only a controller that names its code can be adopted; one on older code never does.
+    if (controllerCode && !sameControllerCode(controllerCode, this.code))
+      return this.serialize(async () => ({
+        kind: "adopting" as const,
+        controllerCode: this.code,
+        since: await this.adopt(target, controllerCode),
+      }));
     const { record } = await this.store.read(target);
     return record.authorization.kind === "unattested-active"
       ? {
@@ -467,7 +496,7 @@ export class RuntimeEndpoint {
   }
   attest(envelope: string) {
     return this.serialize(async () => {
-      const proof = await this.proof(envelope);
+      const proof = await this.proof(envelope, true);
       if (!isRuntimeAttestation(proof)) throw new SlotRefused("identity");
       const { record } = await this.store.read(proof.target),
         witness = record.witness;

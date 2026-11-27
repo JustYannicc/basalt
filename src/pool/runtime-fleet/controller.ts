@@ -31,6 +31,7 @@ import {
   type PhaseBound,
 } from "./phase-bounds.ts";
 import { FleetDispatches } from "./dispatches.ts";
+import { UnprovableStart } from "./admission.ts";
 import { GrowthRefusals } from "./growth-refusals.ts";
 import {
   resumeGone,
@@ -93,11 +94,15 @@ export interface CellCount {
   known: boolean;
   stillMs?: number;
 }
-/** The endpoint refused a start for identity, at its admission or its request boundary. */
+/**
+ * The endpoint refused a start for identity or for its controller code, at its admission or its
+ * request boundary. An endpoint on older code says identity for both.
+ */
 const deploymentRefused = (error: unknown) => {
   const diagnostic = runtimeRouteDiagnostic(error);
   return (
-    diagnostic?.runtimeReason === "slot_identity" &&
+    (diagnostic?.runtimeReason === "slot_identity" ||
+      diagnostic?.runtimeReason === "slot_controller_code") &&
     (diagnostic.runtimeStep === "endpoint_route" || diagnostic.runtimeStep === "endpoint_admission")
   );
 };
@@ -350,15 +355,15 @@ export class RuntimeFleet {
     }
   }
   /**
-   * A fresh slot's start the endpoint refused for identity before its first-start intent was
-   * written. For a fresh slot that refusal is about the endpoint's own deployment or the signed
-   * start itself (its application binding, controller code, runtime configuration, signing key or
-   * the start's freshness), never about the slot, so another fresh slot fares no better until both
-   * run one release, as while this controller still runs an upload a rollback re-pointed away from:
-   * the release never told it, and objects created since run the re-pointed one. The slot leaves as
-   * never started once its cell proves nothing ran, its recent end saying why, with no quarantine,
-   * and growth waits at least until the next pass instead of drawing again at once. A cell that
-   * can't prove it keeps today's quarantine.
+   * A fresh slot's start the endpoint refused for identity or its controller code before its
+   * first-start intent was written. For a fresh slot that refusal is about the endpoint's own
+   * deployment or the signed start itself (its application binding, controller code, runtime
+   * configuration, signing key or the start's freshness), never about the slot, so another fresh
+   * slot fares no better until both run one release, as while this controller still runs an upload
+   * a rollback re-pointed away from: the release never told it, and objects created since run the
+   * re-pointed one. The slot leaves as never started once its cell proves nothing ran, its recent
+   * end saying why, with no quarantine, and growth waits at least until the next pass instead of
+   * drawing again at once. A cell that can't prove it keeps today's quarantine.
    */
   private async deferStart(cell: FleetCell, target: SlotTarget, error: unknown, began: number) {
     const read = failureRead(
@@ -422,8 +427,8 @@ export class RuntimeFleet {
   }
   /**
    * A start the endpoint refused before anything was sent leaves at once with the refusal, rather
-   * than holding growth for the whole start bound. The remote step and reason win over the
-   * admission step.
+   * than holding growth for the whole start bound, as does a sent one its own witness proved can
+   * never attest. The remote step and reason win over the admission step.
    */
   private startRefused(target: SlotTarget, error: unknown, began: number) {
     const read = failureRead(
@@ -1036,7 +1041,11 @@ export class RuntimeFleet {
       } catch (error) {
         // The observation retries an unsent start, which can be refused just as growth's was.
         if (!row.identity) this.refusals.startRefused(row.target.slotId, error);
-        if (!row.identity && (await this.refusedUnsent(cell, row.target, error))) {
+        // A witness proving it can never attest quarantines it now. Growth's own start that met one
+        // was left uncertain, so its next observation here decides it.
+        if (!row.identity && error instanceof UnprovableStart)
+          await this.startRefused(row.target, error, began);
+        else if (!row.identity && (await this.refusedUnsent(cell, row.target, error))) {
           if (deploymentRefused(error)) await this.deferStart(cell, row.target, error, began);
           else await this.startRefused(row.target, error, began);
         }

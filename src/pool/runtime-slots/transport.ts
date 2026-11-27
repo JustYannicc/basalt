@@ -8,6 +8,7 @@ import { retainRuntimeFailure, runtimeResponseDiagnostic } from "../runtime-rout
 import { Schema } from "effect";
 import { StartupStopIntent, StartupStopRecord } from "./startup-abort-contract.ts";
 import {
+  ControllerCode,
   SlotIdentity,
   SlotTarget,
   SlotRefused,
@@ -192,8 +193,16 @@ export class BoundSlotDriver implements SlotDriver {
       await this.call(target, "recovery-witness", { target }, AbortSignal.timeout(2_000))
     ).json();
   }
-  async witness(target: SlotTarget) {
-    return (await this.call(target, "witness", { target }, AbortSignal.timeout(2_000))).json();
+  /** With `controllerCode`, an endpoint on other code may adopt it; older endpoints ignore it. */
+  async witness(target: SlotTarget, controllerCode?: ControllerCode) {
+    return (
+      await this.call(
+        target,
+        "witness",
+        { target, ...(controllerCode ? { controllerCode } : {}) },
+        AbortSignal.timeout(2_000),
+      )
+    ).json();
   }
   /** Whether the slot's record holds its start's attestation; a fenced slot still answers. */
   async attested(target: SlotTarget, signal: AbortSignal) {
@@ -394,15 +403,17 @@ export async function runtimeRequest(
       action === "/recovery-witness" ||
       action === "/attestation"
     ) {
-      const { target } = runtimeInput(() =>
-        Schema.decodeUnknownSync(Schema.Struct({ target: SlotTarget }))(value),
+      const { target, controllerCode } = runtimeInput(() =>
+        Schema.decodeUnknownSync(
+          Schema.Struct({ target: SlotTarget, controllerCode: Schema.optional(ControllerCode) }),
+        )(value),
       );
       return Response.json(
         await (action === "/recovery-witness"
           ? endpoint.recoveryWitness(target)
           : action === "/attestation"
             ? endpoint.attested(target)
-            : endpoint.witness(target)),
+            : endpoint.witness(target, controllerCode)),
       );
     } else if (action === "/ready") {
       const input = runtimeInput(() =>
