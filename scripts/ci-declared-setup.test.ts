@@ -21,8 +21,15 @@ test("declared shards pay setup once, then run their planned files within the pl
     assert.equal(job.name, "${{ matrix.shard }}", id);
     assert.equal(job.strategy["fail-fast"], false, id);
     assert.ok([job.needs].flat().includes("select"), id);
+    // Only the cloud shard starts local Clouds, which run their service stand-ins beside them.
+    const setup = id === "declared-cloud" ? 4 : 3;
     assert.deepEqual(
-      job.steps.slice(3, 7),
+      job.steps.slice(3, setup),
+      id === "declared-cloud" ? [{ uses: "./.github/actions/setup-service-emulators" }] : [],
+      id,
+    );
+    assert.deepEqual(
+      job.steps.slice(setup, setup + 4),
       [
         { run: "npm run prepare:upstream" },
         {
