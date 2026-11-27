@@ -449,14 +449,20 @@ test("bulk signed HTTP commands run through SQLite DO, R2 and real PostgreSQL re
       ]);
       await stage(maximum);
       const started = performance.now();
+      // The operator posts a fresh load reading every 5 s while it watches a job, and a reading 90 s
+      // old pauses the job. On a busy machine these 5,000 rows can take longer than that, so the
+      // test refreshes the reading before each tick, as the operator would.
+      await guard(maximum.definition);
       await tick(maximum.definition);
       assert.equal((await status(maximum.definition)).inserted, 500);
       for (
         let batch = 0;
         batch < 50 && (await status(maximum.definition)).state !== "completed";
         batch++
-      )
+      ) {
+        await guard(maximum.definition);
         await tick(maximum.definition);
+      }
       const maximumStatus = await status(maximum.definition);
       assert.equal(maximumStatus.state, "completed");
       assert.equal(maximumStatus.inserted, 5000);

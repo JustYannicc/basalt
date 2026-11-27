@@ -280,3 +280,51 @@ test("a predicate that throws is refused without its message", () => {
   );
   assert.equal(fake.calls.length, 0);
 });
+
+/** The stage's image with more tags than one registry page holds, one of them dotted. */
+const longTagList = ["h1", "h2", "cache.v1", "h3", "h4"];
+const paged = () =>
+  fakeAccount({
+    tags: { [`acct/${prefix}-mock`]: longTagList, "acct/basalt-poolcontainer-production": ["p1"] },
+    tagPageSize: 2,
+  });
+
+test("a tag list is read page after page until the registry offers no next page", async () => {
+  const fake = paged();
+  const [image] = await stage(fake.fetcher).images();
+  assert.deepEqual([...image.tags].sort(), [...longTagList].sort());
+  const lists = fake.calls
+    .filter((call) => call.path.endsWith("/tags/list"))
+    .map((call) => new URL(call.url).searchParams);
+  assert.equal(lists.length, 3);
+  assert.deepEqual(
+    lists.map((params) => params.get("last")),
+    [null, "h1", "h3"],
+  );
+  assert.ok(lists.every((params) => params.get("n") === "1000"));
+});
+
+test("a stage's image with a long tag list is deleted, dotted tags included", async () => {
+  const fake = paged();
+  const api = stage(fake.fetcher);
+  const [image] = await api.images();
+  await api.removeImage(image);
+  assert.deepEqual(await api.images(), [{ name: `${prefix}-mock`, tags: [] }]);
+  assert.deepEqual(fake.live.tags["acct/basalt-poolcontainer-production"], ["p1"]);
+});
+
+test("a tag list that repeats a tag, names one outside the grammar or never ends stops the read", async () => {
+  const fake = paged();
+  const page = (tags, next) => async (url, init) =>
+    new URL(url).pathname.endsWith("/tags/list")
+      ? Response.json(
+          { name: `acct/${prefix}-mock`, tags },
+          next ? { headers: { link: '</v2/x/tags/list?n=1&last=h1>; rel="next"' } } : {},
+        )
+      : fake.fetcher(url, init);
+  await assert.rejects(stage(page(["h1", "h1"], false)).images(), /already listed or cannot name/u);
+  await assert.rejects(stage(page(["../x"], false)).images(), /already listed or cannot name/u);
+  await assert.rejects(stage(page([], true)).images(), /another page after an empty one/u);
+  // The same page offered forever repeats its tags on the second read.
+  await assert.rejects(stage(page(["h1"], true)).images(), /already listed or cannot name/u);
+});

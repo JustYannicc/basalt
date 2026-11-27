@@ -1,4 +1,5 @@
-import { appAttributionReady, type HistoryDatabase } from "./schema.ts";
+import type { HistoryDatabase } from "./schema.ts";
+import { historyWriteReadiness, homeSource, markWrittenHours } from "./capture-hours-mark.ts";
 import type { ModelRequest } from "./record.ts";
 import { HistoryConflict, historyRecordLayout, recordValues } from "./store.ts";
 
@@ -9,7 +10,7 @@ export async function insertBulkRequests(db: HistoryDatabase, records: readonly 
   if (records.length > historyBulkBatchSize)
     throw new Error("Model usage bulk batch exceeds its limit");
   if (!records.length) return { inserted: 0, existing: 0, count: 0 };
-  const appAttribution = await appAttributionReady(db);
+  const { appAttribution, captureHours } = await historyWriteReadiness(db);
   if (!appAttribution && records.some((row) => row.appId != null || row.requirement != null))
     throw new HistoryConflict();
   const byId = new Map<string, ReturnType<typeof recordValues>>();
@@ -37,17 +38,20 @@ export async function insertBulkRequests(db: HistoryDatabase, records: readonly 
   const retained = await existing(values);
   const missing = values.filter((row) => !retained.has(row.id));
   if (!missing.length) return { inserted: 0, existing: values.length, count: values.length };
+  // The hours this fills with Home's rows are counted again (capture-hours-mark.ts).
   const result = await db.query(
-    `INSERT INTO basalt_model_requests (${selected})
-    SELECT ${selected} FROM jsonb_to_recordset($1::jsonb) AS incoming(${types})
-    ORDER BY id ON CONFLICT (id) DO NOTHING RETURNING id`,
-    [JSON.stringify(missing)],
+    `WITH inserted AS (INSERT INTO basalt_model_requests (${selected})
+      SELECT ${selected} FROM jsonb_to_recordset($1::jsonb) AS incoming(${types})
+      ORDER BY id ON CONFLICT (id) DO NOTHING RETURNING id, pool, timestamp, source)
+    ${captureHours ? `, ${markWrittenHours("inserted", "$2")}` : ""}
+    SELECT id FROM inserted`,
+    [JSON.stringify(missing), ...(captureHours ? [await homeSource()] : [])],
   );
   // Only concurrent conflicts can differ: retained rows are append-only, and RETURNING proves
   // which missing rows this transaction wrote. A new statement sees a conflicting writer's commit.
   const insertedIds = new Set(result.rows.map((row) => String(row.id)));
   const conflicts = missing.filter((row) => !insertedIds.has(row.id));
   if (conflicts.length) await existing(conflicts);
-  const inserted = result.rowCount ?? result.rows.length;
+  const inserted = result.rows.length;
   return { inserted, existing: values.length - inserted, count: values.length };
 }

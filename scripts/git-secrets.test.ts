@@ -89,6 +89,46 @@ test("a new commit that exposed a value still fails after a later commit removes
   }
 });
 
+test("a run given no base reads the commits since origin/main, so a file a later commit removed still fails", () => {
+  const f = fixture();
+  try {
+    f.git("update-ref", "refs/remotes/origin/main", f.base);
+    const path = "apps/hosted/cloud/scripts/basalt-worker-sizes.ts";
+    f.write(path, "export {};\n");
+    const added = f.commit();
+    f.git("rm", "-q", path);
+    f.commit();
+    assert.deepEqual(checkGitSecrets({ root: f.root, environment: {} }), [
+      {
+        file: path,
+        source: `commit ${added.slice(0, 12)}`,
+        reason: "generated Worker measurement file",
+      },
+    ]);
+    // Without origin/main the run reads HEAD's tree, which no longer holds it.
+    f.git("update-ref", "-d", "refs/remotes/origin/main");
+    assert.deepEqual(checkGitSecrets({ root: f.root, environment: {} }), []);
+  } finally {
+    f.close();
+  }
+});
+
+test("a run given no base doesn't read again what origin/main already holds", () => {
+  const f = fixture();
+  try {
+    const path = "apps/hosted/cloud/scripts/basalt-worker-sizes.ts";
+    f.write(path, "export {};\n");
+    f.commit();
+    f.git("rm", "-q", path);
+    f.git("update-ref", "refs/remotes/origin/main", f.commit());
+    f.write("notes.md", "fixture\n");
+    f.commit();
+    assert.deepEqual(checkGitSecrets({ root: f.root, environment: {} }), []);
+  } finally {
+    f.close();
+  }
+});
+
 test("generated measurement scripts fail when staged directly or inside a committed carry", () => {
   const f = fixture();
   try {
@@ -191,6 +231,7 @@ test("files under .github and dot-files anywhere pass; a dot-directory inside .g
   const f = fixture();
   try {
     const refused = [
+      ".github/.cache/state.json",
       ".github/workflows/.tool/state.json",
       ".githubx/settings.json",
       "docs/.github/workflows/nested.yml",

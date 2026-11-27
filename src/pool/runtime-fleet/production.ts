@@ -245,6 +245,7 @@ export class PoolRuntimeFleet {
       ...this.deps,
       target,
       authorizeStart: (transaction) => this.permission(target, transaction, true),
+      counted: () => this.state.counted(),
       application: app,
       remote: (value) => this.namespace(value).endpoint(value),
     });

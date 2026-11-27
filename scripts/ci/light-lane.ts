@@ -2,12 +2,14 @@ import { appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { boxSettings, type BoxInput } from "./box-router.ts";
 
-// The light lane: the Check's seconds-long jobs run on the box's always-online light runners, named
-// by BASALT_CI_LIGHT_LABEL, on the same first attempts box routing takes; everything else, and
-// every job while the variable is empty or names no light label, runs hosted. A job queued for the
-// light runners can't move to hosted runners, so light-rescue.yml cancels a Check whose light job
-// a down box holds, and box-rerun.yml re-runs it once it ends; the re-run is attempt 2, which these
-// jobs' runs-on sends hosted.
+// The light lane: the seconds-long jobs of main's own Check run on the box's always-online light
+// runners, named by BASALT_CI_LIGHT_LABEL, on the first attempt of a push to main only; every other
+// Check, and every job while the variable is empty or names no light label, runs hosted. Main's
+// summary job is created last and waited behind batch jobs for a hosted runner (#2118); the light
+// runners don't count toward the account's hosted limit. A job queued for the light runners can't
+// move to hosted runners, so light-rescue.yml cancels main's Check when its light job has waited 3
+// minutes, and box-rerun.yml re-runs it once it ends, as it does when only a light job failed; the
+// re-run is attempt 2, which these jobs' runs-on sends hosted.
 
 /**
  * How a light runner label ends. No label other runners share ends so, which select's runs-on can
@@ -51,23 +53,24 @@ export type LightInput = Pick<
 /** The light runners' label for this Check, or "" when its light jobs run hosted. */
 export function lightLabel(input: LightInput) {
   const label = usableLightLabel(input.label);
-  if (!label) return "";
-  // Box routing's own rule for events, refs, attempts, forks and labels; the slot count is box
-  // routing's alone, so it is fixed here.
+  // Main's push Checks only: with main the lane's only user, a light job that waits 3 minutes means
+  // the lane isn't taking jobs, which light-rescue.yml can act on without reading the box.
+  if (!label || input.event !== "push" || input.ref !== "refs/heads/main") return "";
+  // Box routing's own rule for attempts and labels; the slot count is box routing's alone, so it
+  // is fixed here.
   const settings = boxSettings({ ...input, slots: "1", label });
   return typeof settings === "string" ? "" : settings.label;
 }
 
 /**
- * select's runs-on. select can't read its own output, so it repeats lightLabel's event, ref,
- * attempt and fork rule over the variable itself, and as much of its label rule as an expression
- * can: the suffix, and no space or comma. The later light jobs read select's output.
+ * select's runs-on. select can't read its own output, so it repeats lightLabel's event, ref and
+ * attempt rule over the variable itself, and as much of its label rule as an expression can: the
+ * suffix, and no space or comma. The later light jobs read select's output.
  */
 export const selectRunsOn =
   `\${{ github.run_attempt == 1 && endsWith(vars.BASALT_CI_LIGHT_LABEL, '${lightSuffix}') && ` +
   "!contains(vars.BASALT_CI_LIGHT_LABEL, ' ') && !contains(vars.BASALT_CI_LIGHT_LABEL, ',') && " +
-  "((github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/batch/'))) || " +
-  "(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && " +
+  "github.event_name == 'push' && github.ref == 'refs/heads/main' && " +
   "vars.BASALT_CI_LIGHT_LABEL || 'ubuntu-latest' }}";
 
 /** long-started's and cpa-pipeline's runs-on. A re-run reuses attempt 1's outputs, so it runs hosted. */
