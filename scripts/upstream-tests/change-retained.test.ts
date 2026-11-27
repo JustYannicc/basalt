@@ -37,9 +37,9 @@ globals.document ??= {
   addEventListener() {},
   removeEventListener() {},
 };
-const { Atom, AtomRegistry, AsyncResult } = await effectModule("./reactivity");
-const { Cause } = await effectModule(".");
-const { changeProtected } = await import(pathToFileURL(signalPath).href);
+const { Atom, AtomRegistry, AsyncResult, Hydration } = await effectModule("./reactivity");
+const { Cause, Schema } = await effectModule(".");
+const { changeProtected, finishDocumentHydration } = await import(pathToFileURL(signalPath).href);
 
 const ORGANIZATION = "org-a";
 const STREAM = `/api/organizations/${ORGANIZATION}/changes`;
@@ -535,4 +535,147 @@ test("pool-scoped protected reads ignore unrelated and duplicate revisions and c
   await flush();
   assert.equal(src.loads.length, 3);
   view.stop();
+});
+
+/**
+ * A read whose value came with the server's document: the registry holds the server's accepted
+ * body and receipt for it, as hydration leaves them, at the backend's current heads.
+ */
+function hydratedRead(registry: RegistryType.AtomRegistry, body: string) {
+  const key = `fixture-document-read:${body}`;
+  const src = source();
+  const read = src.atom.pipe(
+    Atom.serializable({ key, schema: AsyncResult.Schema({ success: Schema.String }) }),
+  );
+  Hydration.hydrate(registry, [
+    {
+      "~effect/reactivity/Hydration/DehydratedAtom": true,
+      key: `hosted:accepted:${key}`,
+      value: {
+        body: { _tag: "Success", value: body, waiting: false, timestamp: 1_000_000 },
+        receipt: {
+          revisions: [
+            { topic: "accounts", resource: ORGANIZATION, revision: "1" },
+            { topic: "session", resource: ORGANIZATION, revision: "1" },
+          ],
+          identity: "viewer-a",
+        },
+      },
+      dehydratedAt: 1_000_000,
+    },
+  ]);
+  return { atom: changeProtected(ORGANIZATION, ["accounts"])(read), loads: src.loads };
+}
+
+test("until the document has hydrated, a server-rendered read shows the server's value every time it is evaluated", async (t) => {
+  const { flush, mount } = setup(t);
+  const registry = AtomRegistry.make();
+  const read = hydratedRead(registry, "server body");
+  const first = mount(registry, read.atom);
+  assert.equal(bodies(first.values)[0], "server body");
+  first.stop();
+  await flush();
+  // Dropped and evaluated again before the change feed has said anything.
+  const again = mount(registry, read.atom);
+  assert.equal(again.values[0]?._tag, "Success", "no loading state");
+  assert.equal(bodies(again.values)[0], "server body");
+  again.stop();
+});
+
+test("while the document hydrates, a read evaluated again after a newer head still shows the server's value", async (t) => {
+  const { server, flush, mount } = setup(t);
+  const registry = AtomRegistry.make();
+  const read = hydratedRead(registry, "server body");
+  const first = mount(registry, read.atom);
+  await flush();
+  server.handshake();
+  await flush();
+  // A newer head makes the mounted read refresh; the page then evaluates it again.
+  server.commit("accounts", "2");
+  await flush();
+  first.stop();
+  await flush();
+  const again = mount(registry, read.atom);
+  assert.equal(
+    bodies(again.values)[0],
+    "server body",
+    "the server's value stays until its refresh is accepted",
+  );
+  again.stop();
+});
+
+test("once the document has hydrated, a read unmounted before the handshake waits for confirmation", async (t) => {
+  const { server, flush, mount } = setup(t);
+  const registry = AtomRegistry.make();
+  const read = hydratedRead(registry, "server body");
+  const first = mount(registry, read.atom);
+  await flush();
+  first.stop();
+  await flush();
+  finishDocumentHydration(registry);
+  const again = mount(registry, read.atom);
+  await flush();
+  assert.deepEqual(bodies(again.values), [], "nothing shows before the feed confirms it");
+  server.handshake();
+  await flush();
+  assert.equal(again.current().value, "server body", "confirmed, the held value shows again");
+  again.stop();
+});
+
+test("once the document has hydrated, a read whose feed closed before its handshake waits for confirmation", async (t) => {
+  const { flush, mount } = setup(t);
+  const registry = AtomRegistry.make();
+  const read = hydratedRead(registry, "server body");
+  const first = mount(registry, read.atom);
+  await flush();
+  first.stop();
+  await flush();
+  // Nothing watches the feed any more, so it closes without ever having been live.
+  t.mock.timers.tick(1_000);
+  await flush();
+  finishDocumentHydration(registry);
+  const again = mount(registry, read.atom);
+  assert.deepEqual(bodies(again.values), [], "nothing shows before the feed confirms it");
+  again.stop();
+});
+
+test("while the document hydrates, a read whose refresh was accepted keeps showing it when evaluated again", async (t) => {
+  const { server, flush, mount } = setup(t);
+  const registry = AtomRegistry.make();
+  const read = hydratedRead(registry, "server body");
+  const first = mount(registry, read.atom);
+  await flush();
+  server.handshake();
+  await flush();
+  // A newer head: the mounted read refreshes, and its new body is accepted before hydration ends.
+  server.commit("accounts", "2");
+  await flush();
+  read.loads.at(-1)!.resolve("refreshed body");
+  await flush();
+  assert.equal(first.current().value, "refreshed body");
+  first.stop();
+  await flush();
+  // Another head moves while it is unmounted, so the next reader is not confirmed at once.
+  server.commit("accounts", "3");
+  await flush();
+  const again = mount(registry, read.atom);
+  assert.equal(again.values[0]?._tag, "Success", "no loading state");
+  assert.equal(bodies(again.values)[0], "refreshed body");
+  again.stop();
+});
+
+test("a document that never finishes hydrating stops counting as hydrating after ten seconds", async (t) => {
+  const { flush, mount } = setup(t);
+  const registry = AtomRegistry.make();
+  const read = hydratedRead(registry, "server body");
+  const first = mount(registry, read.atom);
+  await flush();
+  first.stop();
+  await flush();
+  // Its load never comes; past the ceiling, a remounted read waits for confirmation again.
+  t.mock.timers.tick(10_001);
+  await flush();
+  const again = mount(registry, read.atom);
+  assert.deepEqual(bodies(again.values), [], "nothing shows before the feed confirms it");
+  again.stop();
 });
