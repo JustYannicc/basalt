@@ -2,7 +2,14 @@ import { appendFileSync } from "node:fs";
 
 // What box-rerun.yml and flake-rerun.yml read from GitHub about the Check run that triggered them.
 
-export type Run = { id: number; attempt: number; conclusion: string | null };
+export type Run = {
+  id: number;
+  attempt: number;
+  conclusion: string | null;
+  /** The run's event and head branch, as workflow_run gives them. */
+  event?: string;
+  branch?: string;
+};
 export type RunJob = {
   id: number;
   name: string;
@@ -61,6 +68,8 @@ export const triggeringRun = (env = process.env): Run => ({
   id: Number(env.RUN_ID),
   attempt: Number(env.RUN_ATTEMPT),
   conclusion: env.RUN_CONCLUSION ?? null,
+  event: env.RUN_EVENT,
+  branch: env.HEAD_BRANCH,
 });
 
 export async function attemptJobs(api: GitHub, run: Run) {
