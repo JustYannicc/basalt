@@ -911,6 +911,48 @@ test("an entry refused, then collected by the registry before the read after, is
   assert.deepEqual(saved.teardown.kept, []);
 });
 
+test("kept is proven entry by entry, not by count", async () => {
+  const second = `sha256:${"e".repeat(64)}`;
+  // One refused then collected, the other accepted yet still listed: one refusal, one entry left,
+  // and the entry left is not the one refused.
+  const swapped = cloudflareStage({
+    emptyEnd: true,
+    artifacts: [
+      { digest: chain, type: chainType, refuse: { ...singleton, removes: true } },
+      { digest: second, type: chainType, refuse: { stays: true } },
+    ],
+  });
+  const error = await destroyOn(swapped).then(
+    () => assert.fail("the destroy succeeded"),
+    (caught) => caught,
+  );
+  assert.match(error.message, /not proven kept in this run/u);
+  assert.deepEqual(error.record.teardown, [
+    { unproven: { entries: 1, proven: 0, types: [chainType] } },
+  ]);
+  // Two refused, one of them collected: the one still there is kept, and only it is said.
+  const collected = cloudflareStage({
+    emptyEnd: true,
+    artifacts: [
+      { digest: chain, type: chainType, refuse: { ...singleton, removes: true } },
+      { digest: second, type: chainType, refuse: singleton },
+    ],
+  });
+  const { lines, saved } = await destroyOn(collected);
+  assert.ok(
+    lines.some((line) =>
+      line.endsWith(
+        `1 entry is kept by the registry: 1 × ${chainType}, delete refused 409 SINGLETON_ARTIFACT_EXISTS`,
+      ),
+    ),
+    lines.join("\n"),
+  );
+  assert.deepEqual(saved.teardown.kept, [
+    { type: chainType, class: "409 SINGLETON_ARTIFACT_EXISTS" },
+  ]);
+  for (const line of lines) assert.doesNotMatch(line, /sha256/u, line);
+});
+
 test("two tags naming one refused index send one delete and count one refusal", async () => {
   const fake = cloudflareStage({ emptyEnd: true, refuse: { [ownIndex]: { status: 403 } } }, [
     "h1",

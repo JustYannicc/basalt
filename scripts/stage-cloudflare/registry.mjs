@@ -80,7 +80,7 @@ export function registryOperations(send) {
       if (!failed) continue;
       // Kept only once no tag's manifest was refused: an entry a tag reached is the stage's image.
       if (!refused.some((entry) => entry.kind === "tag") && keptByRegistry(type, failed.refusal))
-        kept.push({ type, class: refusalClass(failed.refusal) });
+        kept.push({ type, class: refusalClass(failed.refusal), digest });
       else refused.push(failed);
     }
     if (refused.length) {
@@ -89,7 +89,10 @@ export function registryOperations(send) {
       );
       error.record = Object.freeze({
         registryDeletes: Object.freeze({
-          kept: Object.freeze(kept.map((entry) => Object.freeze({ ...entry }))),
+          // The digest proves an entry within this process; it never reaches a record.
+          kept: Object.freeze(
+            kept.map(({ type, class: refused }) => Object.freeze({ type, class: refused })),
+          ),
           refused: Object.freeze(
             refused.map((entry) =>
               Object.freeze({
@@ -116,13 +119,13 @@ export function registryOperations(send) {
   async function keptEntries(image) {
     const entries = await send({ kind: "images", operation: "tags", target: image });
     if (!entries.length || !entries.every((entry) => DIGEST.test(entry))) return undefined;
-    const types = [];
+    const kept = [];
     for (const digest of entries) {
       const type = await typeOf(image, digest);
       if (!registryArtifact(type)) return undefined;
-      types.push(type);
+      kept.push(Object.freeze({ digest, type }));
     }
-    return Object.freeze(types);
+    return Object.freeze(kept);
   }
 
   return { images, removeImage, keptEntries };

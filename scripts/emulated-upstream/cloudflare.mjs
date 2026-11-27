@@ -20,8 +20,14 @@ export function emulatedAccount({ accountId, token, prefix, fetcher = fetch }) {
     const kept = [];
     for (const row of repositories) {
       if (!row.tags.length) continue;
-      const types = await stage.keptEntries(row);
-      if (types) kept.push({ name: row.name, types, image: row });
+      const entries = await stage.keptEntries(row);
+      if (entries)
+        kept.push({
+          name: row.name,
+          entries,
+          types: entries.map((entry) => entry.type),
+          image: row,
+        });
       else images.push(row);
     }
     return { ...workers, images, kept };
@@ -71,10 +77,24 @@ export function emulatedAccount({ accountId, token, prefix, fetcher = fetch }) {
       if (kept) keptBy.set(image.name, kept);
     }
     const after = await inventory();
-    // A repository is the registry's only when its delete pass in this run returned, and the read
-    // after it finds exactly as many kept entries as that pass was refused.
-    const unproven = after.kept.filter((row) => keptBy.get(row.name)?.length !== row.types.length);
-    if (!empty(after) || records.length || unproven.length) {
+    // An entry is the registry's only when this run's delete pass for its repository returned and
+    // was refused that very entry, by digest; the read after is what says it is still there.
+    const proven = (row) => new Set((keptBy.get(row.name) ?? []).map((entry) => entry.digest));
+    const unproven = after.kept.filter((row) => {
+      const refused = proven(row);
+      return !row.entries.every((entry) => refused.has(entry.digest));
+    });
+    for (const row of unproven)
+      records.push(
+        Object.freeze({
+          unproven: Object.freeze({
+            entries: row.entries.length,
+            proven: row.entries.filter((entry) => proven(row).has(entry.digest)).length,
+            types: Object.freeze([...new Set(row.types)]),
+          }),
+        }),
+      );
+    if (!empty(after) || records.length) {
       const error = new StageError(
         `Emulated upstream resources remain after teardown: ${[describe(after), ...unproven.map((row) => `registry repository ${row.name} (${row.types.length} entries of a kept type, not proven kept in this run)`)].filter(Boolean).join(", ") || "only entries whose delete was refused"}${failures.length ? `; failed: ${failures.join("; ")}` : ""}`,
       );
@@ -82,7 +102,10 @@ export function emulatedAccount({ accountId, token, prefix, fetcher = fetch }) {
       throw error;
     }
     // Only what is still there is kept: an entry refused, then gone by the read after, is not.
-    const kept = after.kept.flatMap((row) => keptBy.get(row.name) ?? []);
+    const kept = after.kept.flatMap((row) => {
+      const there = new Set(row.entries.map((entry) => entry.digest));
+      return (keptBy.get(row.name) ?? []).filter((entry) => there.has(entry.digest));
+    });
     return { before, failures, kept };
   }
 
