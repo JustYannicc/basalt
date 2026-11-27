@@ -5,22 +5,34 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
 
 const workflow = readFileSync(
   new URL("../../.github/workflows/release.yml", import.meta.url),
   "utf8",
 );
 const { parse } = createRequire(new URL("../architecture/package.json", import.meta.url))("yaml");
-/** The release job's steps as Actions reads them, with every YAML alias resolved. */
-const parsedSteps = (
-  parse(workflow) as {
-    jobs: {
-      release: {
-        steps: { name?: string; if?: string; run?: string; env?: object; with?: object }[];
-      };
+type Step = {
+  name?: string;
+  uses?: string;
+  if?: string;
+  run?: string;
+  env?: object;
+  with?: object;
+};
+const parsed = parse(workflow) as {
+  on: { workflow_dispatch: { inputs: Record<string, Record<string, unknown>> } };
+  jobs: {
+    release: {
+      env: Record<string, string>;
+      concurrency: { group: string; "cancel-in-progress": boolean };
+      environment: { name: string; deployment: boolean };
+      steps: Step[];
     };
-  }
-).jobs.release.steps;
+  };
+};
+/** The release job's steps as Actions reads them, with every YAML alias resolved. */
+const parsedSteps = parsed.jobs.release.steps;
 const step = (name: string) => {
   const start = workflow.indexOf(`- name: ${name}`);
   assert.ok(start >= 0, `missing step ${name}`);
@@ -35,6 +47,111 @@ const job = (name: string) => {
   assert.ok(start >= 0, `missing job ${name}`);
   const next = workflow.slice(start + 1).search(/\n  [a-z-]+:\n/u);
   return workflow.slice(start, next < 0 ? undefined : start + 1 + next);
+};
+
+interface Context {
+  readonly event: string;
+  readonly env: Record<string, string>;
+  readonly steps: Record<string, { outcome: string; outputs?: Record<string, string> }>;
+  /** A step before this one failed: a condition without a status function then never runs. */
+  readonly failed: boolean;
+  /** Whether `hashFiles` finds the file a condition names. */
+  readonly found: boolean;
+}
+// Every construct release.yml's conditions use; anything else fails rather than guessing.
+const term =
+  /\s+|[()]|&&|\|\||==|!=|!|'[\w-]*'|(?:always|success|failure|cancelled)\(\)|hashFiles\('[^']*'\)|github\.event_name|env\.\w+|steps\.[\w-]+\.(?:outcome|outputs\.[\w-]+)/uy;
+/** A step's `if:` as Actions decides it, compiled once so a sweep over many contexts stays fast. */
+const compile = (expression: string | undefined): ((context: Context) => boolean) => {
+  const source = expression ?? "";
+  for (term.lastIndex = 0; term.lastIndex < source.length;)
+    assert.ok(term.exec(source), `unknown expression: ${source}`);
+  const js = source
+    .replace(/\bhashFiles\('[^']*'\)/gu, '(c.found ? "found" : "")')
+    .replace(
+      /\bsteps\.([\w-]+)\.outcome\b/gu,
+      (_, id: string) => `(c.steps[${JSON.stringify(id)}]?.outcome ?? "skipped")`,
+    )
+    .replace(
+      /\bsteps\.([\w-]+)\.outputs\.([\w-]+)/gu,
+      (_, id: string, output: string) =>
+        `(c.steps[${JSON.stringify(id)}]?.outputs?.[${JSON.stringify(output)}] ?? "")`,
+    )
+    .replace(/\bgithub\.event_name\b/gu, "c.event")
+    .replace(/\benv\.(\w+)/gu, (_, name: string) => `(c.env[${JSON.stringify(name)}] ?? "")`)
+    .replace(/\balways\(\)/gu, "true")
+    .replace(/\bsuccess\(\)/gu, "!c.failed")
+    .replace(/\bfailure\(\)/gu, "c.failed")
+    .replace(/\bcancelled\(\)/gu, "false")
+    .replaceAll("'", '"');
+  // Without a status function, Actions runs the step only while nothing before it failed.
+  const status = /\b(?:always|success|failure|cancelled)\(\)/u.test(source);
+  const body = !source ? "!c.failed" : status ? js : `!c.failed && (${js})`;
+  return runInNewContext(`(c) => Boolean(${body})`) as (context: Context) => boolean;
+};
+const label = (entry: Step) => entry.name ?? `uses ${entry.uses}`;
+const repairSteps = [
+  "A repair names one plain row, and its apply carries a coordinator GO",
+  "Plan the State repair",
+  "Apply the reviewed State repair",
+];
+const policies = [
+  "release",
+  "code",
+  "code-restart",
+  "cutover-code",
+  "cutover-classes",
+  "route-gateway-class",
+];
+// The check mode each policy carries, as "Read the policy's check mode" exports it.
+const modeOf = (policy: string) =>
+  policy === "cutover-classes" || policy === "route-gateway-class"
+    ? "cutover-classes"
+    : policy === "release"
+      ? "release"
+      : "code-only";
+/** Every combination of the inputs and step results the release job's conditions read. */
+function* contexts(modes: string[], steps = true): Generator<Context> {
+  const outcomes = steps ? ["success", "failure", "skipped"] : ["skipped"];
+  for (const event of ["workflow_dispatch", "workflow_run"])
+    for (const MODE of modes)
+      for (const POLICY_NAME of policies)
+        for (const PLAN_DIGEST_INPUT of ["", "digest"])
+          for (const failed of [false, true])
+            for (const found of [false, true])
+              for (const provider of outcomes)
+                for (const apply of outcomes)
+                  for (const accept of outcomes)
+                    for (const serving of outcomes)
+                      for (const acceptance of steps ? ["", "could-not-test"] : [""])
+                        for (const id of steps ? ["", "1"] : [""])
+                          yield {
+                            event,
+                            env: {
+                              MODE,
+                              POLICY_NAME,
+                              POLICY_MODE: modeOf(POLICY_NAME),
+                              PLAN_DIGEST_INPUT,
+                            },
+                            steps: {
+                              provider: { outcome: provider },
+                              apply: { outcome: apply },
+                              accept: { outcome: accept, outputs: { acceptance } },
+                              serving: { outcome: serving },
+                              deployment: { outcome: id ? "success" : "skipped", outputs: { id } },
+                            },
+                            failed,
+                            found,
+                          };
+}
+/** Runs a step's script as Actions does (`bash -e`), with only the env it is given. */
+const runStep = (name: string, env: Record<string, string>) => {
+  const entry = parsedSteps.find((candidate) => candidate.name === name);
+  assert.ok(entry?.run, `missing step ${name}`);
+  return spawnSync("bash", ["-e", "-c", entry.run], {
+    env: { PATH: process.env.PATH ?? "", ...(entry.env as Record<string, string>), ...env },
+    encoding: "utf8",
+  });
 };
 
 test("an automatic release starts only after main's own Check passed on a push from this repository", () => {
@@ -221,12 +338,13 @@ test("the policy's check mode is read before anything uses it, and a policy with
 });
 
 test("a plan runs the apply's read-only steps too, so an apply is never their first run", () => {
+  // Only a State repair, which is no release, skips them.
   for (const name of [
     "Record the serving version of every Worker the plan updates",
     "Count accounts and history before",
     "Record the root's boot before the apply",
   ])
-    assert.equal(condition(name), undefined, name);
+    assert.equal(condition(name), "env.MODE != 'repair'", name);
   // A plan proves the read; the full count stays with the policies that change data.
   assert.match(
     step("Count accounts and history before"),
@@ -243,6 +361,8 @@ test("a plan runs the apply's read-only steps too, so an apply is never their fi
   // Every other step that carries production secrets writes, so it never runs in a plan.
   const reads = new Set([
     "Preflight against State",
+    // Read-only: without a digest, the wire guard lets production see nothing but reads.
+    "Plan the State repair",
     "Read the provider observation before a declared root restart",
     "Plan and check",
     "Record the serving version of every Worker the plan updates",
@@ -255,8 +375,12 @@ test("a plan runs the apply's read-only steps too, so an apply is never their fi
       JSON.stringify({ env: entry.env, run: entry.run, with: entry.with }).includes("secrets."),
   );
   assert.ok(writes.length > 0);
-  for (const entry of writes)
-    assert.match(entry.if ?? "", /env\.MODE == 'apply'/u, entry.name ?? "(unnamed step)");
+  for (const entry of writes) {
+    assert.match(entry.if ?? "", /env\.MODE == '(?:apply|repair)'/u, label(entry));
+    const holds = compile(entry.if);
+    for (const context of contexts(["plan"], false))
+      assert.equal(holds(context), false, label(entry));
+  }
   assert.match(step("Check the apply's tools are present"), /for tool in gh jq bun node; do/u);
   assert.match(step("Check the apply's tools are present"), /gh api rate_limit/u);
   assert.equal(condition("Check the apply's tools are present"), undefined);
@@ -276,10 +400,10 @@ test("every production attempt from the backup on leaves a GitHub Deployment wit
   assert.match(step("Stop the line and require a rehearsal"), /OVERRIDE_REASON/u);
 });
 
-test("every run, plan-only included, passes the read-only preflight before planning", () => {
+test("every release run, plan-only included, passes the read-only preflight before planning", () => {
   const preflight = step("Preflight against State");
   assert.match(preflight, /deploy\.ts preflight --stage production/u);
-  assert.doesNotMatch(preflight, /\bif:/u);
+  assert.equal(condition("Preflight against State"), "env.MODE != 'repair'");
   const [first, plan] = order("Preflight against State", "Plan and check");
   assert.ok(first! < plan!);
   assert.match(step("Keep the retired layer's records, sealed"), /always\(\)/u);
@@ -355,6 +479,8 @@ test("every production entry call the workflow makes is one the entry accepts", 
         "apply",
         "accept",
         "rollback",
+        // The State repair; the entry on main gains it with that repair, and refuses it until then.
+        "repair",
       ].includes(command!),
       line,
     );
@@ -389,7 +515,7 @@ test("production secrets reach only the steps that run the entry", () => {
     );
     assert.ok(!secretNames.includes(name), name);
   }
-  assert.equal(secretSteps.length, 14);
+  assert.equal(secretSteps.length, 16);
 });
 
 test("the root pin's full reference, which carries the account, never enters the workflow", () => {
@@ -491,4 +617,214 @@ test("a healing release waits for the root's new boot within its policy's bound,
   );
   assert.match(step("Stop on a failed healing release"), /exit 1/u);
   assert.match(step("Roll back a failed release"), /exit 1/u);
+});
+
+test("a dispatch can run a State repair of one named row", () => {
+  const { mode, fqn } = parsed.on.workflow_dispatch.inputs;
+  assert.deepEqual(mode!.options, ["plan", "apply", "repair"]);
+  assert.equal(mode!.default, "plan");
+  assert.deepEqual(fqn, {
+    description: "For repair, the container row a stopped apply left holding a placeholder",
+    required: false,
+    type: "string",
+    default: "",
+  });
+});
+
+test("a repair runs only the repair: no plan, apply, accept, rollback, snapshot or record step", () => {
+  // What runs, by digest: the shared setup, the hold, then one repair step.
+  const ran = (digest: string, failed: boolean) =>
+    parsedSteps
+      .filter((entry) =>
+        compile(entry.if)({
+          event: "workflow_dispatch",
+          env: { MODE: "repair", POLICY_NAME: "code", PLAN_DIGEST_INPUT: digest },
+          steps: {},
+          failed,
+          found: false,
+        }),
+      )
+      .map(label);
+  const setup = [
+    "uses actions/checkout@v4",
+    "A repair names one plain row, and its apply carries a coordinator GO",
+    "Read the policy's check mode",
+    "Respect the release hold",
+    "uses ./.github/actions/setup-node",
+    "uses ./.github/actions/setup-bun",
+    "Check the apply's tools are present",
+    "Prepare",
+    "Build and measure Worker startup",
+  ];
+  const kept = ["Keep the plan and the counts", "Keep the retired layer's records, sealed"];
+  assert.deepEqual(ran("", false), [...setup, "Plan the State repair", ...kept]);
+  assert.deepEqual(ran("digest", false), [...setup, "Apply the reviewed State repair", ...kept]);
+  // A failed repair leaves only the artifact uploads, and no deployment record to finish.
+  assert.deepEqual(ran("", true), kept);
+  // Whatever any step reported, nothing but the repair calls the entry, a dispatcher or the
+  // Deployments API. The deployment record is one of those, so it never leaves an id to finish.
+  for (const entry of parsedSteps.filter(
+    (candidate) =>
+      !repairSteps.includes(candidate.name ?? "") &&
+      /deploy\.ts |gh api "repos|dispatch\.ts/u.test(candidate.run ?? ""),
+  )) {
+    const holds = compile(entry.if);
+    for (const context of contexts(["repair"]))
+      if (!context.steps.deployment!.outputs!.id) assert.equal(holds(context), false, label(entry));
+  }
+});
+
+test("the repair steps run only in repair mode: the plan without a digest, the apply with one", () => {
+  for (const name of repairSteps) {
+    const holds = compile(condition(name));
+    for (const context of contexts(["plan", "apply"])) assert.equal(holds(context), false, name);
+  }
+  const plan = compile(condition("Plan the State repair"));
+  const apply = compile(condition("Apply the reviewed State repair"));
+  for (const context of contexts(["repair"], false)) {
+    const digest = context.env.PLAN_DIGEST_INPUT !== "";
+    assert.equal(plan(context), !digest && !context.failed);
+    assert.equal(apply(context), digest && !context.failed);
+  }
+  assert.match(
+    step("Plan the State repair"),
+    /\n {10}bun scripts\/release\/deploy\.ts repair --stage production --fqn "\$FQN"\n/u,
+  );
+  assert.match(
+    step("Apply the reviewed State repair"),
+    /\n {10}bun scripts\/release\/deploy\.ts repair --stage production --fqn "\$FQN" --plan-digest "\$PLAN_DIGEST_INPUT"\n/u,
+  );
+  const preflight = parsedSteps.find((entry) => entry.name === "Preflight against State")!.env;
+  for (const name of ["Plan the State repair", "Apply the reviewed State repair"])
+    assert.deepEqual(parsedSteps.find((entry) => entry.name === name)!.env, preflight, name);
+});
+
+test("a repair's fqn reaches the entry only through the environment, checked before anything runs", () => {
+  assert.equal(workflow.match(/inputs\.fqn/gu)?.length, 1);
+  assert.equal(parsed.jobs.release.env.FQN, "${{ inputs.fqn }}");
+  // Every use is a quoted shell variable; no expression puts the value into a script.
+  assert.doesNotMatch(workflow, /(?<!")\$\{?FQN\b/u);
+  assert.doesNotMatch(workflow, /env\.FQN/u);
+  for (const name of repairSteps)
+    assert.doesNotMatch(parsedSteps.find((entry) => entry.name === name)!.run!, /\$\{\{/u, name);
+  // The checkout must come first (the secrets guard), and the check straight after it.
+  assert.equal(parsedSteps[0]!.uses, "actions/checkout@v4");
+  assert.equal(parsedSteps[1]!.name, repairSteps[0]);
+  assert.equal(condition(repairSteps[0]!), "env.MODE == 'repair'");
+});
+
+test("the repair check refuses an empty or malformed fqn, and an apply without a coordinator GO", () => {
+  const sha = "a".repeat(40);
+  const check = (FQN: string, PLAN_DIGEST_INPUT = "", GO_INPUT = "", CANDIDATE_INPUT = sha) =>
+    runStep(repairSteps[0]!, { FQN, PLAN_DIGEST_INPUT, GO_INPUT, CANDIDATE_INPUT });
+  for (const value of [
+    "",
+    "a b",
+    "a;b",
+    "$(id)",
+    "a`id`",
+    'a"b',
+    "a\nb",
+    "RouteGateway\n",
+    "-x",
+    ".x",
+    "/x",
+    "é",
+    "::error::x",
+    "x".repeat(129),
+    // A segment a URL path would normalise into another row.
+    "PoolContainer/../x",
+    "a/./b",
+    "a/..",
+    "a//b",
+    "a/",
+  ]) {
+    const result = check(value);
+    assert.equal(result.status, 1, JSON.stringify(value));
+    assert.match(result.stdout, /^::error::/u, JSON.stringify(value));
+    if (value) assert.ok(!result.stdout.includes(value), `printed ${JSON.stringify(value)}`);
+  }
+  for (const value of ["RouteGateway", "pool/route-gateway_1.v2", "_x", "x".repeat(128)])
+    assert.equal(check(value).status, 0, check(value).stdout);
+  // The apply writes production State, so it needs the GO even when the hold is unset.
+  const go = "coordinator-2026-11-27T10:00Z";
+  assert.equal(check("RouteGateway", "digest").status, 1);
+  assert.equal(check("RouteGateway", "digest", "yes").status, 1);
+  assert.equal(check("RouteGateway", "digest", go).status, 0);
+  assert.equal(check("RouteGateway", "", "").status, 0, "a plan needs no GO beyond the hold's");
+  // The GO is one line: junk on another line never passes beside a valid one.
+  assert.equal(check("RouteGateway", "digest", `junk\n${go}`).status, 1);
+  assert.equal(check("RouteGateway", "digest", `${go}\njunk`).status, 1);
+  // The apply runs the commit that planned it: it names the candidate, never main's head by default.
+  const unnamed = check("RouteGateway", "digest", go, "");
+  assert.equal(unnamed.status, 1);
+  assert.match(unnamed.stdout, /names the candidate its plan ran on/u);
+  assert.equal(check("RouteGateway", "", "", "").status, 0, "a plan may run on main's head");
+  // In the form the hold step takes it: the same opening pattern.
+  const opening = /\^coordinator-20\[0-9\]\{2\}-\[0-9\]\{2\}-\[0-9\]\{2\}T/u;
+  assert.match(step(repairSteps[0]!), opening);
+  assert.match(step("Respect the release hold"), opening);
+});
+
+test("a repair is a step of the release job: its production lock, environment and candidate", () => {
+  const release = parsed.jobs.release;
+  for (const name of repairSteps)
+    assert.ok(
+      release.steps.some((entry) => entry.name === name),
+      name,
+    );
+  assert.deepEqual(release.concurrency, {
+    group: "deploy-production",
+    "cancel-in-progress": false,
+  });
+  // No GitHub Deployment from the environment either: a State repair deploys nothing.
+  assert.deepEqual(release.environment, { name: "production-release", deployment: false });
+  assert.equal(release.env.BASALT_RELEASE_CANDIDATE, "${{ needs.candidate.outputs.sha }}");
+  assert.doesNotMatch(step("Plan the State repair"), /gh api|deployments/u);
+  assert.doesNotMatch(step("Apply the reviewed State repair"), /gh api|deployments/u);
+});
+
+// Every release step's condition as plan and apply read it; a step not named here has none.
+const releaseConditions: Record<string, string> = {
+  "A dispatched apply names its reviewed plan":
+    "github.event_name == 'workflow_dispatch' && env.MODE == 'apply'",
+  "Stop the line and require a rehearsal": "hashFiles('scripts/guardrails/release-gate.ts') != ''",
+  "Stop on an unread provider observation":
+    "always() && env.MODE == 'plan' && steps.provider.outcome == 'failure'",
+  "Refuse while the pool database is busy": "env.MODE == 'apply'",
+  "Record the deployment": "env.MODE == 'apply'",
+  "Back up the pool database": "env.MODE == 'apply'",
+  "Take the controller storage bookmark":
+    "env.MODE == 'apply' && env.POLICY_NAME == 'cutover-classes'",
+  "What was verified before the irreversible step":
+    "env.MODE == 'apply' && env.POLICY_NAME == 'cutover-classes'",
+  "Read the provider observation again right before the apply": "env.MODE == 'apply'",
+  "Apply the reviewed plan": "env.MODE == 'apply'",
+  "Accept the release through the live pool":
+    "env.MODE == 'apply' && (steps.apply.outcome == 'success' || (env.POLICY_NAME == 'code-restart' && steps.apply.outcome == 'failure'))",
+  "Roll back a failed release":
+    "always() && env.MODE == 'apply' && env.POLICY_MODE != 'cutover-classes' && env.POLICY_NAME != 'code-restart' && steps.serving.outcome == 'success' && (steps.apply.outcome == 'failure' || (steps.accept.outcome == 'failure' && steps.accept.outputs.acceptance != 'could-not-test'))",
+  "Stop on a failed healing release":
+    "always() && env.MODE == 'apply' && env.POLICY_NAME == 'code-restart' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')",
+  "Stop on a failed class change":
+    "always() && env.MODE == 'apply' && env.POLICY_MODE == 'cutover-classes' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')",
+  "Count accounts and history after": "env.MODE == 'apply' && steps.apply.outcome == 'success'",
+  "Stop on an acceptance that could not test":
+    "always() && env.MODE == 'apply' && env.POLICY_MODE != 'cutover-classes' && env.POLICY_NAME != 'code-restart' && steps.accept.outputs.acceptance == 'could-not-test'",
+  "Finish the deployment record": "always() && steps.deployment.outputs.id != ''",
+  "Keep the plan and the counts": "always()",
+  "Keep the retired layer's records, sealed": "always()",
+};
+
+test("a plan and an apply run every release step exactly as they would with no repair mode", () => {
+  const names = new Set(parsedSteps.map((entry) => entry.name));
+  for (const name of Object.keys(releaseConditions)) assert.ok(names.has(name), name);
+  for (const entry of parsedSteps.filter(
+    (candidate) => !repairSteps.includes(candidate.name ?? ""),
+  )) {
+    const now = compile(entry.if);
+    const release = compile(releaseConditions[entry.name ?? ""]);
+    for (const context of contexts(["plan", "apply"]))
+      assert.equal(now(context), release(context), `${label(entry)}: ${JSON.stringify(context)}`);
+  }
 });
