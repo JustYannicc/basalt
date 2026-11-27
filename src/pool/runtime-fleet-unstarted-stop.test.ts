@@ -131,6 +131,60 @@ async function quarantinedStart(s: Stuck) {
   assert.equal(row?.reason, "start_unproven");
 }
 
+/** A start whose container boots so slowly that its bound fires first, then activates. */
+async function lateStart(s: Stuck) {
+  await s.state.reserve(s.f.target);
+  await s.state.dispatch(s.f.target);
+  const boot = gate();
+  let held = false;
+  s.f.hooks.health = async () => {
+    if (held) return;
+    held = true;
+    boot.reached();
+    await boot.opened;
+  };
+  const starting = s.f.cell.start(s.f.target);
+  await boot.arrived;
+  assert.equal((await s.pass(startingBoundMs))?.phase, "quarantined", "the bound fired");
+  boot.open();
+  return starting;
+}
+
+/**
+ * Longer than every bound that frees a start that never activated, its container still running.
+ * The provider lists it stopped throughout, so only its endpoint's own read keeps its place.
+ */
+async function heldWhileRunning(s: Stuck) {
+  s.f.listAs("inactive");
+  const from = Date.now();
+  while (
+    Date.now() - from <=
+    startingBoundMs + forcedStopGraceMs + startingBoundMs + 3 * upkeepCadenceMs
+  ) {
+    const row = await s.pass();
+    assert.equal(row?.phase, "quarantined", "a running cell's place was reclaimed");
+    assert.equal(row?.identity, undefined);
+  }
+  assert.equal(s.f.ctx.container.running, true);
+  assert.deepEqual(s.f.calls.signals, [], "a cell whose selection committed was stopped");
+  assert.equal(s.f.calls.destroy, 0);
+  s.f.listAs(undefined);
+}
+
+/** The platform ends its container, as at its inactivity timeout: its place frees at the absence bound. */
+async function freedOnceEnded(s: Stuck) {
+  s.f.ctx.container.signal(9);
+  const endedAt = Date.now();
+  while ((await s.pass()) !== undefined)
+    assert.ok(
+      Date.now() - endedAt < startingBoundMs + 2 * upkeepCadenceMs,
+      "its place was never freed once its container ended",
+    );
+  assert.ok(Date.now() - endedAt >= startingBoundMs, "the absence rule was shortened");
+  assert.deepEqual(s.f.calls.signals, [9], "this path signalled it");
+  assert.equal(s.f.calls.destroy, 0);
+}
+
 test("a cell that answers ready once and then never again is stopped once, and its place grows a replacement within its bound", async (context) => {
   const s = await stuckFleet(context, { demand: 1 });
   let answered = false;
@@ -301,22 +355,8 @@ test("an activated cell is never stopped on this path", async (context) => {
 
 test("a start that activates after its bound fired is admitted and serves, never stopped", async (context) => {
   const s = await stuckFleet(context);
-  await s.state.reserve(s.f.target);
-  await s.state.dispatch(s.f.target);
-  const boot = gate();
-  let held = false;
-  s.f.hooks.health = async () => {
-    if (held) return;
-    held = true;
-    boot.reached();
-    await boot.opened;
-  };
-  const starting = s.f.cell.start(s.f.target);
-  await boot.arrived;
-  assert.equal((await s.pass(startingBoundMs))?.phase, "quarantined", "the bound fired");
   // Its activation completes before any quarantined pass could send a stop.
-  boot.open();
-  const identity = await starting;
+  const identity = await lateStart(s);
   const row = await s.pass();
   assert.equal(row?.phase, "ready");
   assert.equal(row?.identity?.bootId, identity.bootId);
@@ -326,7 +366,19 @@ test("a start that activates after its bound fired is admitted and serves, never
   assert.equal(await s.fenced(), false);
 });
 
-test("a start whose selection commits after a replaced controller fenced its slot is never made ready", async (context) => {
+test("a late start that never answers its read is left alone while it runs, and frees its place once it ends", async (context) => {
+  const s = await stuckFleet(context);
+  await lateStart(s);
+  // Its readiness lapsed with its activation, so no admission read ever answers.
+  s.f.hooks.health = async () => unready();
+  await heldWhileRunning(s);
+  assert.equal(await s.fenced(), false, "a cell whose selection committed was fenced");
+  await freedOnceEnded(s);
+  assert.equal(await s.fenced(), false);
+  assert.deepEqual(await s.state.inspect(), []);
+});
+
+test("a start whose selection commits after a replaced controller fenced its slot is never made ready, and frees its place once it ends", async (context) => {
   const s = await stuckFleet(context);
   await s.state.reserve(s.f.target);
   await s.state.dispatch(s.f.target);
@@ -381,6 +433,8 @@ test("a start whose selection commits after a replaced controller fenced its slo
   await assert.rejects(s.forward(), /the root takes no call here/u);
   assert.deepEqual(s.f.transport.modelStubs, [], "a call was routed to the fenced cell");
   assert.equal(await s.fenced(), true);
+  await heldWhileRunning(s);
+  await freedOnceEnded(s);
 });
 
 test("the stop is sent once per row, through repeated passes, a replaced controller and a replaced endpoint", async (context) => {

@@ -40,6 +40,8 @@ export async function fleetCellFixture(
     rollout = false;
   let credential: string | null = "synthetic-provider-token";
   let ran = false;
+  // The state the provider lists the cell's instance in, when a test sets one.
+  let listed: string | undefined;
   // Another instance of the application in this state, and whether the fleet ledger counts it.
   const sibling = {
     id: "synthetic-sibling",
@@ -57,7 +59,9 @@ export async function fleetCellFixture(
       // As on production: once destroyed, the instance stays listed under state=active as inactive.
       result: instances
         ? [
-            ...(ran ? [{ id: target.instanceId, state: running ? "running" : "inactive" }] : []),
+            ...(ran
+              ? [{ id: target.instanceId, state: listed ?? (running ? "running" : "inactive") }]
+              : []),
             ...(sibling.state ? [{ id: sibling.id, state: sibling.state }] : []),
           ].map(({ id, state }) => ({
             id,
@@ -184,6 +188,13 @@ export async function fleetCellFixture(
     },
     rollout: (value: boolean) => {
       rollout = value;
+    },
+    /**
+     * Lists the cell's instance in `state` whatever its container does, as a listing that lags its
+     * container can; without one, the listing follows the container again.
+     */
+    listAs: (state: string | undefined) => {
+      listed = state;
     },
     /** Lists another instance in `state`, or none without one; `counted` puts it in the ledger. */
     sibling: (state: string | undefined, counted = false) => {

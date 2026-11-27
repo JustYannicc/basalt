@@ -155,8 +155,10 @@ export class FleetHandoffCell implements FleetCell {
     // A selection can still commit after this read, from another isolate's activation or one this
     // cell observes later. The endpoint keeps that safe: it fences in its serialized section, then
     // refuses every later attestation and read and never stops an attested start. A late admission
-    // also needs a health read, which a fenced endpoint refuses.
-    if (await this.activated()) return this.present();
+    // also needs a health read, which a fenced endpoint refuses. One that is never admitted still
+    // frees its place once its container is gone.
+    if (await this.activated())
+      return (await this.ended(target)) ? this.provenAbsent(target, true) : this.present();
     // The endpoint is fenced first, so it refuses every later admission and start for this slot and
     // the wait below covers every start that could ever run, a replaced isolate's included. With
     // `stop`, the endpoint then stops a container that a start which never attested left running.
@@ -169,10 +171,25 @@ export class FleetHandoffCell implements FleetCell {
     if (!sameTarget(initial.target, target)) return false;
     // A destroyed instance stays listed as inactive. That counts as absent only once the fenced
     // endpoint, which can start nothing more, reports its container stopped.
-    const proven = fenced.stopped ? { driverStopped: true as const } : {};
+    return this.provenAbsent(target, fenced.stopped);
+  }
+  /**
+   * Whether an activated start's container has stopped, by a read that neither fences nor stops
+   * it. Nothing can start that boot's container again: its endpoint record holds the boot, so a
+   * start only reads its health, a fleet cell runs no recovery, and this cell starts nothing more.
+   */
+  private async ended(target: SlotTarget) {
+    const selected = await this.selected().catch(() => undefined);
+    if (!selected || !sameTarget(selected, target)) return false;
+    const actual = await this.deps.driver
+      .retirement(selected, AbortSignal.timeout(2_000))
+      .catch(() => undefined);
+    return actual !== undefined && !actual.running && sameIdentity(actual.identity, selected);
+  }
+  private async provenAbsent(target: SlotTarget, driverStopped: boolean) {
     if (
       !(await this.deps.provider.absent(this.deps.application, target.instanceId, undefined, {
-        ...proven,
+        ...(driverStopped ? { driverStopped: true as const } : {}),
         counted: await this.deps.counted(),
       }))
     )
