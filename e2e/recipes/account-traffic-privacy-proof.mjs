@@ -6,12 +6,11 @@ import { appsManifest } from "../../.upstream/e2e/support/apps-release.ts";
 import { accountRow } from "../../.upstream/e2e/support/account-rows.ts";
 import {
   bringRetriesForward,
-  bringRolloutsForward,
   changeOutboxEmpty,
-  openRollouts,
   provisioningJobs,
   provisioningMoved,
   provisioningSettled,
+  stackRollouts,
 } from "./provisioning-diagnostics.mjs";
 
 // Red switches for this proof only, read nowhere else. HOLD keeps the organization row lock that
@@ -59,17 +58,31 @@ export const accountTrafficPrivacyProof = ({
     // A release queues one delayed rollout per organization. It takes the organization's locks, so
     // it runs now, before the invitation, the held setup lock and the measurement, never inside them.
     progress.phase = "rollouts";
-    yield* bringRolloutsForward(database, organization);
+    const rollouts = stackRollouts(h.services);
+    yield* rollouts.bringForward(database, organization);
+    let jobs = [];
     yield* untilDeadline(
       Effect.gen(function* () {
-        const jobs = yield* provisioningJobs(database, organization);
-        progress.rollouts = openRollouts(jobs);
+        jobs = yield* provisioningJobs(database, organization);
+        const unavoidable = rollouts.unavoidable(jobs);
+        if (unavoidable.length > 0)
+          return yield* Effect.fail(
+            new Error(
+              `A catalog sweep this stack can't run is due within the proof: ${JSON.stringify(unavoidable)}`,
+            ),
+          );
+        progress.rollouts = rollouts.open(jobs);
         if (progress.rollouts.length === 0) return true;
         yield* h.request("POST", "/api/onboarding/prepare", {});
         return false;
       }),
       () => `The organization's rollouts did not finish: ${JSON.stringify(progress.rollouts)}`,
     );
+    const unproved = rollouts.notProved(jobs);
+    if (unproved) {
+      diagnostics.notProved = [...(diagnostics.notProved ?? []), unproved];
+      console.log(`Not proved: ${JSON.stringify(unproved)}`);
+    }
     progress.phase = "membership";
     if (holdSetup)
       yield* database.hold({
