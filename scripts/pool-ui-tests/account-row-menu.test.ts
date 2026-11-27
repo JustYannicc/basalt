@@ -177,6 +177,21 @@ const releasedOverItem = async (page: Page, release: "pointerup" | "click") => {
   );
 };
 
+/**
+ * The tap pressed the button and produced a click, wherever the platform put it: touch adjustment
+ * moves a tap's click onto the nearest clickable target, the first item on macOS and back into the
+ * button's own box on Linux (measured in Chromium 153). The outcome is what each case asserts.
+ */
+const tapped = async (page: Page) => {
+  const events = await read<string[]>(page, "EVENTS");
+  const where = `${events.join(" ")} (${(await read<string[]>(page, "POINTS")).join(" ")})`;
+  assert.equal(events[0], "pointerdown:trigger", where);
+  assert.ok(
+    events.some((event) => event.startsWith("click:")),
+    `the tap clicked: ${where}`,
+  );
+};
+
 type Point = { readonly x: number; readonly y: number };
 /**
  * A finger pressing at `start` and lifting where `lift` says, through Chromium's own touch input.
@@ -297,7 +312,7 @@ test("a tap opens the menu without choosing anything, and a tap on an item choos
       const trigger = page.getByRole("button", { name: "Manage Team" });
       const box = (await trigger.boundingBox())!;
       await edgeTap(page);
-      await releasedOverItem(page, "click");
+      await tapped(page);
       assert.deepEqual(await settled(page), { menu: 1, details: [] });
       await page.keyboard.press("Escape");
       assert.equal((await settled(page)).menu, 0);
@@ -319,7 +334,7 @@ test("a tap on the bottom edge does not follow a link that is the menu's first i
     false,
     async (page) => {
       await edgeTap(page);
-      await releasedOverItem(page, "click");
+      await tapped(page);
       assert.deepEqual(await settled(page), { menu: 1, details: [] });
       assert.deepEqual(await read<string[]>(page, "CHOSEN"), []);
     },
