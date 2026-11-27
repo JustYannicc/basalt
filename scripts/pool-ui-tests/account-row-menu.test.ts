@@ -327,8 +327,8 @@ test("a tap opens the menu without choosing anything, and a tap on an item choos
   ));
 
 test("a tap on the bottom edge does not follow a link that is the menu's first item (phone)", () =>
-  // Before its usage lands the row has no Details, so a link item comes first; a link handles its
-  // own click before the menu does.
+  // The row's Reconnect item is a link, which handles its own click before the menu does; where a
+  // real tap's click lands is the platform's, so the case below delivers one to the link directly.
   withPage(
     viewports.phone,
     false,
@@ -364,6 +364,32 @@ test("a tap whose click the browser moves onto an item, past the travel limit, c
         detail: 1,
         clientX: at.x,
         clientY: at.y,
+        bubbles: true,
+        cancelable: true,
+      });
+      assert.deepEqual(await settled(page), { menu: 1, details: [] });
+      assert.deepEqual(await read<string[]>(page, "CHOSEN"), []);
+    },
+    true,
+  ));
+
+test("a tap whose click the browser moves onto a link item does not follow it (phone)", () =>
+  // A link item runs its own click handler before the menu's, so only a capture-phase refusal
+  // stops it; this case holds that on every platform, wherever a real tap's click would land.
+  withPage(
+    viewports.phone,
+    false,
+    async (page) => {
+      const box = (await page.getByRole("button", { name: "Manage Team" }).boundingBox())!;
+      const start = { x: box.x + box.width / 2, y: box.y + box.height - 0.1 };
+      await fingerTap(page, start, async () => start, 0);
+      const link = page.getByRole("menuitem", { name: "Reconnect" });
+      assert.equal(await link.evaluate((element) => element.tagName), "A", "the item is a link");
+      const centre = (await link.boundingBox())!;
+      await link.dispatchEvent("click", {
+        detail: 1,
+        clientX: centre.x + centre.width / 2,
+        clientY: centre.y + centre.height / 2,
         bubbles: true,
         cancelable: true,
       });
