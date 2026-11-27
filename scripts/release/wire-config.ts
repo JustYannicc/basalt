@@ -34,6 +34,18 @@ export function wireHolds(
   };
 }
 
+/** The application a container's State row records: its id, and the name it was created under. */
+export function recordedApplicationOf(row: unknown): RecordedApplication | undefined {
+  const attr = (
+    row as { attr?: { applicationId?: unknown; applicationName?: unknown } } | undefined
+  )?.attr;
+  const id = attr?.applicationId;
+  const name = attr?.applicationName;
+  return typeof id === "string" && id
+    ? { id, name: typeof name === "string" && name ? name : undefined }
+    : undefined;
+}
+
 /** Commands that only read production: the guard refuses anything but reads while they run. */
 export const readOnlyRun = (stage: string, command: string, digest: string | undefined) =>
   stage === "production" &&

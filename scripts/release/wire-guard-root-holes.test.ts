@@ -410,6 +410,15 @@ test("the run's holds come from the policy's rows, and an unnamed root still ref
   assert.ok(Exit.isSuccess(gatewayRun.exit));
   refusalOf(gatewayRun.exit.value.patch);
   assert.deepEqual(gatewayRun.writes, []);
+  // Production keeps the root from the first request on, recorded or not, policy or not.
+  const bare = await Effect.runPromise(
+    wireConfigFor({
+      stage: "production",
+      policy: undefined,
+      recorded: () => Effect.undefined,
+    }),
+  );
+  assert.equal(bare.rootRequired, true);
   // A stage that records its root under a policy keeps it as production does.
   const rehearsal = await Effect.runPromise(
     wireConfigFor({

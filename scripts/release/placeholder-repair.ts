@@ -455,8 +455,14 @@ export interface StageStore<E> {
 export const repairCommand = <E, O, C, S>(input: {
   readonly fqn: string;
   readonly digest: string | undefined;
-  readonly worker: string;
-  readonly reserved: ReadonlyArray<string>;
+  /** The policy the run holds: its pool Worker, its root, and the rows it holds at the wire. */
+  readonly policy:
+    | {
+        readonly worker: string;
+        readonly root: string;
+        readonly held: ReadonlyArray<string>;
+      }
+    | undefined;
   readonly state: StageStore<E>;
   readonly at: { readonly stack: string; readonly stage: string };
   readonly stackState: StackState;
@@ -473,8 +479,9 @@ export const repairCommand = <E, O, C, S>(input: {
   };
   return runRepair({
     fqn: input.fqn,
-    worker: input.worker,
-    reserved: input.reserved,
+    worker: input.policy?.worker ?? "PoolWorker",
+    // Never adopt for it an application the root's or a held row records.
+    reserved: [input.policy?.root ?? "PoolContainer", ...(input.policy?.held ?? [])],
     digest: input.digest,
     store,
     observe: observeRecorded(store, input.open, input.read),

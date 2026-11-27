@@ -30,7 +30,7 @@ import { assignEnvironment } from "./process-env.ts";
 import { failureReport, progressTracker } from "./public-report.ts";
 import { isRehearsalStage } from "./rehearsal-stage.ts";
 import { safeJson } from "./safe-json.ts";
-import { readOnlyRun, wireConfigFor, wireHolds } from "./wire-config.ts";
+import { readOnlyRun, recordedApplicationOf, wireConfigFor, wireHolds } from "./wire-config.ts";
 import { assertStateStage, isTestStage, stackConfig, stateStoreRefusal } from "./stack-config.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -717,15 +717,7 @@ const recordedRow = (fqn: string) =>
 
 /** The container application a State row records, if the row exists yet. */
 const recordedApplication = (fqn: string) =>
-  recordedRow(fqn).pipe(
-    Effect.map((row) => {
-      const id = row?.attr?.applicationId;
-      const name = row?.attr?.applicationName;
-      return typeof id === "string" && id
-        ? { id, name: typeof name === "string" && name ? name : undefined }
-        : undefined;
-    }),
-  );
+  recordedRow(fqn).pipe(Effect.map(recordedApplicationOf));
 
 const planOf = (operation: "deploy" | "destroy") =>
   Alchemist.Stack.plan({
@@ -938,12 +930,11 @@ try {
         return yield* repair.repairCommand({
           fqn,
           digest,
-          worker: policy?.check?.poolWorker ?? "PoolWorker",
-          // Never adopt for it an application the root's or a held row records.
-          reserved: [
-            policy?.check?.poolContainer.fqn ?? "PoolContainer",
-            ...(policy?.wire.heldApplications ?? []),
-          ],
+          policy: policy && {
+            worker: policy.check.poolWorker,
+            root: policy.check.poolContainer.fqn,
+            held: policy.wire.heldApplications ?? [],
+          },
           state,
           at,
           stackState,

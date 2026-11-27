@@ -20,6 +20,7 @@ import {
   runRepair,
 } from "./placeholder-repair.ts";
 import { StateStoreRefused } from "./stack-config.ts";
+import { recordedApplicationOf } from "./wire-config.ts";
 
 const ACCOUNT = "a".repeat(32);
 /** A row a stopped declare leaves: created, live, explicitly named, holding precreate's id. */
@@ -454,8 +455,7 @@ test("the command holds the store to the contract before an apply too, and keys 
     repairCommand({
       fqn: "RouteGateway",
       digest,
-      worker: "PoolWorker",
-      reserved: ["PoolContainer"],
+      policy: undefined,
       state: stageStore(version),
       at: { stack: "basalt", stage: "production" },
       stackState: "shared",
@@ -481,8 +481,7 @@ test("the command holds the store to the contract before an apply too, and keys 
     repairCommand({
       fqn: "RouteGateway",
       digest: undefined,
-      worker: "PoolWorker",
-      reserved: [],
+      policy: { worker: "PoolWorker", root: "Absent", held: [] },
       state: stageStore(8),
       at: { stack: "basalt", stage: "test-route-scratch-1" },
       stackState: "runner-local",
@@ -499,8 +498,7 @@ test("the command holds the store to the contract before an apply too, and keys 
     repairCommand({
       fqn: "RouteGateway",
       digest,
-      worker: "PoolWorker",
-      reserved: ["PoolContainer"],
+      policy: undefined,
       state: stageStore(8),
       at: { stack: "basalt", stage: "production" },
       stackState: "shared",
@@ -517,24 +515,185 @@ test("the command holds the store to the contract before an apply too, and keys 
 });
 
 test("the entry hands the repair and the holds exactly what the release decided", async () => {
-  // deploy.ts is a script, not a module; what it passes is pinned here, one call each.
-  const entry = (await readFile(new URL("./deploy.ts", import.meta.url), "utf8")).replace(
-    /\s+/gu,
-    " ",
-  );
+  // deploy.ts is a script, not a module; what it passes is pinned here. Comments are stripped
+  // first, so text kept in a comment pins nothing.
+  const source = await readFile(new URL("./deploy.ts", import.meta.url), "utf8");
+  const entry = source
+    .replace(/\/\*[\s\S]*?\*\//gu, "")
+    .replace(/(^|[^:"'`])\/\/.*$/gmu, "$1")
+    .replace(/\s+/gu, " ");
   for (const wiring of [
     'readOnly: readOnlyRun(stage, command, values["plan-digest"])',
-    "const holds = yield* wireConfigFor({ stage, policy: policy?.check && { rootFqn: policy.check.poolContainer.fqn, held: policy.wire.heldApplications ?? [], }, recorded: recordedApplication, }).pipe(Effect.orDie);",
-    "const { unnamedRoot, ...applied } = holds; Object.assign(wire, applied);",
+    "const recordedApplication = (fqn: string) => recordedRow(fqn).pipe(Effect.map(recordedApplicationOf));",
+    "const holds = yield* wireConfigFor({ stage, policy: policy?.check && { rootFqn: policy.check.poolContainer.fqn, held: policy.wire.heldApplications ?? [], }, recorded: recordedApplication, }).pipe(Effect.orDie); const { unnamedRoot, ...applied } = holds; Object.assign(wire, applied);",
     'const digest = values["plan-digest"];',
-    'return yield* repair.repairCommand({ fqn, digest, worker: policy?.check?.poolWorker ?? "PoolWorker",',
-    'reserved: [ policy?.check?.poolContainer.fqn ?? "PoolContainer", ...(policy?.wire.heldApplications ?? []), ],',
-    "state, at, stackState, runnerLocal: runnerLocalStateVersion,",
+    "const { state, at } = yield* stageState; return yield* repair.repairCommand({ fqn, digest, policy: policy && { worker: policy.check.poolWorker, root: policy.check.poolContainer.fqn, held: policy.wire.heldApplications ?? [], }, state, at, stackState, runnerLocal: runnerLocalStateVersion, open: Effect.suspend(() => Session.open(target as never)).pipe( Effect.mapError((cause) => new StateReadFailed({ fqn, cause })), ), }); }), );",
     'await keepPrivate("repair", result.sealed);',
   ])
     assert.ok(entry.includes(wiring), wiring);
-  // One of each: no second path builds the holds or runs a repair.
-  assert.equal(entry.split("wireConfigFor(").length, 2);
-  assert.equal(entry.split("repair.repairCommand(").length, 2);
-  assert.equal(entry.split("wire.rootApplications").length, 1);
+  // One of each, and nothing else writes the holds after them.
+  const count = (text: string) => entry.split(text).length - 1;
+  assert.equal(count("wireConfigFor("), 1);
+  assert.equal(count("repair.repairCommand("), 1);
+  assert.equal(count("Object.assign(wire"), 1);
+  // The guard's own config (`wire`), not a policy's `wire` section, is never written field by field.
+  for (const field of [
+    "rootApplications",
+    "rootApplicationNames",
+    "heldApplications",
+    "rootRequired",
+  ])
+    assert.equal(
+      entry.match(new RegExp(`(?<![.?])\\bwire\\.${field}\\b`, "gu"))?.length ?? 0,
+      0,
+      field,
+    );
+});
+
+/** A stage's store over one map, recording every write with its full key. */
+const stageMap = (rows: Record<string, unknown>, id = "http", version = 8) => {
+  const writes: string[] = [];
+  const key = (at: { stack: string; stage: string; fqn: string }) =>
+    `${at.stack}/${at.stage}/${at.fqn}`;
+  return {
+    writes,
+    store: {
+      id,
+      getVersion: () => Effect.succeed(version),
+      get: (at: { stack: string; stage: string; fqn: string }) =>
+        Effect.sync(() =>
+          at.stage === "test-route-scratch-1" ? structuredClone(rows[at.fqn]) : undefined,
+        ),
+      set: (at: { stack: string; stage: string; fqn: string; value: never }) =>
+        Effect.sync(() => {
+          writes.push(`set ${key(at)}`);
+          rows[at.fqn] = at.value;
+        }),
+      delete: (at: { stack: string; stage: string; fqn: string }) =>
+        Effect.sync(() => {
+          writes.push(`delete ${key(at)}`);
+          delete rows[at.fqn];
+        }),
+    },
+  };
+};
+const scratch = { stack: "basalt", stage: "test-route-scratch-1" };
+/** Plans, then applies the approved digest, through the command as the entry runs it. */
+const commandRun = async (
+  rows: Record<string, unknown>,
+  read: Observation,
+  policy: { worker: string; root: string; held: string[] } | undefined,
+  contract: {
+    id?: string;
+    version?: number;
+    stackState?: "shared" | "runner-local";
+    runnerLocal?: number;
+  } = {},
+) => {
+  const stage = stageMap(rows, contract.id, contract.version);
+  const via = (digest: string | undefined) =>
+    repairCommand({
+      fqn: "RouteGateway",
+      digest,
+      policy,
+      state: stage.store,
+      at: scratch,
+      stackState: contract.stackState ?? "shared",
+      runnerLocal: contract.runnerLocal ?? 1,
+      open: Effect.succeed({ context: Context.empty() }),
+      read: (() => Effect.succeed(read)) as unknown as typeof observeRow,
+    });
+  const planned = await Effect.runPromiseExit(via(undefined));
+  if (Exit.isFailure(planned)) return { planned, writes: stage.writes };
+  await Effect.runPromise(via(repairDigest(planned.value.plan)));
+  return { planned, writes: stage.writes };
+};
+
+test("through the command, a repair writes only the gateway's own row, under the stage it runs on", async () => {
+  const drifted = { status: "drifted" as const, actual: live(), account: ACCOUNT };
+  const missing = { status: "missing" as const, account: ACCOUNT };
+  const policy = { worker: "PoolWorker", root: "PoolContainer", held: ["RouteGateway"] };
+  // An adopt: the gateway's row alone is set, and the policy's own held fqn is not "another row".
+  const adopt = await commandRun(
+    { RouteGateway: placeholder(), PoolWorker: worker },
+    drifted,
+    policy,
+  );
+  assert.deepEqual(adopt.writes, ["set basalt/test-route-scratch-1/RouteGateway"]);
+  // A forget: the gateway's row alone is deleted.
+  const forget = await commandRun(
+    { RouteGateway: placeholder(), PoolWorker: worker },
+    missing,
+    undefined,
+  );
+  assert.deepEqual(forget.writes, ["delete basalt/test-route-scratch-1/RouteGateway"]);
+  // The policy's root, whatever its fqn, is never adopted for the gateway, in any case.
+  for (const recorded of ["application-1", "APPLICATION-1"]) {
+    const taken = await commandRun(
+      {
+        RouteGateway: placeholder(),
+        PoolWorker: worker,
+        Root: { attr: { applicationId: recorded, applicationName: "root" } },
+      },
+      drifted,
+      { worker: "PoolWorker", root: "Root", held: [] },
+    );
+    assert.ok(Exit.isFailure(taken.planned), recorded);
+    assert.match((Cause.squash(taken.planned.cause) as RepairRefused).why, /another row records/u);
+    assert.deepEqual(taken.writes, []);
+  }
+  // The namespace is read from the policy's own pool Worker.
+  const elsewhere = await commandRun(
+    { RouteGateway: placeholder(), OtherWorker: worker },
+    drifted,
+    { worker: "OtherWorker", root: "PoolContainer", held: [] },
+  );
+  assert.deepEqual(elsewhere.writes, ["set basalt/test-route-scratch-1/RouteGateway"]);
+  // A runner-local stack's store is judged by its id, its stage and its own version.
+  const local = await commandRun(
+    { RouteGateway: placeholder(), PoolWorker: worker },
+    missing,
+    undefined,
+    {
+      id: "local",
+      version: 3,
+      stackState: "runner-local",
+      runnerLocal: 3,
+    },
+  );
+  assert.deepEqual(local.writes, ["delete basalt/test-route-scratch-1/RouteGateway"]);
+  for (const contract of [
+    { id: "http", version: 3, stackState: "runner-local" as const, runnerLocal: 3 },
+    { id: "local", version: 4, stackState: "runner-local" as const, runnerLocal: 3 },
+  ]) {
+    const refused = await commandRun(
+      { RouteGateway: placeholder(), PoolWorker: worker },
+      missing,
+      undefined,
+      contract,
+    );
+    assert.ok(
+      Exit.isFailure(refused.planned) &&
+        Cause.squash(refused.planned.cause) instanceof StateStoreRefused,
+    );
+    assert.deepEqual(refused.writes, []);
+  }
+});
+
+test("a row's application is its id and the name it was created under, never the id twice", () => {
+  assert.deepEqual(
+    recordedApplicationOf({ attr: { applicationId: "application-1", applicationName: "gateway" } }),
+    { id: "application-1", name: "gateway" },
+  );
+  assert.deepEqual(recordedApplicationOf({ attr: { applicationId: "application-1" } }), {
+    id: "application-1",
+    name: undefined,
+  });
+  for (const row of [
+    undefined,
+    {},
+    { attr: { applicationId: "" } },
+    { attr: { applicationName: "gateway" } },
+  ])
+    assert.equal(recordedApplicationOf(row), undefined, JSON.stringify(row));
 });
