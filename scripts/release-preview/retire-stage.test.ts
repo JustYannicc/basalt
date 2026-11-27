@@ -7,11 +7,12 @@ import {
   type PreviewStateEntry,
   type StateCommand,
 } from "../preview/inventory.ts";
+import { derivedNames } from "./retire-names.ts";
 import {
   databaseRefusal,
-  derivedNames,
   leftoversProof,
   ownershipRefusal,
+  ownershipRefusals,
   proveStages,
   retirePlan,
   retireSubject,
@@ -85,24 +86,68 @@ test("only a four-digit rehearsal stage is retired", () => {
 const stage = "test-rehearsal-1234";
 const own = "basalt-preview-rehearsal-1234";
 const instance = "ab".repeat(16);
-const row = (resourceType: string, attr: Record<string, unknown>, logicalId = "X") => ({
+const row = (
+  resourceType: string,
+  attr: Record<string, unknown>,
+  logicalId = "X",
+  props?: Record<string, unknown>,
+) => ({
   path: `basalt-rehearsal/${stage}/${logicalId}`,
-  value: { resourceType, logicalId, instanceId: instance, attr },
+  value: { resourceType, logicalId, instanceId: instance, ...(props && { props }), attr },
 });
+/** The name Alchemy's own `generateWorkflowName` gives an unnamed Workflow of this host and class. */
+async function generatedWorkflow(scriptName: string, className: string) {
+  const { generateWorkflowName } = (await import(
+    new URL("./Cloudflare/Workflows/WorkflowName.js", import.meta.resolve("alchemy/PhysicalName"))
+      .href
+  )) as {
+    generateWorkflowName: (script: string, name: string) => Effect.Effect<string, never, never>;
+  };
+  return Effect.runPromise(generateWorkflowName(scriptName, className));
+}
+/** A Workflow row as Alchemy records it: unnamed unless `named` sets its props' name. */
+const workflow = (
+  logicalId: string,
+  {
+    workflowName,
+    scriptName,
+    className = logicalId,
+    named = false,
+  }: { workflowName: string; scriptName: string; className?: string; named?: boolean },
+) =>
+  row(
+    "Cloudflare.Workflow",
+    {
+      workflowId: `wf-${logicalId}`,
+      workflowName,
+      className,
+      scriptName,
+      accountId: "acct",
+      schedules: [],
+    },
+    logicalId,
+    named ? { workflowName, className, schedules: [] } : { className, scriptName, schedules: [] },
+  );
+const tokenWorker = "basalt-rehearsal-api-test-rehearsal-1234-abcdefghijklmnop";
 // Cut to their limit by Alchemy, each keeps only a hash of its stage (computed once with Alchemy).
 const ownCut = "basalt-rehearsal-poolcontainer-test-rehezbefejytvov2xk5lvov2xk5l";
 const otherCut = "basalt-rehearsal-poolcontainer-test-rehes4wvc225vov2xk5lvov2xk5l";
 const whole = [
   row("Cloudflare.Worker", {
-    workerName: "basalt-rehearsal-api-test-rehearsal-1234-abcdefghijklmnop",
+    workerName: tokenWorker,
     routes: [
       { id: "route-1", pattern: "api.rehearsal-1234.preview.example.invalid/*", zoneId: "z" },
     ],
   }),
-  row("Cloudflare.Workflow", {
+  // One Workflow the stack names, one Alchemy names from its host Worker and class.
+  workflow("UsageWorkflow", {
     workflowName: "basalt-rehearsal-usage-test-rehearsal-1234",
-    scriptName: "basalt-rehearsal-api-test-rehearsal-1234-abcdefghijklmnop",
-    className: "AppWorkflows",
+    scriptName: tokenWorker,
+    named: true,
+  }),
+  workflow("AppWorkflows", {
+    workflowName: await generatedWorkflow(tokenWorker, "AppWorkflows"),
+    scriptName: tokenWorker,
   }),
   row("Cloudflare.Container", { applicationId: "app-1", applicationName: ownCut }, "PoolContainer"),
   row("Cloudflare.DNS.Record", {
@@ -267,27 +312,231 @@ test("an unnamed Worker's 54-limit name is the one Alchemy gave it, pinned", asy
 
 test("only a Worker row loads Alchemy's Worker name, and a failed load proves nothing", async () => {
   let loads = 0;
-  const loadWorkerName = async (): Promise<never> => {
+  const worker = async (): Promise<never> => {
     loads += 1;
     throw new Error("WorkerName.js is not there");
   };
-  // The container's and the Hyperdrive config's cut names prove from their 64/63 variants alone.
+  // No Worker of the whole stage is unnamed, so none needs the load.
   assert.equal(
-    await ownershipRefusal(whole, stage, own, production, { loadWorkerName }),
+    await ownershipRefusal(whole, stage, own, production, { namers: { worker } }),
     undefined,
   );
   assert.deepEqual(
-    await derivedNames("PoolContainer", instance, stage, "Cloudflare.Container", loadWorkerName),
+    await derivedNames("PoolContainer", instance, stage, "Cloudflare.Container", { worker }),
     await derivedNames("PoolContainer", instance, stage, "Cloudflare.Container"),
   );
   assert.equal(loads, 0);
   // A Worker row whose name needs the load throws; the proof rethrows it, so no stage is taken.
   const api = row("Cloudflare.Worker", { workerName: pinnedApi }, "Api");
   await assert.rejects(
-    ownershipRefusal([...whole, api], stage, own, production, { loadWorkerName }),
+    ownershipRefusal([...whole, api], stage, own, production, { namers: { worker } }),
     /WorkerName\.js is not there/u,
   );
   assert.equal(loads, 1);
+});
+
+// Computed once with the installed Alchemy (2.0.0-beta.80): its own
+// `generateWorkflowName(pinnedApi, "AppWorkflows")`, the pinned Api Worker's cut name and class.
+const pinnedWorkflow = "basalt-rehearsal-api-test-rehed34q3xdnvov2xk5lvov2xk5l-1015f0a7";
+const pinnedHost = row("Cloudflare.Worker", { workerName: pinnedApi, workerId: "w-api" }, "Api");
+const appWorkflows = (over: { workflowName?: string; scriptName?: string; className?: string }) =>
+  workflow("AppWorkflows", { workflowName: pinnedWorkflow, scriptName: pinnedApi, ...over });
+
+test("an unnamed Workflow proves by Alchemy's name over a proven stage Worker's cut name", async () => {
+  assert.equal(await generatedWorkflow(pinnedApi, "AppWorkflows"), pinnedWorkflow);
+  // The host's 54-char cut, then 8 hex of the sha256 of host and class.
+  assert.match(pinnedWorkflow, new RegExp(`^${pinnedApi}-[0-9a-f]{8}$`, "u"));
+  const rows = [...whole, pinnedHost, appWorkflows({})];
+  assert.equal(await ownershipRefusal(rows, stage, own, production), undefined);
+});
+
+test("an unnamed Workflow whose host or class is not its own is refused", async () => {
+  const hostless =
+    "a Cloudflare.Workflow row is hosted by no Worker this stage proves (scriptName)";
+  const misnamed =
+    "a Cloudflare.Workflow row is not named as Alchemy names it from its host and class (workflowName)";
+  const otherStageHost = {
+    path: `basalt-rehearsal/test-rehearsal-9999/Api`,
+    value: pinnedHost.value,
+  };
+  for (const [why, rows, line] of [
+    ["its host Worker is not in the stage's State", [appWorkflows({})], hostless],
+    ["its host Worker is another stage's row", [otherStageHost, appWorkflows({})], hostless],
+    [
+      // The same cut name on another row's id is no name Alchemy gives that row.
+      "its host Worker does not prove",
+      [row("Cloudflare.Worker", { workerName: pinnedApi }, "Router"), appWorkflows({})],
+      hostless,
+    ],
+    ["another class", [pinnedHost, appWorkflows({ className: "BillingWorkflows" })], misnamed],
+    [
+      "another host's name, of a Worker that proves",
+      [
+        pinnedHost,
+        row("Cloudflare.Worker", { workerName: tokenWorker }, "Other"),
+        appWorkflows({ scriptName: tokenWorker }),
+      ],
+      misnamed,
+    ],
+    [
+      "its props' class is not its own",
+      [
+        pinnedHost,
+        {
+          ...appWorkflows({}),
+          value: { ...appWorkflows({}).value, props: { className: "BillingWorkflows" } },
+        },
+      ],
+      misnamed,
+    ],
+  ] as const) {
+    const refusals = await ownershipRefusals([...whole, ...rows], stage, own, production);
+    const refused = refusals.find(({ detail }) => detail.type === "Cloudflare.Workflow");
+    assert.equal(refused?.line, line, why);
+    assert.equal(refused?.detail.path, `basalt-rehearsal/${stage}/AppWorkflows`, why);
+    assert.doesNotMatch(refused?.line ?? "", /rehe|1015/u, why);
+  }
+});
+
+test("a Workflow whose name needs Alchemy's loader throws when it fails", async () => {
+  let loads = 0;
+  const failing = async (): Promise<never> => {
+    loads += 1;
+    throw new Error("WorkflowName.js is not there");
+  };
+  await assert.rejects(
+    ownershipRefusal([...whole, pinnedHost, appWorkflows({})], stage, own, production, {
+      namers: { workflow: failing },
+    }),
+    /WorkflowName\.js is not there/u,
+  );
+  assert.ok(loads >= 1);
+  // A stage with no unnamed Workflow never loads it.
+  loads = 0;
+  const named = whole.filter(({ path }) => !path.endsWith("/AppWorkflows"));
+  assert.equal(
+    await ownershipRefusal(named, stage, own, production, { namers: { workflow: failing } }),
+    undefined,
+  );
+  assert.equal(loads, 0);
+});
+
+test("a Workflow the stack names keeps the token rule, its host proving its script name", async () => {
+  const named = (workflowName: string) =>
+    workflow("UsageWorkflow", { workflowName, scriptName: pinnedApi, named: true });
+  // Its host is the pinned Api Worker, whose cut name proves by that host.
+  assert.equal(
+    await ownershipRefusal(
+      [...whole, pinnedHost, named("basalt-rehearsal-usage-test-rehearsal-1234")],
+      stage,
+      own,
+      production,
+    ),
+    undefined,
+  );
+  assert.equal(
+    (
+      await ownershipRefusal(
+        [...whole, pinnedHost, named("basalt-rehearsal-usage-test-rehearsal-5678")],
+        stage,
+        own,
+        production,
+      )
+    )?.line,
+    "a Cloudflare.Workflow row names an object that is not this stage's (workflowName)",
+  );
+});
+
+/** `createPhysicalName` for this stage and instance, at a limit and case some provider uses. */
+async function physical(id: string, maxLength: number, lowercase: boolean) {
+  const { createPhysicalName } = await import("alchemy/PhysicalName");
+  const { StackContext } = await import("alchemy/StackContext");
+  const { Stage } = await import("alchemy/Stage");
+  return Effect.runPromise(
+    createPhysicalName({ id, instanceId: instance, maxLength, lowercase }).pipe(
+      Effect.provideService(StackContext, { name: "basalt-rehearsal" } as never),
+      Effect.provideService(Stage, stage),
+    ) as Effect.Effect<string>,
+  );
+}
+
+test("each Cloudflare kind proves only at its own provider's limit and case", async () => {
+  const bucketId = "RehearsalArtifactUploadsBucket";
+  // R2: cut to 63, then lowercased; a 64 cut is no name its provider gives.
+  const bucket = await physical(bucketId, 63, false).then((name) => name.toLowerCase());
+  assert.equal(bucket.length, 63);
+  // Hyperdrive and containers: 64, lowercase; a 63 cut is none either.
+  const cases = [
+    ["Cloudflare.R2.Bucket", bucketId, "bucketName", bucket, await physical(bucketId, 64, true)],
+    [
+      "Cloudflare.Hyperdrive",
+      "DatabaseConnection",
+      "name",
+      await physical("DatabaseConnection", 64, true),
+      await physical("DatabaseConnection", 63, true),
+    ],
+    [
+      "Cloudflare.Container",
+      "PoolContainer",
+      "applicationName",
+      ownCut,
+      await physical("PoolContainer", 63, true),
+    ],
+    // Workers: their own 54 limit, lowercased; a 64 cut is none. Long enough an id to cut at both.
+    [
+      "Cloudflare.Worker",
+      "ApiGatewayWorker",
+      "workerName",
+      await workerName("ApiGatewayWorker", stage, instance),
+      await physical("ApiGatewayWorker", 64, true),
+    ],
+  ] as const;
+  for (const [type, id, key, ownName, otherRule] of cases) {
+    assert.notEqual(ownName, otherRule, type);
+    // Both cut, so neither carries the stage whole: only the derivation can prove them.
+    assert.ok(!ownName.includes(stage) && !otherRule.includes(stage), type);
+    assert.equal(
+      await ownershipRefusal([...whole, row(type, { [key]: ownName }, id)], stage, own, production),
+      undefined,
+      type,
+    );
+    assert.equal(
+      (
+        await ownershipRefusal(
+          [...whole, row(type, { [key]: otherRule }, id)],
+          stage,
+          own,
+          production,
+        )
+      )?.line,
+      `a ${type} row names an object that is not this stage's (${key})`,
+      type,
+    );
+  }
+  // A DNS record is always named by the stack: under the stage's host it proves, and a name
+  // derived from its id, which no DNS provider gives, does not.
+  const record = (name: string) =>
+    row("Cloudflare.DNS.Record", { recordId: "rec-9", name }, "ApiOriginWildcardRecord");
+  assert.equal(
+    await ownershipRefusal(
+      [...whole, record("*.rehearsal-1234.preview.example.invalid")],
+      stage,
+      own,
+      production,
+    ),
+    undefined,
+  );
+  assert.equal(
+    (
+      await ownershipRefusal(
+        [...whole, record(await physical("ApiOriginWildcardRecord", 64, true))],
+        stage,
+        own,
+        production,
+      )
+    )?.line,
+    "a Cloudflare.DNS.Record row names an object that is not this stage's (name)",
+  );
 });
 
 // A database-only stage as its stack records it: the stack's output row, then its database.
@@ -425,7 +674,7 @@ test("leftovers' proof pass reads and proves every stage, and plans, deletes and
   assert.equal(taken, undefined);
   assert.deepEqual(lines, [
     "  stage 1: retirable",
-    "  stage 2 left: a Cloudflare.Worker row names an object that is not this stage's (workerName)",
+    "  stage 2 left: 1 row refused (Cloudflare.Worker)",
     "  stage 3 left: its State could not be read",
   ]);
   assert.equal(productionReads, 1);
@@ -566,7 +815,7 @@ test("leftovers' proof pass failing leaves the mode's result, marked unreadable,
   // The error's text reaches only the private outputs; the public lines say only that it failed.
   assert.match(kept.join("\n"), /state read for test-rehearsal-1234 refused/u);
   assert.equal(lines.at(-1), "The retire proof could not be read; the table above stands");
-  assert.ok(lines.every((line) => !/test-rehearsal-\d|refused/u.test(line)));
+  assert.ok(lines.every((line) => !/test-rehearsal-\d|state read/u.test(line)));
 
   // A pass that reads and proves returns its public lines, and writes its refusals too.
   written = undefined;
@@ -583,4 +832,86 @@ test("leftovers' proof pass failing leaves the mode's result, marked unreadable,
   assert.deepEqual(passed, ["  stage 1: retirable"]);
   assert.deepEqual(lines2, passed);
   assert.deepEqual(written, []);
+});
+
+test("leftovers lists every refusing row of a stage privately, and one public line with the count", async () => {
+  const badWorkflow = appWorkflows({ className: "BillingWorkflows" });
+  const badBranch = row(
+    "Planetscale.PostgresBranch",
+    { database: "basalt", name: "main" },
+    "Branch",
+  );
+  const rows = [...whole, foreignWorker, pinnedHost, badWorkflow, badBranch];
+  const lines: string[] = [];
+  let written: readonly RetireRefusal[] = [];
+  const proof = await leftoversProof([{ ordinal: 1, stage }], {
+    ...memoryReads({ [stage]: rows }),
+    phases: {},
+    log: (line) => lines.push(line),
+    writeRefusals: async (refusals) => {
+      written = [...refusals];
+    },
+    keepPrivate: async () => assert.fail("nothing to keep"),
+  });
+  assert.deepEqual(proof, [
+    "  stage 1 left: 3 rows refused (Cloudflare.Worker, Cloudflare.Workflow, Planetscale.PostgresBranch)",
+  ]);
+  assert.deepEqual(lines, proof);
+  assert.deepEqual(
+    written.map(({ ordinal, path, type, key, value }) => ({ ordinal, path, type, key, value })),
+    [
+      {
+        ordinal: 1,
+        path: foreignWorker.path,
+        type: "Cloudflare.Worker",
+        key: "workerName",
+        value: "basalt-rehearsal-api-test-rehearsal-5678-abcdefghijklmnop",
+      },
+      {
+        ordinal: 1,
+        path: badWorkflow.path,
+        type: "Cloudflare.Workflow",
+        key: "workflowName",
+        value: pinnedWorkflow,
+      },
+      {
+        ordinal: 1,
+        path: badBranch.path,
+        type: "Planetscale.PostgresBranch",
+        key: "database",
+        value: "basalt",
+      },
+    ],
+  );
+  // The public line carries no value.
+  assert.doesNotMatch(lines.join("\n"), /5678|rehe|1015|basalt"/u);
+
+  // A retire stops the same stage at its first refusal, and takes nothing of it.
+  const refusals: RetireRefusal[] = [];
+  const retireLines: string[] = [];
+  const result = await proveStages([{ ordinal: 1, stage }], {
+    ...memoryReads({ [stage]: rows }),
+    refusals,
+    phases: {},
+    log: (line) => retireLines.push(line),
+    take: async () => assert.fail("a refused stage is never taken"),
+  });
+  assert.deepEqual(result, { taken: undefined });
+  assert.equal(refusals.length, 1);
+  assert.deepEqual(retireLines, [
+    "  stage 1 left: a Cloudflare.Worker row names an object that is not this stage's (workerName); nothing of it deleted",
+  ]);
+});
+
+test("a database row refused by both proofs is listed once", async () => {
+  const lines: string[] = [];
+  const refusals: RetireRefusal[] = [];
+  await proveStages([{ ordinal: 1, stage }], {
+    ...memoryReads({ [stage]: [...whole, database("basalt-preview-rehearsal-5678")] }),
+    refusals,
+    phases: {},
+    log: (line) => lines.push(line),
+  });
+  assert.deepEqual(lines, ["  stage 1 left: 1 row refused (Planetscale.PostgresDatabase)"]);
+  assert.equal(refusals.length, 1);
 });

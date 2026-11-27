@@ -5,10 +5,10 @@
  * provider object carries is the stage's, and no id or name it records is one production's State
  * records. A stage that fails the proof is left, named by its kinds, and the next one is taken.
  */
-import type { Effect as EffectModule } from "effect";
 import { deployment } from "../../brand.ts";
 import type { NumberedStageRows, PreviewStateEntry } from "../preview/inventory.ts";
 import { subjectFromStage, type StageSubject } from "../preview/subject.ts";
+import { derivedNames, workflowName, type AlchemyNamers } from "./retire-names.ts";
 
 /**
  * One public line per numbered stage, by ordinal: its kinds, and whether this mode may take it.
@@ -73,30 +73,67 @@ export function databaseRefusal(
   stageDatabase: string,
   production: readonly { readonly id?: string; readonly name?: string }[],
 ): Refusal | undefined {
-  for (const { path, value } of rows) {
-    if (isStackOutput(path)) continue;
-    const row = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-    const type = row.resourceType;
-    if (type !== "Planetscale.PostgresDatabase") continue;
-    const attr =
-      row.attr && typeof row.attr === "object" ? (row.attr as Record<string, unknown>) : {};
-    const name = typeof attr.name === "string" ? attr.name : undefined;
-    const id = typeof attr.id === "string" ? attr.id : undefined;
-    if (!name || name !== stageDatabase || name === deployment.databaseName)
-      return refusal(
-        "a Postgres database row does not name this stage's own database",
-        path,
-        type,
-        "name",
-        name,
-      );
-    const line = "a Postgres database row records one of production's databases";
-    if (production.some((database) => database.name === name))
-      return refusal(line, path, type, "name", name);
-    if (id && production.some((database) => database.id === id))
-      return refusal(line, path, type, "id", id);
+  for (const entry of rows) {
+    const refused = databaseRowRefusal(entry, stageDatabase, production);
+    if (refused) return refused;
   }
   return undefined;
+}
+
+function databaseRowRefusal(
+  { path, value }: PreviewStateEntry,
+  stageDatabase: string,
+  production: readonly { readonly id?: string; readonly name?: string }[],
+): Refusal | undefined {
+  if (isStackOutput(path)) return undefined;
+  const row = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const type = row.resourceType;
+  if (type !== "Planetscale.PostgresDatabase") return undefined;
+  const attr =
+    row.attr && typeof row.attr === "object" ? (row.attr as Record<string, unknown>) : {};
+  const name = typeof attr.name === "string" ? attr.name : undefined;
+  const id = typeof attr.id === "string" ? attr.id : undefined;
+  if (!name || name !== stageDatabase || name === deployment.databaseName)
+    return refusal(
+      "a Postgres database row does not name this stage's own database",
+      path,
+      type,
+      "name",
+      name,
+    );
+  const line = "a Postgres database row records one of production's databases";
+  if (production.some((database) => database.name === name))
+    return refusal(line, path, type, "name", name);
+  if (id && production.some((database) => database.id === id))
+    return refusal(line, path, type, "id", id);
+  return undefined;
+}
+
+/**
+ * Every refusing row of a stage by both proofs, one refusal per row, the database proof's first:
+ * what a read-only pass lists. A retire stops at the first instead.
+ */
+export async function stageRefusals(
+  rows: readonly PreviewStateEntry[],
+  stage: string,
+  stageDatabase: string,
+  production: ProductionRecords,
+  options: { namers?: AlchemyNamers } = {},
+): Promise<Refusal[]> {
+  const found = rows.flatMap((entry) => {
+    const refused = databaseRowRefusal(entry, stageDatabase, production.databases);
+    return refused ? [refused] : [];
+  });
+  const refusedPaths = new Set(found.map(({ detail }) => detail.path));
+  for (const refused of await ownershipRefusals(
+    rows,
+    stage,
+    stageDatabase,
+    production.identities,
+    options,
+  ))
+    if (!refusedPaths.has(refused.detail.path)) found.push(refused);
+  return found;
 }
 
 /** The stage a run retires, as the subject every lane step takes. */
@@ -123,139 +160,159 @@ const isIdKey = (key: string) =>
 // Rows that write nothing to a provider: Alchemy's own values, and commands run on the runner.
 const LOCAL_TYPES = /^(?:Alchemy|Command)\./u;
 
-/**
- * Alchemy's own `createWorkerName`. Its package exports no subpath for it, so it is loaded from
- * beside the `PhysicalName` module its exports resolve to: the same installed build, the same tags.
- */
-async function alchemyWorkerName() {
-  const beside = import.meta.resolve("alchemy/PhysicalName");
-  return (await import(new URL("./Cloudflare/Workers/WorkerName.js", beside).href)) as {
-    createWorkerName: (
-      id: string,
-      name: string | undefined,
-    ) => EffectModule.Effect<string, never, unknown>;
-  };
-}
-export type WorkerNameLoader = typeof alchemyWorkerName;
-
-/**
- * The names Alchemy gives an unnamed resource under the rehearsal stack and this stage, from the
- * row's own id and instance: each provider's length limit and case (64, 63), and for a
- * `Cloudflare.Worker` row also the name Alchemy's own `createWorkerName` gives it (54). A name cut
- * to its limit keeps only a hash of the stack, stage, id and instance, so only this row's own cut
- * name matches. A Worker row whose loader fails throws, so the proof, and the retire, stop there.
- */
-export async function derivedNames(
-  id: string,
-  instanceId: string,
-  stage: string,
-  type: string,
-  loadWorkerName: WorkerNameLoader = alchemyWorkerName,
-) {
-  const { createPhysicalName } = await import("alchemy/PhysicalName");
-  const { StackContext } = await import("alchemy/StackContext");
-  const { Stage } = await import("alchemy/Stage");
-  const { InstanceId } = await import("alchemy/InstanceId");
-  const { Effect } = await import("effect");
-  const run = <E, R>(name: EffectModule.Effect<string, E, R>) =>
-    Effect.runPromise(
-      name.pipe(
-        Effect.provideService(StackContext, { name: "basalt-rehearsal" } as never),
-        Effect.provideService(Stage, stage),
-        Effect.provideService(InstanceId, instanceId),
-      ) as EffectModule.Effect<string, E>,
-    );
-  const names: string[] = [];
-  for (const maxLength of [64, 63])
-    for (const lowercase of [true, false]) {
-      const name = await run(createPhysicalName({ id, instanceId, maxLength, lowercase }));
-      names.push(name, name.toLowerCase());
-    }
-  if (type === "Cloudflare.Worker") {
-    const { createWorkerName } = await loadWorkerName();
-    names.push(await run(createWorkerName(id, undefined)));
-  }
-  return names;
-}
+type Ownership = {
+  readonly rows: readonly PreviewStateEntry[];
+  readonly stage: string;
+  readonly stageDatabase: string;
+  readonly production: ReadonlySet<string>;
+  readonly namers: AlchemyNamers;
+};
+const WORKFLOW = "Cloudflare.Workflow";
 
 /**
  * Proves from a whole stage's rows that everything a destroy would delete is the stage's own.
  * - A name that writes any rehearsal stage whole must write this one.
- * - A name that writes no stage must be this row's own name as Alchemy derives it for this stage
- *   (cut to its limit, it keeps a hash of the stage), or a hostname under the stage's own host.
+ * - A name that writes no stage must be this row's own name as its provider derives it for this
+ *   stage (cut to its limit, it keeps a hash of the stage), or a hostname under the stage's own
+ *   host.
+ * - An unnamed Workflow's name must be the one Alchemy derives from its host Worker and class, and
+ *   that host a Worker row of this stage that proves; its `scriptName` proves by that host.
  * - A Worker's zone routes must sit under the stage's own host.
  * - A Postgres row must live in the stage's derived database.
  * - No id or name of a provider object may be one production's own State records.
  * - A row of any other provider is refused: nothing here proves it, and the stage gate would refuse
  *   its delete anyway.
- * Says which kind and attribute failed, never a value.
+ * Says which kind and attribute failed, never a value. Stops at the first refusing row.
  */
 export async function ownershipRefusal(
   rows: readonly PreviewStateEntry[],
   stage: string,
   stageDatabase: string,
   production: ReadonlySet<string>,
-  { loadWorkerName }: { loadWorkerName?: WorkerNameLoader } = {},
+  { namers = {} }: { namers?: AlchemyNamers } = {},
 ): Promise<Refusal | undefined> {
+  const context = { rows, stage, stageDatabase, production, namers };
+  for (const entry of rows) {
+    const refused = await rowRefusal(entry, context);
+    if (refused) return refused;
+  }
+  return undefined;
+}
+
+/** Every refusing row of a stage, one refusal each, for a read-only pass that lists them all. */
+export async function ownershipRefusals(
+  rows: readonly PreviewStateEntry[],
+  stage: string,
+  stageDatabase: string,
+  production: ReadonlySet<string>,
+  { namers = {} }: { namers?: AlchemyNamers } = {},
+): Promise<Refusal[]> {
+  const context = { rows, stage, stageDatabase, production, namers };
+  const refusals: Refusal[] = [];
+  for (const entry of rows) {
+    const refused = await rowRefusal(entry, context);
+    if (refused) refusals.push(refused);
+  }
+  return refusals;
+}
+
+async function rowRefusal(
+  { path, value }: PreviewStateEntry,
+  context: Ownership,
+): Promise<Refusal | undefined> {
+  const { rows, stage, stageDatabase, production, namers } = context;
   const slug = stage.slice("test-".length);
   const token = new RegExp(`(?:^|-)${stage}(?:-|$)`, "u");
   const anyStage = /(?:^|-)test-rehearsal-[0-9]+(?:-|$)/u;
   const ownHost = (host: string) =>
     host === slug || host.startsWith(`${slug}.`) || host.includes(`.${slug}.`);
-  for (const { path, value } of rows) {
-    // The stack's exported outputs: no resource, nothing a destroy deletes, so nothing to prove.
-    if (isStackOutput(path) || !record(value)) continue;
-    const type = String(value.resourceType ?? "");
-    if (SHARED_TYPES.test(type) || LOCAL_TYPES.test(type)) continue;
-    const kind = type ? `a ${type} row` : "a row with no type";
-    const refuse = (line: string, key?: string, named?: unknown) =>
-      refusal(line, path, type, key ?? null, named);
-    const attr = record(value.attr) ? value.attr : {};
-    if (type.startsWith("Planetscale.")) {
-      const key = typeof attr.database === "string" ? "database" : "name";
-      if (attr[key] !== stageDatabase)
-        return refuse(`${kind} lives outside this stage's own database`, key, attr[key]);
+  // The stack's exported outputs: no resource, nothing a destroy deletes, so nothing to prove.
+  if (isStackOutput(path) || !record(value)) return undefined;
+  const type = String(value.resourceType ?? "");
+  if (SHARED_TYPES.test(type) || LOCAL_TYPES.test(type)) return undefined;
+  const kind = type ? `a ${type} row` : "a row with no type";
+  const refuse = (line: string, key?: string, named?: unknown) =>
+    refusal(line, path, type, key ?? null, named);
+  const attr = record(value.attr) ? value.attr : {};
+  if (type.startsWith("Planetscale.")) {
+    const key = typeof attr.database === "string" ? "database" : "name";
+    if (attr[key] !== stageDatabase)
+      return refuse(`${kind} lives outside this stage's own database`, key, attr[key]);
+    return undefined;
+  }
+  if (!type.startsWith("Cloudflare.")) return refuse(`${kind} is of a kind this path cannot prove`);
+  const strings = Object.entries(attr).filter(
+    (entry): entry is [string, string] => typeof entry[1] === "string" && entry[1] !== "",
+  );
+  const recorded = strings.find(
+    ([key, named]) => (isIdKey(key) || isNameKey(key)) && production.has(named),
+  );
+  if (recorded)
+    return refuse(`${kind} records an id or name production's State records`, ...recorded);
+  // Keys a Workflow row proves by its host Worker rather than by its own name.
+  const hosted = new Set<string>();
+  if (type === WORKFLOW) {
+    const props = record(value.props) ? value.props : undefined;
+    const explicit = typeof props?.workflowName === "string";
+    const scriptName = typeof attr.scriptName === "string" ? attr.scriptName : "";
+    const host = scriptName
+      ? rows.filter(
+          (row) =>
+            !isStackOutput(row.path) &&
+            row.path.split("/")[1] === stage &&
+            record(row.value) &&
+            row.value.resourceType === "Cloudflare.Worker" &&
+            record(row.value.attr) &&
+            row.value.attr.workerName === scriptName,
+        )
+      : [];
+    let hostProves = host.length > 0;
+    for (const row of host) if (hostProves && (await rowRefusal(row, context))) hostProves = false;
+    if (hostProves) hosted.add("scriptName");
+    if (!explicit) {
+      if (!hostProves)
+        return refuse(
+          `${kind} is hosted by no Worker this stage proves (scriptName)`,
+          "scriptName",
+          attr.scriptName,
+        );
+      const className = typeof attr.className === "string" ? attr.className : "";
+      const derived =
+        className && (props?.className === undefined || props.className === className)
+          ? await workflowName(scriptName, className, namers)
+          : undefined;
+      if (derived === undefined || attr.workflowName !== derived)
+        return refuse(
+          `${kind} is not named as Alchemy names it from its host and class (workflowName)`,
+          "workflowName",
+          attr.workflowName,
+        );
+      hosted.add("workflowName");
+    }
+  }
+  let derived: string[] | undefined;
+  for (const [key, named] of strings) {
+    if (!isNameKey(key) || hosted.has(key)) continue;
+    const foreign = refuse(`${kind} names an object that is not this stage's (${key})`, key, named);
+    if (anyStage.test(named)) {
+      if (!token.test(named)) return foreign;
       continue;
     }
-    if (!type.startsWith("Cloudflare."))
-      return refuse(`${kind} is of a kind this path cannot prove`);
-    const strings = Object.entries(attr).filter(
-      (entry): entry is [string, string] => typeof entry[1] === "string" && entry[1] !== "",
-    );
-    const recorded = strings.find(
-      ([key, named]) => (isIdKey(key) || isNameKey(key)) && production.has(named),
-    );
-    if (recorded)
-      return refuse(`${kind} records an id or name production's State records`, ...recorded);
-    let derived: string[] | undefined;
-    for (const [key, named] of strings) {
-      if (!isNameKey(key)) continue;
-      const foreign = refuse(
-        `${kind} names an object that is not this stage's (${key})`,
-        key,
-        named,
-      );
-      if (anyStage.test(named)) {
-        if (!token.test(named)) return foreign;
-        continue;
-      }
-      if (ownHost(named)) continue;
-      const id = typeof value.logicalId === "string" ? value.logicalId : "";
-      const instanceId = typeof value.instanceId === "string" ? value.instanceId : "";
-      derived ??=
-        id && instanceId ? await derivedNames(id, instanceId, stage, type, loadWorkerName) : [];
-      if (!derived.includes(named)) return foreign;
-    }
-    if (Array.isArray(attr.routes))
-      for (const route of attr.routes) {
-        const pattern = record(route) && typeof route.pattern === "string" ? route.pattern : "";
-        const host = pattern.split("/")[0]!.replace(/^\*\.?/u, "");
-        const id = record(route) && typeof route.id === "string" ? route.id : "";
-        const line = `${kind} routes traffic that is not this stage's (routes)`;
-        if (!ownHost(host)) return refuse(line, "routes", pattern);
-        if (id && production.has(id)) return refuse(line, "routes", id);
-      }
+    if (ownHost(named)) continue;
+    const id = typeof value.logicalId === "string" ? value.logicalId : "";
+    const instanceId = typeof value.instanceId === "string" ? value.instanceId : "";
+    derived ??= id && instanceId ? await derivedNames(id, instanceId, stage, type, namers) : [];
+    if (!derived.includes(named)) return foreign;
   }
+  if (Array.isArray(attr.routes))
+    for (const route of attr.routes) {
+      const pattern = record(route) && typeof route.pattern === "string" ? route.pattern : "";
+      const host = pattern.split("/")[0]!.replace(/^\*\.?/u, "");
+      const id = record(route) && typeof route.id === "string" ? route.id : "";
+      const line = `${kind} routes traffic that is not this stage's (routes)`;
+      if (!ownHost(host)) return refuse(line, "routes", pattern);
+      if (id && production.has(id)) return refuse(line, "routes", id);
+    }
   return undefined;
 }
 
@@ -285,9 +342,10 @@ export type RetireRefusal = { ordinal: number; stage: string; line: string } & R
 /**
  * The retire's proof over numbered stages, by ordinal: each stage's own stacks are read, then
  * proven against production's records, read once. Without `take` it only reads and proves, for
- * every stage, and deletes nothing; with it, the first stage that proves is handed to `take` and
- * the run stops there. Public lines name the ordinal and the refusal's kind; every refusal's
- * detail comes back for private output.
+ * every stage, deletes nothing, and lists every row of a stage that refuses: one public line per
+ * stage with their count and kinds. With it, a stage stops at its first refusal, and the first
+ * stage that proves is handed to `take` and the run stops there. Public lines name the ordinal and
+ * kinds only; every refusal's detail comes back for private output.
  */
 export async function proveStages(
   stages: readonly {
@@ -317,15 +375,22 @@ export async function proveStages(
     const known = production;
     const refused = await timed(io.phases, `stage ${ordinal} proof`, async () => {
       const rows = Object.values(stacks).flat();
-      return (
+      // A read-only pass lists every refusing row; a retire stops at the first.
+      if (!io.take) return stageRefusals(rows, target.stage, target.database, known);
+      const first =
         databaseRefusal(rows, target.database, known.databases) ??
-        (await ownershipRefusal(rows, target.stage, target.database, known.identities))
-      );
+        (await ownershipRefusal(rows, target.stage, target.database, known.identities));
+      return first ? [first] : [];
     });
-    if (refused) {
-      io.refusals.push({ ordinal, stage, line: refused.line, ...refused.detail });
+    if (refused.length > 0) {
+      for (const { line, detail } of refused) io.refusals.push({ ordinal, stage, line, ...detail });
       // A stage the proof refuses is left as it is, and the next one is tried.
-      io.log(`  stage ${ordinal} left: ${refused.line}${io.take ? "; nothing of it deleted" : ""}`);
+      if (io.take) io.log(`  stage ${ordinal} left: ${refused[0]!.line}; nothing of it deleted`);
+      else {
+        const kinds = [...new Set(refused.map(({ detail }) => detail.type ?? "no type"))];
+        const count = `${refused.length} ${refused.length === 1 ? "row" : "rows"}`;
+        io.log(`  stage ${ordinal} left: ${count} refused (${kinds.join(", ")})`);
+      }
       continue;
     }
     if (!io.take) {
