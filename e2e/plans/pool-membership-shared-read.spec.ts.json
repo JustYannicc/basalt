@@ -4,7 +4,7 @@
       "fixtures": "actors",
       "appOrigin": true,
       "deferOnboarding": true,
-      "title": "The pool view reads its membership under the shared organization lock, beside a usage read in flight, and a role change still waits for it",
+      "title": "The pool's membership read takes the organization lock shared, beside a usage read in flight, and the pool view keeps its membership",
       "targets": {
         "cloud": {
           "status": "scheduled",
