@@ -154,15 +154,20 @@ const offersNext = (link) => /\brel\s*=\s*"?[^";,]*\bnext\b/iu.test(link);
  * is none it can read. Only its parameters are ever used, never its host or path.
  */
 function nextTargetOf(link) {
-  for (const [, target, params] of link.matchAll(/<([^<>]*)>((?:\s*;[^;,]*)*)/gu))
-    for (const param of params.split(";")) {
-      const [name, value = ""] = param.split("=");
+  // A parameter's value may be quoted, and a quoted value may hold `;` or `,`.
+  for (const [, target, params] of link.matchAll(/<([^<>]*)>((?:\s*;\s*[^;,"]*(?:"[^"]*")?)*)/gu))
+    for (const [, name, value] of params.matchAll(
+      /;\s*([^=;\s]+)\s*=\s*("[^"]*"|'[^']*'|[^;,\s]*)/gu,
+    ))
       if (
-        name.trim().toLowerCase() === "rel" &&
-        value.trim().replace(/^"|"$/gu, "").toLowerCase().split(/\s+/u).includes("next")
+        name.toLowerCase() === "rel" &&
+        value
+          .replace(/^["']|["']$/gu, "")
+          .toLowerCase()
+          .split(/\s+/u)
+          .includes("next")
       )
         return target;
-    }
   return undefined;
 }
 
@@ -189,14 +194,22 @@ export function catalogOf(answer) {
  * link target; `gone` when the repository is not there.
  */
 export function tagPageOf(answer) {
-  if (answer.status === 404) return { gone: true, tags: [], next: false, target: undefined };
+  if (answer.status === 404)
+    return { gone: true, missing: false, tags: [], next: false, target: undefined };
   if (!answer.ok) throw fail(`Registry tag list failed (HTTP ${answer.status})`);
   if (answer.data === undefined) throw fail("A registry tag list answered without its tags");
-  // A repository whose tags are all deleted answers `tags: null`.
-  const tags = ownField(answer.data, "tags") ?? [];
+  // A repository whose tags are all deleted answers `tags: null`; `missing` is no field at all.
+  const field = ownField(answer.data, "tags");
+  const tags = field ?? [];
   if (!Array.isArray(tags) || !tags.every((tag) => typeof tag === "string"))
     throw fail("A registry tag list answered without its tags");
-  return { gone: false, tags, next: offersNext(answer.link), target: nextTargetOf(answer.link) };
+  return {
+    gone: false,
+    missing: field === undefined,
+    tags,
+    next: offersNext(answer.link),
+    target: nextTargetOf(answer.link),
+  };
 }
 
 /** The digest a manifest read names, and the manifests an index names; undefined once it is gone. */

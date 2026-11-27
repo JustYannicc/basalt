@@ -424,6 +424,77 @@ test("a next link that is not a few plain cursor values stops the read", async (
   }
 });
 
+test("a later page that fails, cannot be sent or answers without its tags stops with its page and record", async () => {
+  const failed = await stopOf([
+    [["h1"], next("last=h1")],
+    [[], undefined, 500],
+  ]);
+  assert.equal(
+    failed.error.message,
+    "A registry tag list's later page answered HTTP 500 (page 2, after 1 tag)",
+  );
+  assert.equal(failed.record.rule, "later-page-failed");
+  assert.equal(failed.record.pages[1].status, 500);
+  // What the stage sent back is in the record of the page before.
+  assert.equal(failed.record.pages[0].link.params[0].name, "last");
+
+  const fake = paged();
+  let lists = 0;
+  const unsent = async (url, init) => {
+    if (!new URL(url).pathname.endsWith("/tags/list")) return fake.fetcher(url, init);
+    if (lists++) throw new TypeError("fetch failed: getaddrinfo ENOTFOUND registry.example");
+    return Response.json({ tags: ["h1"] }, { headers: { link: next("last=h1") } });
+  };
+  const error = await stage(unsent)
+    .images()
+    .then(
+      () => assert.fail("the read did not stop"),
+      (caught) => caught,
+    );
+  assert.equal(
+    error.message,
+    "A registry tag list's later page could not be read (page 2, after 1 tag)",
+  );
+  assert.equal(error.record.tagRead.cause, "unsent");
+  assert.doesNotMatch(JSON.stringify(error.record), /registry\.example|ENOTFOUND/u);
+
+  const bare = async (url, init) => {
+    if (!new URL(url).pathname.endsWith("/tags/list")) return fake.fetcher(url, init);
+    return lists++ % 2
+      ? Response.json({ errors: [] })
+      : Response.json({ tags: ["h1"] }, { headers: { link: next("last=h1") } });
+  };
+  lists = 0;
+  const missing = await stage(bare)
+    .images()
+    .then(
+      () => assert.fail("the read did not stop"),
+      (caught) => caught,
+    );
+  assert.equal(missing.record.tagRead.cause, "no-tags");
+});
+
+test("a next link is read as written: a plus stays a plus, quoted parameters are skipped, a fragment stops", async () => {
+  const plus = await stopOf([[["h1"], next("cursor=ab+cd")], [["h1"]]]);
+  assert.equal(new URL(plus.sent[1]).search, "?cursor=ab%2Bcd");
+  assert.ok(plus.record.pages[0].link.params[0].value.classes.includes("plus"));
+  for (const link of [
+    `<?last=h1>; title="a, b; c"; rel="next"`,
+    "<?last=h1>; rel='next'",
+    '<?last=h1>; rel="prev next"',
+  ]) {
+    const { sent } = await stopOf([[["h1"], link], [["h1"]]]);
+    assert.equal(new URL(sent[1]).search, "?last=h1", link);
+  }
+  const fragment = await stopOf([[["h1"], "<?last=h1#x>; rel=next"]]);
+  assert.equal(fragment.record.rule, "link-not-plain");
+  assert.equal(fragment.record.pages[0].link.fragment, true);
+  // An empty page that offers another still records what its link offered.
+  const empty = await stopOf([[[], next("last=h0")]]);
+  assert.equal(empty.record.rule, "next-after-empty");
+  assert.equal(empty.record.pages[0].link.target, "present");
+});
+
 test("a 404 on a later page stops the read instead of ending the list", async () => {
   const { error, record } = await stopOf([
     [["h1"], next("last=h1")],

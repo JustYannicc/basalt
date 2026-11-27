@@ -21,9 +21,12 @@ const CLASSES = [
   ["underscore", /_/u],
   ["colon", /:/u],
   ["slash", /\//u],
+  ["plus", /\+/u],
+  ["equals", /=/u],
+  ["tilde", /~/u],
   ["percent", /%/u],
   ["space", /\s/u],
-  ["other", /[^A-Za-z0-9._:/%\s-]/u],
+  ["other", /[^A-Za-z0-9._:/+=~%\s-]/u],
 ];
 
 /** What a string is made of, never what it says: its length, its classes and its first one. */
@@ -34,13 +37,33 @@ export const shapeOf = (text) =>
     first: CLASSES.find(([, pattern]) => pattern.test(text.charAt(0)))?.[0] ?? "none",
   });
 
+/** A link's query as name and value pairs, decoded as written: a `+` stays a `+`. */
+function queryPairs(search) {
+  const pairs = [];
+  for (const part of search.slice(1).split("&")) {
+    if (!part) continue;
+    const at = part.indexOf("=");
+    try {
+      pairs.push(
+        at < 0
+          ? [decodeURIComponent(part), ""]
+          : [decodeURIComponent(part.slice(0, at)), decodeURIComponent(part.slice(at + 1))],
+      );
+    } catch {
+      return undefined;
+    }
+  }
+  return pairs;
+}
+
 /**
  * The next page's URL: the stage's own host and path, with only the parameters of the registry's
  * next link, each re-encoded, so no cursor value can reach the host or the path. No URL when the
- * link has no target, does not parse, or carries anything but a few plain cursor values.
+ * link has no target the stage can read, does not parse, has a fragment, or carries anything but a
+ * few plain cursor values.
  */
 export function cursorOf(target, first) {
-  if (target === undefined) return { facts: Object.freeze({ target: "none" }) };
+  if (target === undefined) return { facts: Object.freeze({ target: "unreadable" }) };
   const base = new URL(first);
   let parsed;
   try {
@@ -48,30 +71,46 @@ export function cursorOf(target, first) {
   } catch {
     return { facts: Object.freeze({ target: "present", parses: false }) };
   }
-  const params = [...parsed.searchParams];
+  const pairs = queryPairs(parsed.search);
+  const params = pairs ?? [];
+  const plainParam = ([name, value]) => CURSOR_NAME.test(name) && CURSOR_VALUE.test(value);
   const facts = Object.freeze({
     target: "present",
     parses: true,
     host: parsed.host === base.host ? "same" : "other",
     path: parsed.pathname === base.pathname ? "same" : "other",
+    fragment: parsed.hash !== "",
+    decodes: pairs !== undefined,
     paramCount: params.length,
-    params: params
-      .slice(0, 8)
-      .map(([name, value]) =>
-        Object.freeze({ name: KNOWN_PARAMS.has(name) ? name : "other", value: shapeOf(value) }),
-      ),
+    params: params.slice(0, 8).map(([name, value]) =>
+      Object.freeze({
+        name: KNOWN_PARAMS.has(name) ? name : "other",
+        plainName: CURSOR_NAME.test(name),
+        plainValue: CURSOR_VALUE.test(value),
+        value: shapeOf(value),
+      }),
+    ),
   });
-  const names = new Set(params.map(([name]) => name));
   const plain =
+    pairs !== undefined &&
+    parsed.hash === "" &&
     params.length >= 1 &&
     params.length <= MAX_CURSOR_PARAMS &&
-    names.size === params.length &&
-    params.every(([name, value]) => CURSOR_NAME.test(name) && CURSOR_VALUE.test(value));
+    new Set(params.map(([name]) => name)).size === params.length &&
+    params.every(plainParam);
   if (!plain) return { facts };
-  const next = new URL(`${base.origin}${base.pathname}`);
-  for (const [name, value] of params) next.searchParams.append(name, value);
-  return { facts, url: next.href };
+  const query = params.map(([name, value]) => `${name}=${encodeURIComponent(value)}`).join("&");
+  return { facts, url: `${base.origin}${base.pathname}?${query}` };
 }
+
+/** Which of the stage's own failures a later page met; its message is the stage's, never remote. */
+const causeOf = (error) => {
+  const message = error instanceof Error ? error.message : "";
+  if (message.includes("could not be sent")) return "unsent";
+  if (message.includes("answered a redirect")) return "redirect";
+  if (message.includes("without its tags")) return "no-tags";
+  return "other";
+};
 
 /**
  * Every tag of one repository, from `first`, the URL the stage built from its own repository.
@@ -100,7 +139,26 @@ export async function readTagPages(first, fetchPage) {
   };
   let url = first;
   for (let page = 1; page <= MAX_TAG_PAGES; page++) {
-    const answer = tagPageOf(await fetchPage(url));
+    let answer;
+    try {
+      const raw = await fetchPage(url);
+      // A later page that fails says so with its page; it never ends the list as if complete.
+      if (page > 1 && !raw.ok && raw.status !== 404) {
+        pages.push({ status: raw.status, tags: 0, next: false });
+        throw stop(
+          "later-page-failed",
+          `A registry tag list's later page answered HTTP ${raw.status}`,
+        );
+      }
+      answer = tagPageOf(raw);
+      if (page > 1 && answer.missing) throw fail("A registry tag list answered without its tags");
+    } catch (error) {
+      if (page === 1 || Object.hasOwn(error, "record")) throw error;
+      pages.push({ status: "unread", tags: 0, next: false });
+      throw stop("later-page-failed", "A registry tag list's later page could not be read", {
+        cause: causeOf(error),
+      });
+    }
     if (answer.gone) {
       if (page === 1) return Object.freeze([]);
       pages.push({ status: 404, tags: 0, next: false });
@@ -128,10 +186,10 @@ export async function readTagPages(first, fetchPage) {
     for (const tag of found) seen.add(tag);
     firstPage ??= found;
     if (!answer.next) return Object.freeze(tags);
-    if (!found.length)
-      throw stop("next-after-empty", "A registry tag list offered another page after an empty one");
     const cursor = cursorOf(answer.target, first);
     pages.at(-1).link = cursor.facts;
+    if (!found.length)
+      throw stop("next-after-empty", "A registry tag list offered another page after an empty one");
     if (cursor.url === undefined)
       throw stop("link-not-plain", "A registry tag list's next link is not plain cursor values");
     url = cursor.url;
