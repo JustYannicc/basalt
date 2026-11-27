@@ -30,9 +30,9 @@ jobs:
       contents: read
       actions: write
       checks: read
-    # The light runners on the first attempts box routing takes (scripts/ci/light-lane.ts). It
+    # The light runners on the first attempt of a push to main (scripts/ci/light-lane.ts). It
     # can't read its own output, so it repeats that rule over the variable; hosted otherwise.
-    runs-on: ${{ github.run_attempt == 1 && endsWith(vars.BASALT_CI_LIGHT_LABEL, '-light') && !contains(vars.BASALT_CI_LIGHT_LABEL, ' ') && !contains(vars.BASALT_CI_LIGHT_LABEL, ',') && ((github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/batch/'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && vars.BASALT_CI_LIGHT_LABEL || 'ubuntu-latest' }}
+    runs-on: ${{ github.run_attempt == 1 && endsWith(vars.BASALT_CI_LIGHT_LABEL, '-light') && !contains(vars.BASALT_CI_LIGHT_LABEL, ' ') && !contains(vars.BASALT_CI_LIGHT_LABEL, ',') && github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.BASALT_CI_LIGHT_LABEL || 'ubuntu-latest' }}
     outputs:
       reused: ${{ steps.reuse.outputs.reused }}
       evidence: ${{ steps.reuse.outputs.evidence }}
@@ -695,6 +695,8 @@ jobs:
         run: node --test scripts/pool-ui-tests/accounts-ready.test.mjs scripts/pool-ui-tests/history-coverage.test.mjs scripts/pool-ui-tests/history-activity.test.mjs scripts/pool-ui-tests/history-backend.test.mjs
       - name: Verify tool search and incomplete catalogs
         run: node --test scripts/pool-ui-tests/tool-router-failures.test.ts scripts/pool-ui-tests/tool-search.test.ts
+      - name: Verify a row menu's opening click chooses none of its items
+        run: node --test scripts/pool-ui-tests/account-row-menu.test.ts
       - name: Verify app query phase diagnostics
         working-directory: .upstream
         run: >-
@@ -2411,6 +2413,12 @@ jobs:
           fi
           base="$(git rev-parse --verify "$base^{commit}")"
           echo "base_sha=$base" >> "$GITHUB_OUTPUT"
+      # First, so no earlier failure keeps it from reading what the push added.
+      - name: Refuse secrets and generated files in the new commits
+        env:
+          BASE_SHA: ${{ steps.comparison.outputs.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node scripts/check-git-secrets.ts
       - name: Check container Python names and imports
         run: |
           python3 -m venv "$RUNNER_TEMP/container-python-lint"
@@ -2489,12 +2497,10 @@ jobs:
         run: |
           bun run --cwd .upstream patches:check
           bun run --cwd .upstream auth:security
-      # Specs whose plans name only this job run here, in the full suite: the fast lane, which
-      # pull requests run, reaches no config, so a change to one is proven in its batch's full
-      # Check. The affected lane, which no event requests, runs those its change reaches. All four
-      # take about 20 seconds together.
+      # Specs whose plans name only this job run here, in every Check: all four take about half a
+      # minute inside a job that runs anyway, so a pull request's change to one fails on the pull
+      # request rather than in its batch.
       - name: Verify Cloud startup diagnostics and app listeners
-        if: steps.lane.outputs.full_suite == 'true' || steps.lane.outputs.fast_configs != '[]'
         working-directory: .upstream
         run: |
           bunx vitest run --config e2e/alchemy-dev-output.config.ts
@@ -2551,6 +2557,26 @@ jobs:
       - name: Typecheck the patched upstream the way upstream checks itself
         if: steps.lane.outputs.full_suite == 'true'
         run: npm run typecheck:upstream
+      # Every Check builds the budgeted Workers here, after framework:build above, so a pull request
+      # learns what it added before a release fails on a budget. About 20 seconds on a laptop.
+      - name: Restore the comparison commit's Worker upload sizes
+        uses: ./.github/actions/worker-upload-base
+        with:
+          mode: restore
+          base: ${{ steps.comparison.outputs.base_sha }}
+      - name: Build every budgeted Worker as the deploy does
+        id: worker-build
+        run: node scripts/worker-build.ts --base .generated/worker-uploads-base
+      - name: Fail a Worker left under its upload floor
+        run: node scripts/worker-floors.ts --base .generated/worker-uploads-base
+      # After the floor check, which reads the base from the same path, and even when it failed: a
+      # main commit under a floor must still leave its sizes, or every later change would compare
+      # with nothing and fail as if it had grown the Worker.
+      - name: Keep main's Worker upload sizes for later changes to compare with
+        if: ${{ !cancelled() && steps.worker-build.outcome == 'success' }}
+        uses: ./.github/actions/worker-upload-base
+        with:
+          mode: save
 
   # The owned unit tests fast's lane selects, split by scripts/ci/unit-tests.ts into one leg per
   # matrix row: each test file runs in exactly one leg. The suite took 6.8 of fast's 12.9 hosted
@@ -2719,6 +2745,8 @@ jobs:
         run: |
           sudo iptables -I INPUT 1 -i docker0 -p tcp -j ACCEPT
           sudo iptables -I INPUT 1 -i br+ -p tcp -j ACCEPT
+      - name: Verify the container-to-host probe's time limit and failures
+        run: node --test scripts/ci/check-docker-host.test.mjs
       - name: Verify containers can reach the host fixture listeners
         run: node scripts/ci/check-docker-host.mjs basalt-1409-pool:test
       - name: Start the isolated transaction pooler

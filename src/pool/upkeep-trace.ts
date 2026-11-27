@@ -27,6 +27,7 @@ type Phase =
   | "usage"
   | "accounts"
   | "model_history"
+  | "model_history_shared"
   | "upkeep"
   | "snapshot"
   | "reserved"

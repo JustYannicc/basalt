@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { digest, upstreamCache, withCacheLock } from "./upstream-cache.ts";
+import { linkFingerprint } from "./upstream-cache-gc.ts";
 import { dependencyIdentity } from "./upstream-inputs.ts";
 import { omitReleaseLifecycles } from "./ci/dependency-lifecycles.ts";
 import {
@@ -208,6 +209,7 @@ async function prepareDependencyGeneration(root: string, pin: string, cacheHitOn
       const selected = generation;
       return await withDependencyStoreLock(() => {
         const { store, trees } = selected;
+        let links: ReturnType<typeof linkFingerprint>;
         for (const tree of trees) {
           const source = join(store, tree),
             destination = join(root, tree);
@@ -230,11 +232,19 @@ async function prepareDependencyGeneration(root: string, pin: string, cacheHitOn
             }
           }
           writablePrivateDirectories(temporary);
+          // Taken before the rename, which keeps the directory's inode and mtime: links anyone swaps
+          // in afterwards, even mid-install, no longer match what the marker vouches for.
+          if (tree === "node_modules") links = linkFingerprint(join(temporary, ".bun"));
           // Dependencies contain relative workspace links; the copied link layout keeps source worktree-local.
           removePrivateTree(destination);
           renameSync(temporary, destination);
         }
-        atomicStoreJson(join(root, ".basalt-dependencies.json"), { key, store });
+        // The marker vouches for these exact links, so collection can skip reading them one by one.
+        atomicStoreJson(join(root, ".basalt-dependencies.json"), {
+          key,
+          store,
+          ...(links && { links }),
+        });
         rememberDependencyConsumer(root, store, false);
         collectDependencyStore(pin);
         return selected;

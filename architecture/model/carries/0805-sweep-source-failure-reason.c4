@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "A release's catalog app sweep logs each app it could not update with the error's class and, for a source failure, its reason: one word from the SDK's closed list (not-found, conflict, invalid-source, git, storage, limit, protected), never the error's text. CI's provisioning diagnostics publish that word only when it is one of the list's, so a sweep that keeps failing on an app's source says why in public evidence."
+    }
+  }
+}

@@ -1,0 +1,20 @@
+diff --git a/apps/hosted/server/src/implementation/catalog-app-defaults.ts b/apps/hosted/server/src/implementation/catalog-app-defaults.ts
+--- a/apps/hosted/server/src/implementation/catalog-app-defaults.ts
++++ b/apps/hosted/server/src/implementation/catalog-app-defaults.ts
+@@ -7,6 +7,7 @@
+ import { createCatalog } from "@executor-js/catalog";
+ import type { Catalog } from "@executor-js/catalog/contracts";
+ import {
++  SourceError,
+   StorageError,
+   sourceFilesEqual,
+   type App,
+@@ -289,6 +290,8 @@
+               organization,
+               entry,
+               cause: error._tag,
++              // A source failure's reason is one word from the SDK's closed list, never its text.
++              ...(Schema.is(SourceError)(error) ? { reason: error.reason } : {}),
+             }).pipe(Effect.andThen(Effect.sync(() => (failed = true)))),
+           ),
+         );

@@ -60,6 +60,13 @@ export interface HomeDependencies {
     pool: string,
     organization: string,
   ) => Promise<import("./membership-contract.ts").NativeMembershipSnapshot>;
+  /**
+   * The identities the membership gate already holds from its last host read; the view uses them
+   * and reads the host only when the gate has none.
+   */
+  nativeIdentities?: (
+    pool: string,
+  ) => Promise<import("./membership-state.ts").NativeAccountIdentities | undefined>;
   signingKey: string;
   previousSigningKey?: string;
   home: (path: string, init?: RequestInit) => Promise<Response>;
@@ -806,9 +813,12 @@ const routes: Record<string, Route> = {
   "GET /accounts/:id/observations": (ctx) => observeAccount(ctx, false),
   "POST /accounts/:id/observations/refresh": (ctx) => observeAccount(ctx, true),
   "GET /pool": async ({ home, isOwner, deps, pool, organization, url, request, accountId }) => {
+    const identities = async () =>
+      (await deps.nativeIdentities?.(pool).catch(() => undefined)) ??
+      (await deps.nativeMembership?.(pool, organization).catch(() => undefined));
     const [view, membership] = await Promise.all([
       home.view(isOwner, deps.views, url.searchParams.get("fresh") === "true", deps.now),
-      deps.nativeMembership?.(pool, organization).catch(() => undefined),
+      identities(),
     ]);
     const presented = deps.nativeMembership ? nativeAccountView(view, membership) : view;
     const caller = text(request.headers.get(callerHeader)) ?? (isOwner ? accountId : undefined);

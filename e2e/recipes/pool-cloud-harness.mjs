@@ -15,7 +15,11 @@ import { cloudLocks } from "../../.upstream/e2e/support/cloud-locks.ts";
 import { redactLogText } from "../../src/feedback/logs.ts";
 import { startPoolFixture } from "./pool-fixture.mjs";
 import { poolFixtureSigningKey } from "../../.upstream/e2e/support/cloud-pool-gateway.ts";
-import { provisioningHistory, provisioningJobs } from "./provisioning-diagnostics.mjs";
+import {
+  provisioningHistory,
+  provisioningJobs,
+  repositoryFailures,
+} from "./provisioning-diagnostics.mjs";
 
 const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
 
@@ -162,6 +166,7 @@ export const poolCloudHarness = (
             readFile(join(target.directory, "cloud.log"), "utf8").catch(() => undefined),
           );
           if (log === undefined) diagnostics.cloudLogUnavailable = true;
+          else diagnostics.repositoryFailures = repositoryFailures(log);
           yield* Effect.scoped(
             Effect.gen(function* () {
               const database = yield* cloudLocks.pipe(Effect.provideService(Target, target));
