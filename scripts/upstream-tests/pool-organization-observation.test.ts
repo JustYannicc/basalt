@@ -315,3 +315,39 @@ test("a refused organization's answer is unchanged when its ownership read fails
   assert.equal(answer.status, 204, "today's answer: the organization exists");
   assert.deepEqual(answer.lines, [notObserved("other", "read-failed")]);
 });
+
+test("a read that is slow to cancel never holds the answer past the bound", async () => {
+  await seed({ organizations: { [person]: { basaltPools: {} } }, ...personPool });
+  // A driver interrupts a running statement by asking the database to cancel it and waiting.
+  const slowToCancel = Effect.never.pipe(Effect.onInterrupt(() => Effect.sleep("5 seconds")));
+  const started = performance.now();
+  const answer = await ask({ organization: person, database: ownershipReadAnswers(slowToCancel) });
+  const took = performance.now() - started;
+  assert.equal(answer.status, 204);
+  assert.deepEqual(answer.lines, [notObserved(person, "timeout")]);
+  assert.ok(took < 1_000, String(took));
+});
+
+test("a rule that refused while the next read finds ownership says the reads changed", async () => {
+  await seed({
+    organizations: { [person]: { basaltPools: { [pool]: { app: pool } } } },
+    ...personPool,
+  });
+  // The rule's read answers no registration; the shape read that follows sees the owned pool.
+  const answer = await ask({
+    organization: person,
+    database: ownershipReadAnswers(Effect.succeed([])),
+  });
+  assert.equal(answer.status, 204);
+  assert.deepEqual(answer.lines, [notObserved(person, "changed")]);
+});
+
+test("metadata the database's JSON type refuses is reported as invalid, not as a failed read", async () => {
+  await seed({
+    organizations: { [person]: '{"basaltPools":{},"name":"a\\u0000b"}' },
+    ...personPool,
+  });
+  const answer = await ask({ organization: person });
+  assert.equal(answer.status, 204);
+  assert.deepEqual(answer.lines, [wouldRefuse(person, "invalid-metadata")]);
+});

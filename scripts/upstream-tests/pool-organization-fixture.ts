@@ -151,7 +151,7 @@ export const notObserved = (organization: string, reason: string, target = pool)
  * organization's pool records) answers with `read` instead. Every other query is the real one.
  */
 export const ownershipReadAnswers =
-  <E>(read: Effect.Effect<never, E>) =>
+  <A, E>(read: Effect.Effect<A, E>) =>
   (db: SqlClient.SqlClient): SqlClient.SqlClient =>
     new Proxy(db, {
       apply(target, self, args: [TemplateStringsArray, ...unknown[]]) {
