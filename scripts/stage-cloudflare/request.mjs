@@ -48,6 +48,9 @@ const MANIFEST_TYPES = [
   "application/vnd.docker.distribution.manifest.v2+json",
   // So a registry that serves its own artifacts under their own type still answers the read.
   ...KEPT_TYPES,
+  // Any other stored type is still served, never answered 404 for want of a type the read named;
+  // its type then reads as one off the list (kept-entries.mjs).
+  "*/*",
 ].join(", ");
 const MAX_PAGES = 100;
 
@@ -105,6 +108,13 @@ const ON_RESOURCE = table({
   rollout: table({ method: "POST", below: "/rollouts", absent: false, body: true }),
   delete: table({ method: "DELETE", below: "", absent: false, body: false }),
 });
+/**
+ * Two registry credentials a run, each minted only when first needed. Every read (the catalog, a
+ * tag list, a manifest) goes to the pull credential, so the list that names an entry and the read
+ * that answers 404 for it are answered to the same credential: the list is the read's positive
+ * control (registry.mjs). Only a delete goes to the push credential, so a run that only reads
+ * never holds one.
+ */
 const PERMISSIONS = table({ pull: Object.freeze(["pull"]), push: Object.freeze(["pull", "push"]) });
 const REQUEST_FIELDS = Object.freeze(["kind", "operation", "target", "reference", "body"]);
 const OPTIONS = Object.freeze([
@@ -118,7 +128,7 @@ const OPTIONS = Object.freeze([
   "now",
 ]);
 /** The longest one request may take: its own abort deadline. */
-const REQUEST_TIMEOUT_MS = 30_000;
+export const REQUEST_TIMEOUT_MS = 30_000;
 /** Every field a step has, each set here, so none is ever looked up anywhere else. */
 const STEP = table({
   label: "",
@@ -133,7 +143,9 @@ const STEP = table({
 });
 const step = (fields) => table({ ...STEP, ...fields });
 
-const refuse = (message) => fail(`Refused: ${message}`);
+/** A request this module did not send: no answer of the registry or the API stands behind it. */
+const unsent = (error) => Object.assign(error, { sent: false });
+const refuse = (message) => unsent(fail(`Refused: ${message}`));
 
 /** A path segment that is `.` or `..`, written plainly or percent-encoded. */
 const DOT_SEGMENT = /^(?:\.|%2e){1,2}$/iu;
@@ -273,7 +285,10 @@ export function stageRequests(options) {
     // A request that might outlast the run's deadline is not started: a run ends between requests,
     // never in one, so a job's own time limit never cuts a delete.
     if (deadline !== undefined && now() + REQUEST_TIMEOUT_MS > deadline)
-      throw fail(`${method} ${label} was not sent: the run's time budget is spent`);
+      throw Object.assign(
+        unsent(fail(`${method} ${label} was not sent: the run's time budget is spent`)),
+        { budget: true },
+      );
     const init = Object.create(null);
     init.method = method;
     init.headers = headers;
@@ -289,8 +304,9 @@ export function stageRequests(options) {
     }
     const answer = await answerOf(response);
     if (answer.status < 200 || (answer.status >= 300 && answer.status <= 399))
-      throw refuse(
-        `${method} ${label} answered a redirect (HTTP ${answer.status}); a stage request is never redirected`,
+      // Sent, and answered: refused, but never marked unsent.
+      throw fail(
+        `Refused: ${method} ${label} answered a redirect (HTTP ${answer.status}); a stage request is never redirected`,
       );
     return answer;
   }
@@ -379,9 +395,11 @@ export function stageRequests(options) {
         if (!tag && !digest)
           throw refuse("the manifest is not one this stage found in its own repository");
         return step({
-          registry: "push",
+          registry: "pull",
           entry,
-          url: `${repository}/manifests/${encodeURIComponent(reference)}`,
+          // A digest goes as written, as its delete does (DIGEST allows only sha256:<hex>), so the
+          // read and the delete address the manifest the same way.
+          url: `${repository}/manifests/${digest ? reference : encodeURIComponent(reference)}`,
           accept: MANIFEST_TYPES,
         });
       }

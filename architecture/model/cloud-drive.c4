@@ -30,7 +30,7 @@ model {
   basalt.toolsGateway.obsidianVaultPage -> basalt.toolsGateway.cloudDrive "Reads notes, versions and import state"
   extend basalt.build {
     cloudDriveProof = part "Cloud drive verification" {
-      description "Synthetic installed-app proofs use the ordinary HTTP, MCP, native approval and workflow paths. Seeded large-vault proofs use real local workerd, SQLite and record storage, verify complete cold coverage and retained history, enforce disk bounds and delete their own bulk data after exporting hashes. The vault page's note renderer is bundled from the app's own sources with its served packages, pinned alike in a separate test package, and rendered in a virtual DOM with image reads settled. Local proofs do not establish hosted adoption or device compatibility."
+      description "Synthetic installed-app proofs use the ordinary HTTP, MCP, native approval and workflow paths. Seeded large-vault proofs use real local workerd, SQLite and record storage, verify complete cold coverage and retained history, enforce disk bounds and delete their own bulk data after exporting hashes. The large-file proof replaces a multi-part file twice and bounds the repository's loose and packed size together, so file bytes stored in Git fail it. The vault page's note renderer is bundled from the app's own sources with its served packages, pinned alike in a separate test package, and rendered in a virtual DOM with image reads settled. Local proofs do not establish hosted adoption or device compatibility."
       metadata {
         code "e2e/obsidian"
         libraries "effect|apps|@effect/platform-node|fumadb-effect|esbuild|miniflare|@modelcontextprotocol/sdk|@happy-dom/global-registrator"

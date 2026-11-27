@@ -25,6 +25,7 @@ type Phase =
   | "primary_retirement"
   | "app_models"
   | "memberships"
+  | "routes"
   | "computers"
   | "first_request"
   | "control"

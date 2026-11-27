@@ -1,0 +1,73 @@
+{
+  "description": "I3 pool resolution over TOOLS_SERVICE (interface change 12). Every requested reference appears; an unknown reference or pool gives nulls. 404 only while route rules are not served at all. The pool signs; the tools service verifies with the same key, accepts the previous key too, and answers below. Synthetic key and references.",
+  "signingKey": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+  "prefix": "sbrr1",
+  "path": "/pool/v1/route-resolutions",
+  "resolve": {
+    "payload": {
+      "action": "resolve",
+      "at": 1800000000000,
+      "expiresAt": 1800000030000,
+      "organization": "example-organization",
+      "pool": "example-pool",
+      "references": [
+        "12345678-abcd-4000-8000-0000000000a1",
+        "12345678-abcd-4000-8000-0000000000a2",
+        "12345678-abcd-4000-8000-0000000000a3"
+      ]
+    },
+    "request": {
+      "envelope": "sbrr1.eyJhY3Rpb24iOiJyZXNvbHZlIiwiYXQiOjE4MDAwMDAwMDAwMDAsImV4cGlyZXNBdCI6MTgwMDAwMDAzMDAwMCwib3JnYW5pemF0aW9uIjoiZXhhbXBsZS1vcmdhbml6YXRpb24iLCJwb29sIjoiZXhhbXBsZS1wb29sIiwicmVmZXJlbmNlcyI6WyIxMjM0NTY3OC1hYmNkLTQwMDAtODAwMC0wMDAwMDAwMDAwYTEiLCIxMjM0NTY3OC1hYmNkLTQwMDAtODAwMC0wMDAwMDAwMDAwYTIiLCIxMjM0NTY3OC1hYmNkLTQwMDAtODAwMC0wMDAwMDAwMDAwYTMiXX0.zZV_vbbzdCxDGOlAfqxpUsNzFpYK2hAkMl-ljG3jMj0"
+    },
+    "response": {
+      "status": 200,
+      "body": {
+        "revision": 7,
+        "resolutions": {
+          "12345678-abcd-4000-8000-0000000000a1": {
+            "routeId": "rt_aaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "owner": "org/example-org/user/example-user"
+          },
+          "12345678-abcd-4000-8000-0000000000a2": {
+            "routeId": null,
+            "owner": "org/example-org/user/example-teammate"
+          },
+          "12345678-abcd-4000-8000-0000000000a3": {
+            "routeId": null,
+            "owner": null
+          }
+        }
+      }
+    }
+  },
+  "poll": {
+    "payload": {
+      "action": "resolve",
+      "at": 1800000000000,
+      "expiresAt": 1800000030000,
+      "organization": "example-organization",
+      "pool": "example-pool",
+      "references": []
+    },
+    "request": {
+      "envelope": "sbrr1.eyJhY3Rpb24iOiJyZXNvbHZlIiwiYXQiOjE4MDAwMDAwMDAwMDAsImV4cGlyZXNBdCI6MTgwMDAwMDAzMDAwMCwib3JnYW5pemF0aW9uIjoiZXhhbXBsZS1vcmdhbml6YXRpb24iLCJwb29sIjoiZXhhbXBsZS1wb29sIiwicmVmZXJlbmNlcyI6W119.PdUnPcGaQ3ZgQcWxgsZwOBdL6Soh7UQp7GcUR8vrQOw"
+    },
+    "response": {
+      "status": 200,
+      "body": {
+        "revision": 7,
+        "resolutions": {}
+      }
+    }
+  },
+  "scope": {
+    "organization": "example-organization",
+    "pool": "example-pool"
+  },
+  "refusals": {
+    "expiredOrBadSignature": 401,
+    "tooManyReferences": 400,
+    "maxReferences": 2000,
+    "maxLifetimeMs": 30000
+  }
+}

@@ -346,7 +346,8 @@ export type ControlErrorCode =
   | "history_timeout"
   | "history_too_large"
   | "bulk_import_not_provisioned"
-  | "busy";
+  | "busy"
+  | "route_unsupported";
 
 export interface ControlError {
   readonly error: ControlErrorCode;

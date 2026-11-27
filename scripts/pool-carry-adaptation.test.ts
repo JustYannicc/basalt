@@ -73,18 +73,58 @@ for (const [originalName, adaptedName, originalSha256, reindent] of [
 
 // Where upstream rewrote a carry's paths, the adapted carry keeps the original's
 // scope rather than its exact lines. A file leaves a carry only when the pinned
-// source now does that carry's work.
-for (const [originalName, adaptedName, originalSha256, coveredUpstream] of [
+// source now does that carry's work, and enters one only when a re-cut lists it
+// here with its reason. A listed file the carry no longer edits is a scope change
+// too, so the list can never go stale silently.
+const scopeDrift = (
+  adaptedFiles: readonly string[],
+  originalFiles: readonly string[],
+  coveredUpstream: readonly string[],
+  addedAtRecut: readonly string[],
+) => {
+  const covered = new Set(coveredUpstream);
+  const expected = new Set([
+    ...originalFiles.filter((file) => !covered.has(file)),
+    ...addedAtRecut,
+  ]);
+  const actual = new Set(adaptedFiles);
+  return {
+    unexpected: [...actual].filter((file) => !expected.has(file)).sort(),
+    missing: [...expected].filter((file) => !actual.has(file)).sort(),
+    listedButOriginal: addedAtRecut.filter((file) => originalFiles.includes(file)).sort(),
+  };
+};
+
+test("the scope check refuses an unlisted file and a listed file the carry no longer edits", () => {
+  const original = ["a.go", "b.go"];
+  assert.deepEqual(scopeDrift(["a.go", "c.go", "d.go"], original, ["b.go"], ["c.go"]), {
+    unexpected: ["d.go"],
+    missing: [],
+    listedButOriginal: [],
+  });
+  assert.deepEqual(scopeDrift(["a.go"], original, ["b.go"], ["c.go"]), {
+    unexpected: [],
+    missing: ["c.go"],
+    listedButOriginal: [],
+  });
+  assert.deepEqual(scopeDrift(["a.go", "b.go"], original, [], ["b.go"]).listedButOriginal, [
+    "b.go",
+  ]);
+});
+
+for (const [originalName, adaptedName, originalSha256, coveredUpstream, addedAtRecut] of [
   [
     "cliproxy-node-v8.0.51-metadata-only",
     "0646-node-metadata-only",
     "dc68c2f4dde4c0601bdc6bb7cb731e98f2c7098431f380265bb531b280f0ab84",
+    [],
     [],
   ],
   [
     "0599-node-no-postwrite-replay",
     "0649-node-no-postwrite-replay",
     "ac31a3fd18d9808402086fd766ca73328ad0c18ad157c00ab61ae28e92997c51",
+    [],
     [],
   ],
   [
@@ -93,16 +133,31 @@ for (const [originalName, adaptedName, originalSha256, coveredUpstream] of [
     "47255fb46bab0d51825001f5b5f79d136e924fe28b9937740d93f0471423656f",
     // Credits fallback classifies submission through upstream's attempt marking.
     ["sdk/cliproxy/auth/conductor_home.go"],
+    [
+      // Upstream's Home local plugin dispatch runs outside the conductor; the grant carries the guard.
+      "sdk/api/handlers/handlers_execution.go",
+      // The same guard on the stream path, chunk errors included.
+      "sdk/api/handlers/handlers_stream.go",
+      // Upstream's liveness test calls the websocket write whose signature this carry changes.
+      "internal/runtime/executor/codex_websockets_liveness_test.go",
+      // One named accepted-then-cut case per upstream path that rotates an accepted generation.
+      "internal/runtime/executor/basalt_accepted_cut_no_replay_test.go",
+      // A granted local plugin is never sent again, and our Home cannot grant one.
+      "internal/pluginhost/basalt_local_grant_submission_test.go",
+    ],
   ],
 ] as const) {
   test(`${adaptedName} keeps the immutable original's scope`, () => {
     const original = read(`retired/${originalName}.patch`);
     const adapted = read(`patches/${adaptedName}.patch`);
     assert.equal(sha256(original), originalSha256);
-    const covered = new Set<string>(coveredUpstream);
     assert.deepEqual(
-      editedFiles(adapted),
-      editedFiles(original).filter((file) => !covered.has(file)),
+      scopeDrift(editedFiles(adapted), editedFiles(original), coveredUpstream, addedAtRecut),
+      {
+        unexpected: [],
+        missing: [],
+        listedButOriginal: [],
+      },
     );
   });
 }
