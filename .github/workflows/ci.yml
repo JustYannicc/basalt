@@ -50,9 +50,11 @@ jobs:
       jobs: ${{ steps.reuse.outputs.reused == 'true' && '[]' || steps.jobs.outputs.jobs }}
       box_jobs: ${{ steps.reuse.outputs.reused == 'true' && '[]' || steps.jobs.outputs.box_jobs }}
       box_label: ${{ steps.jobs.outputs.box_label }}
-      # The light runners' label for long-started, cpa-pipeline and check, or empty for hosted. Its
+      # The light runners' labels, or empty for hosted: light_label for long-started and
+      # cpa-pipeline on main's push, check_label for the aggregate on main's and a batch's. Their
       # step runs on every path, so a reused Check's later jobs take the light runners too.
       light_label: ${{ steps.light.outputs.light_label }}
+      check_label: ${{ steps.light.outputs.check_label }}
       box_floor: ${{ steps.jobs.outputs.box_floor }}
       box_plan: ${{ steps.jobs.outputs.box_plan }}
       matrices: ${{ steps.jobs.outputs.matrices }}
@@ -3002,15 +3004,16 @@ jobs:
     outputs:
       reused_run_id: ${{ steps.gate.outputs.reused_run_id }}
       reused_head_sha: ${{ steps.gate.outputs.reused_head_sha }}
+    # The light runners on the first attempt of main's or a batch's push (scripts/ci/light-lane.ts).
     # always() starts it after a cancel too; with a need cancelled it runs hosted, so a run a down
     # box held still ends and can be re-run.
-    runs-on: ${{ github.run_attempt == 1 && !contains(needs.*.result, 'cancelled') && needs.select.outputs.light_label || 'ubuntu-latest' }}
-    # A light runner that hangs under it would hold main's Check for GitHub's 6 h default. 25, not 15:
+    runs-on: ${{ github.run_attempt == 1 && !contains(needs.*.result, 'cancelled') && needs.select.outputs.check_label || 'ubuntu-latest' }}
+    # A light runner that hangs under it would hold the Check for GitHub's 6 h default. 25, not 15:
     # its own steps may take 17 minutes on a full Check (the flake note, the retry-count artifact
-    # steps). Past it main's Check ends cancelled; box-rerun re-runs it only when it had waited 2
-    # minutes for a runner, else a person does (scripts/ci/box-rerun.ts). The gate itself took 25 s
-    # at most on 26 Nov.
-    timeout-minutes: 25
+    # steps); the gate itself took 25 s at most on 26 Nov. A batch's on a light runner gets 3, so a
+    # hang costs the batch minutes: main's took 30 s on a light runner, a batch's 11 s hosted. Past
+    # it the Check ends cancelled, and box-rerun re-runs it hosted (scripts/ci/box-rerun.ts).
+    timeout-minutes: ${{ github.run_attempt == 1 && !contains(needs.*.result, 'cancelled') && needs.select.outputs.check_label && startsWith(github.ref, 'refs/heads/batch/') && 3 || 25 }}
     # actions: read lets a re-run attempt find the flake-rerun.yml run that started it.
     permissions:
       actions: read
