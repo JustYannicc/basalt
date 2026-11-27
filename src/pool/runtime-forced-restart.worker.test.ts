@@ -4,6 +4,7 @@ import { fleetWorkerFixture } from "../../scripts/pool-tests/runtime-fleet-worke
 import { runtimeStopTiming } from "./runtime-slots/forced-stop.ts";
 import {
   forcedRestartBudgetMs,
+  forcedStopGraceMs,
   leakedStreamsMs,
   unservingBoundMs,
 } from "./runtime-slots/forced-restart-timing.ts";
@@ -58,11 +59,21 @@ async function serves(f: Fixture) {
   assert.equal(response.status, 200, text);
   return true;
 }
-/** Readiness refuses for the current boot only, as a runtime that went bad and stays bad. */
-function refuseCurrentBoot(f: Fixture) {
+/**
+ * Readiness refuses for the current boot only, as a runtime that went bad and stays bad. With
+ * `refreshes`, each refusal reports that many of Home's refreshes in flight, as a newer image does.
+ */
+function refuseCurrentBoot(f: Fixture, refreshes?: () => number) {
   const boot = f.old.identity().bootId;
   f.old.hooks.health = async () =>
-    f.old.identity().bootId === boot ? new Response(null, { status: 503 }) : undefined;
+    f.old.identity().bootId !== boot
+      ? undefined
+      : refreshes
+        ? Response.json(
+            { boot_id: boot, started_at: "fixture-started", refresh_in_flight: refreshes() },
+            { status: 503 },
+          )
+        : new Response(null, { status: 503 });
   return boot;
 }
 
@@ -116,7 +127,6 @@ test(
   async (context) => {
     const { f, advance, forcedStops, lines } = await root(context);
     let inFlight = false;
-    context.mock.method(runtimeStopTiming, "refreshInFlight", async () => inFlight);
     const signal = f.old.ctx.container.signal.bind(f.old.ctx.container);
     const sent: boolean[] = [];
     f.old.ctx.container.signal = (number) => {
@@ -124,7 +134,8 @@ test(
       signal(number);
     };
     for (let run = 0; run < 20; run++) {
-      const boot = refuseCurrentBoot(f);
+      // Home's own count rides on the readiness answer the stop already reads.
+      const boot = refuseCurrentBoot(f, () => (inFlight ? 1 : 0));
       await pass(f);
       advance(unservingBoundMs);
       // The refresh lasts zero to three passes, then completes.
@@ -146,6 +157,27 @@ test(
       "no signal during a refresh",
     );
     assert.equal(forcedStops(), 20);
+  },
+);
+
+test(
+  "a Home that always reports a refresh in flight is stopped one stop grace after the first wait",
+  { timeout: 20_000 },
+  async (context) => {
+    const { f, advance, stopPaths } = await root(context);
+    refuseCurrentBoot(f, () => 1);
+    await pass(f);
+    advance(unservingBoundMs);
+    await pass(f);
+    assert.deepEqual(f.old.calls.signals, [], "the first stop waits on the refresh");
+    advance(forcedStopGraceMs - 2_000);
+    await pass(f);
+    assert.deepEqual(f.old.calls.signals, [], "still inside one stop grace");
+    advance(2_000);
+    await pass(f);
+    assert.deepEqual(f.old.calls.signals, [15], "past the grace the stop goes ahead");
+    assert.deepEqual(stopPaths(), ["graceful_exit"]);
+    assert.equal(await serves(f), true);
   },
 );
 
