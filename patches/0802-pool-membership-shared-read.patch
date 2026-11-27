@@ -14,7 +14,7 @@ diff --git a/apps/hosted/server/src/implementation/organization-access-lock.ts b
 +  Effect.gen(function* () {
 +    const sql = yield* SqlClient.SqlClient;
 +    return yield* sql.withTransaction(
-+      lockOrganizationReadAccess(organization).pipe(Effect.andThen(operation)),
++      operation,
 +    );
 +  });
 diff --git a/apps/hosted/server/src/implementation/pool-membership.ts b/apps/hosted/server/src/implementation/pool-membership.ts
