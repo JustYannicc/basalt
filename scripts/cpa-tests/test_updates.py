@@ -1,6 +1,8 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import textwrap
@@ -176,26 +178,44 @@ class UpdateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'carries changed'):
             guard.check(root, base, 'HEAD')
 
+    def comparison_step(self):
+        """The cpa-pipeline job's own comparison step, as the workflow has it now: its run script."""
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        job = re.split(r'\n  [a-z0-9-]+:\n', workflow.split('\n  cpa-pipeline:\n', 1)[1], maxsplit=1)[0]
+        step = job.split('      - name: Resolve the comparison commit\n', 1)[1].split('\n      - ', 1)[0]
+        run = re.search(r'^        run: ?(.*)$', step, re.M)
+        self.assertIsNotNone(run, step)
+        if run.group(1).strip() in ('', '|', '|-'):
+            return textwrap.dedent(step[run.end() + 1:])
+        return run.group(1)
+
     def test_pr_comparison_uses_source_head_after_target_advances(self):
         root, base = self.batch_fixture()
         bump_head = self.git(root, 'rev-parse', 'HEAD')
         self.git(root, 'checkout', '-qb', 'main', base)
         (root / 'target-only.txt').write_text('target advanced\n')
         target = self.commit(root)
+        # GitHub's test merge of the pull request into the advanced target: the target's side
+        # first, the head second. The job checks it out as github.sha.
         self.git(root, 'checkout', '-qb', 'synthetic')
         self.git(root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
                  'merge', '--no-ff', '-qm', 'synthetic PR merge', bump_head)
+        merged = self.git(root, 'rev-parse', 'HEAD')
         self.assertEqual(self.git(root, 'merge-base', 'HEAD', 'main'), target)
         self.git(root, 'remote', 'add', 'origin', str(root))
-        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
-        step = workflow.split('      - name: Resolve the guard comparison commit\n', 1)[1]
-        script = textwrap.dedent(step.split('        run: |\n', 1)[1].split('      - name:', 1)[0])
+        resolver = root / 'scripts/ci/comparison-base.ts'
+        resolver.parent.mkdir(parents=True, exist_ok=True)
+        resolver.write_text((ROOT / 'scripts/ci/comparison-base.ts').read_text())
+        event = root / 'event.json'
+        event.write_text(json.dumps({'pull_request': {'head': {'sha': bump_head}, 'base': {'sha': target}}}))
         output = root / 'comparison-output'
-        subprocess.run(['bash', '-e', '-c', script], cwd=root, check=True, env={
-            'PATH': '/usr/bin:/bin', 'PULL_REQUEST': 'true', 'BASE_REF': 'main',
-            'BATCH_PUSH': 'false', 'BASE_SHA': target, 'HEAD_SHA': bump_head,
-            'GITHUB_OUTPUT': str(output),
+        # The variables GitHub gives the step for a pull_request event; node is set up before it.
+        subprocess.run(['bash', '-e', '-c', self.comparison_step()], cwd=root, check=True, env={
+            'PATH': os.environ['PATH'], 'GITHUB_EVENT_NAME': 'pull_request',
+            'GITHUB_REF': 'refs/pull/1/merge', 'GITHUB_SHA': merged,
+            'GITHUB_EVENT_PATH': str(event), 'GITHUB_OUTPUT': str(output),
         })
+        # The pull request's fork point, though the target moved past it: not the target's tip.
         self.assertEqual(output.read_text().strip(), f'base_sha={base}')
         guard.check_batch(root, base, bump_head)
 
