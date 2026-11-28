@@ -390,7 +390,7 @@ export const selectionInputs = [
   "scripts/ci/{affected,areas,reach,import-graph,job-inputs,inputs,e2e-workflow}.ts",
   "scripts/ci/{select-jobs,unit-tests,box-router,box-watch,box-rerun,light-lane,light-rescue}.ts",
   "scripts/ci/{cancel-superseded,reuse,gate,aggregate-retries,retry-history,workflow-run}.ts",
-  "scripts/ci/{retries,fast-local,rerun-selection}.ts",
+  "scripts/ci/{retries,fast-local,comparison-base}.ts",
   "scripts/ci/e2e-exceptions.json",
 ];
 
