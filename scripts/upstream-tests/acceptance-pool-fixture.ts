@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
 import { SqlClient } from "effect/sql";
 import { migrateProvisioning } from "../../.upstream/apps/hosted/server/src/implementation/provisioning-schema.ts";
 import {
@@ -9,6 +9,11 @@ import type {
   AcceptanceProduct,
   AcceptanceState,
 } from "../../.upstream/apps/hosted/cloud/src/infrastructure/acceptance-pool/steps.ts";
+
+/** A stand-in for a product call's failure, tagged as every real one is. */
+export class StandInFailure extends Data.TaggedError("StandInFailure")<{
+  readonly reason: string;
+}> {}
 
 /** Better Auth's columns the identity reads and writes, the real lifecycle triggers, and the welcome trigger. */
 export const identitySchema = Effect.gen(function* () {
@@ -79,7 +84,8 @@ export function fixtureProduct(options: { readonly failAfter?: Set<string> } = {
   const after = <A>(name: string, value: A) =>
     Effect.suspend(() => {
       calls.push(name);
-      if (options.failAfter?.delete(name)) return Effect.fail(new Error(`${name} reply lost`));
+      if (options.failAfter?.delete(name))
+        return Effect.fail(new StandInFailure({ reason: `${name} reply lost` }));
       return Effect.succeed(value);
     });
   const addApp = (id: string, name: string) => {
@@ -141,11 +147,11 @@ export function fixtureProduct(options: { readonly failAfter?: Set<string> } = {
     disconnect: (account) =>
       Effect.suspend(() => {
         if (state.links.some((link) => link.account === account && link.requirement !== "pool"))
-          return Effect.fail(new Error("AccountLinkedToApp"));
+          return Effect.fail(new StandInFailure({ reason: "AccountLinkedToApp" }));
         // An account is retired through the app that acquired it; once that app is gone, it cannot be.
         const acquired = accounts.find((entry) => entry.id === account);
         if (acquired !== undefined && !state.apps.some((app) => app.id === acquired.app))
-          return Effect.fail(new Error("InteractiveRetirementFailed"));
+          return Effect.fail(new StandInFailure({ reason: "InteractiveRetirementFailed" }));
         state.links = state.links.filter((link) => link.account !== account);
         state.accounts = state.accounts.filter((id) => id !== account);
         return after("disconnect", undefined);

@@ -41,6 +41,7 @@ import {
   type RunnerSettings,
 } from "../../.upstream/apps/hosted/cloud/src/infrastructure/acceptance-pool/runner.ts";
 import { upstreamOriginSha256 as driverDigest } from "../acceptance-pool/client.ts";
+import { StandInFailure } from "./acceptance-pool-fixture.ts";
 
 /** A dry run's answer, narrowed from the runner's union of answers. */
 const planOf = <A extends { readonly action: string }>(result: A) => {
@@ -99,7 +100,8 @@ const fixtureSteps = (log: string[], failOnce = new Set<string>()): AcceptancePo
   run: (step) =>
     Effect.suspend(() => {
       log.push(step);
-      if (failOnce.delete(step)) return Effect.fail(new Error("stand-in step failed"));
+      if (failOnce.delete(step))
+        return Effect.fail(new StandInFailure({ reason: "stand-in step failed" }));
       return Effect.succeed({ done: step });
     }),
   verify: (context) =>

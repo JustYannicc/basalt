@@ -281,12 +281,13 @@ index 0000000..5f8440d
 +  sha256(`basalt-acceptance-upstream-origin-v1\n${origin}`);
 diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/http.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/http.ts
 new file mode 100644
-index 0000000..dd4a912
+index 0000000..e0bf577
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/http.ts
-@@ -0,0 +1,121 @@
+@@ -0,0 +1,122 @@
 +import {
 +  AcceptancePoolRefused,
++  type AcceptanceFailure,
 +  type AcceptancePoolSteps,
 +} from "@executor-js/hosted-server/acceptance-pool";
 +import { ProductAnalytics } from "@executor-js/hosted-server";
@@ -337,7 +338,7 @@ index 0000000..dd4a912
 +  readonly signingKey: Option.Option<Redacted.Redacted<string>>;
 +  readonly target: string;
 +  /** Resolved per request: the runtime secrets and the database it may act on. */
-+  readonly settings: Effect.Effect<RunnerSettings, unknown, SqlClient.SqlClient>;
++  readonly settings: Effect.Effect<RunnerSettings, AcceptanceFailure, SqlClient.SqlClient>;
 +  readonly steps: AcceptancePoolSteps<R>;
 +}
 +
@@ -408,10 +409,10 @@ index 0000000..dd4a912
 +  );
 diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/identity.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/identity.ts
 new file mode 100644
-index 0000000..e7b85cb
+index 0000000..09a02d6
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/identity.ts
-@@ -0,0 +1,153 @@
+@@ -0,0 +1,154 @@
 +import {
 +  acceptanceIdentity,
 +  poolAccessJobPrefix,
@@ -445,8 +446,9 @@ index 0000000..e7b85cb
 +  return { user: person, organization: team, member: owner };
 +});
 +
-+const count = (query: Effect.Effect<ReadonlyArray<{ readonly count: string | number }>, unknown>) =>
-+  Effect.map(query, (result) => Number(result[0]?.count ?? 0));
++const count = <E, R>(
++  query: Effect.Effect<ReadonlyArray<{ readonly count: string | number }>, E, R>,
++) => Effect.map(query, (result) => Number(result[0]?.count ?? 0));
 +
 +/**
 + * Everything that would make the identity something other than inert: rows that differ from what
@@ -681,11 +683,16 @@ index 0000000..63dd29b
 +  });
 diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/product.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/product.ts
 new file mode 100644
-index 0000000..cf3b18f
+index 0000000..a7d157f
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/product.ts
-@@ -0,0 +1,93 @@
-+import { refuse, type Json, type StepContext } from "@executor-js/hosted-server/acceptance-pool";
+@@ -0,0 +1,101 @@
++import {
++  refuse,
++  type AcceptanceFailure,
++  type Json,
++  type StepContext,
++} from "@executor-js/hosted-server/acceptance-pool";
 +import { Effect, Schema } from "effect";
 +import { canonical, sha256 } from "../production-ops/crypto.ts";
 +import { upstreamProfiles } from "./request.ts";
@@ -719,9 +726,12 @@ index 0000000..cf3b18f
 +
 +/** The product calls the steps make, each run by the tools service as the acceptance identity. */
 +export interface AcceptanceProduct<R> {
-+  readonly state: Effect.Effect<AcceptanceState, unknown, R>;
-+  readonly createPool: (name: string, requestId: string) => Effect.Effect<string, unknown, R>;
-+  readonly installProvider: Effect.Effect<string, unknown, R>;
++  readonly state: Effect.Effect<AcceptanceState, AcceptanceFailure, R>;
++  readonly createPool: (
++    name: string,
++    requestId: string,
++  ) => Effect.Effect<string, AcceptanceFailure, R>;
++  readonly installProvider: Effect.Effect<string, AcceptanceFailure, R>;
 +  readonly providerName: string;
 +  readonly createAccount: (input: {
 +    readonly app: string;
@@ -729,16 +739,16 @@ index 0000000..cf3b18f
 +    readonly method: string;
 +    readonly label: string;
 +    readonly fields: { readonly baseUrl: string; readonly models: string; readonly token: string };
-+  }) => Effect.Effect<string, unknown, R>;
-+  readonly link: (pool: string, account: string) => Effect.Effect<void, unknown, R>;
-+  readonly unlink: (pool: string, account: string) => Effect.Effect<void, unknown, R>;
-+  readonly disconnect: (account: string) => Effect.Effect<void, unknown, R>;
-+  readonly removeApp: (app: string) => Effect.Effect<void, unknown, R>;
++  }) => Effect.Effect<string, AcceptanceFailure, R>;
++  readonly link: (pool: string, account: string) => Effect.Effect<void, AcceptanceFailure, R>;
++  readonly unlink: (pool: string, account: string) => Effect.Effect<void, AcceptanceFailure, R>;
++  readonly disconnect: (account: string) => Effect.Effect<void, AcceptanceFailure, R>;
++  readonly removeApp: (app: string) => Effect.Effect<void, AcceptanceFailure, R>;
 +  readonly membership: (
 +    pool: string,
 +  ) => Effect.Effect<
 +    { readonly native: boolean; readonly accounts: readonly string[] },
-+    unknown,
++    AcceptanceFailure,
 +    R
 +  >;
 +}
@@ -780,14 +790,15 @@ index 0000000..cf3b18f
 +export const digest = (value: unknown) => sha256(`${canonical(value)}\n`);
 diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/receipt.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/receipt.ts
 new file mode 100644
-index 0000000..d1deb39
+index 0000000..fe152bc
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/receipt.ts
-@@ -0,0 +1,225 @@
+@@ -0,0 +1,226 @@
 +import {
 +  acceptanceIdentity,
 +  AcceptanceKind,
 +  refuse,
++  type AcceptanceFailure,
 +  type Json,
 +} from "@executor-js/hosted-server/acceptance-pool";
 +import { Effect, Option, Schema } from "effect";
@@ -828,7 +839,7 @@ index 0000000..d1deb39
 +  verification: Schema.Unknown,
 +});
 +
-+const lockedOrMoved = (error: unknown) => {
++const lockedOrMoved = <E>(error: E) => {
 +  if (!SqlError.isSqlError(error)) return Effect.fail(error);
 +  const driver = error.reason.cause;
 +  const code =
@@ -894,8 +905,8 @@ index 0000000..d1deb39
 +  readonly envelope: string;
 +  readonly now: number;
 +  /** Runs before any claim that will act: the same database, and nothing that forbids the act. */
-+  readonly guard: Effect.Effect<void, unknown, SqlClient.SqlClient | R>;
-+  readonly fresh: Effect.Effect<void, unknown, SqlClient.SqlClient | R>;
++  readonly guard: Effect.Effect<void, AcceptanceFailure, SqlClient.SqlClient | R>;
++  readonly fresh: Effect.Effect<void, AcceptanceFailure, SqlClient.SqlClient | R>;
 +}) =>
 +  Effect.gen(function* () {
 +    const sql = yield* SqlClient.SqlClient;
@@ -2035,10 +2046,10 @@ index bafb8cd..bd90491 100644
      "./hosted-routes/contracts": "./src/contracts/hosted-routes.ts",
 diff --git a/apps/hosted/server/src/contracts/acceptance-pool.ts b/apps/hosted/server/src/contracts/acceptance-pool.ts
 new file mode 100644
-index 0000000..f74c51c
+index 0000000..97e0361
 --- /dev/null
 +++ b/apps/hosted/server/src/contracts/acceptance-pool.ts
-@@ -0,0 +1,126 @@
+@@ -0,0 +1,134 @@
 +import { Data, Schema, type Effect } from "effect";
 +import type { SqlClient } from "effect/sql";
 +
@@ -2105,6 +2116,14 @@ index 0000000..f74c51c
 +}> {}
 +export const refuse = (reason: AcceptanceRefusalReason) => new AcceptancePoolRefused({ reason });
 +
++/**
++ * What a product call or check fails with. Every one is a tagged error, and the tag is all of a
++ * failed step that leaves the runner.
++ */
++export interface AcceptanceFailure {
++  readonly _tag: string;
++}
++
 +export interface Verification {
 +  readonly ok: boolean;
 +  readonly checks: Readonly<Record<string, boolean>>;
@@ -2154,14 +2173,14 @@ index 0000000..f74c51c
 +    kind: AcceptanceKind,
 +    request: Json,
 +    setup: RecordedSetup | undefined,
-+  ) => Effect.Effect<Inspection, unknown, SqlClient.SqlClient | R>;
++  ) => Effect.Effect<Inspection, AcceptanceFailure, SqlClient.SqlClient | R>;
 +  readonly run: (
 +    step: string,
 +    context: StepContext,
-+  ) => Effect.Effect<Json, unknown, SqlClient.SqlClient | R>;
++  ) => Effect.Effect<Json, AcceptanceFailure, SqlClient.SqlClient | R>;
 +  readonly verify: (
 +    context: StepContext,
-+  ) => Effect.Effect<Verification, unknown, SqlClient.SqlClient | R>;
++  ) => Effect.Effect<Verification, AcceptanceFailure, SqlClient.SqlClient | R>;
 +  /** What the receipt names beside its kind and status: the pool app and its accounts. */
 +  readonly describe: (context: StepContext) => Json;
 +}

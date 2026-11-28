@@ -17,7 +17,7 @@ import {
   type RunnerSettings,
 } from "../../.upstream/apps/hosted/cloud/src/infrastructure/acceptance-pool/runner.ts";
 import { makeAcceptancePoolSteps } from "../../.upstream/apps/hosted/cloud/src/infrastructure/acceptance-pool/steps.ts";
-import { fixtureProduct, operationSchema } from "./acceptance-pool-fixture.ts";
+import { fixtureProduct, operationSchema, StandInFailure } from "./acceptance-pool-fixture.ts";
 
 /** A dry run's answer, narrowed from the runner's union of answers. */
 const planOf = <A extends { readonly action: string }>(result: A) => {
@@ -307,7 +307,7 @@ const stoppingAt = (steps: AcceptancePoolSteps, stop: string): AcceptancePoolSte
     run: (step, context) => {
       if (step === stop && !stopped) {
         stopped = true;
-        return Effect.fail(new Error("stopped before the step"));
+        return Effect.fail(new StandInFailure({ reason: "stopped before the step" }));
       }
       return steps.run(step, context);
     },

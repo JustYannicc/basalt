@@ -17,7 +17,7 @@ import {
   type RunnerSettings,
 } from "../../.upstream/apps/hosted/cloud/src/infrastructure/acceptance-pool/runner.ts";
 import { makeAcceptancePoolSteps } from "../../.upstream/apps/hosted/cloud/src/infrastructure/acceptance-pool/steps.ts";
-import { fixtureProduct, operationSchema } from "./acceptance-pool-fixture.ts";
+import { fixtureProduct, operationSchema, StandInFailure } from "./acceptance-pool-fixture.ts";
 
 /** A dry run's answer, narrowed from the runner's union of answers. */
 const planOf = <A extends { readonly action: string }>(result: A) => {
@@ -320,7 +320,7 @@ test("an interrupted teardown resumes, and a replayed teardown repeats nothing",
             ? Effect.andThen(
                 steps.run(step, context),
                 Effect.sync(() => fixture.calls.push("lost")).pipe(
-                  Effect.andThen(Effect.fail(new Error("reply lost"))),
+                  Effect.andThen(Effect.fail(new StandInFailure({ reason: "reply lost" }))),
                 ),
               )
             : steps.run(step, context),
@@ -437,7 +437,7 @@ test("a teardown stopped before its last step leaves the organization closed to 
         run: (step, context) => {
           if (step === "disconnect-token" && !stopped) {
             stopped = true;
-            return Effect.fail(new Error("stopped before the token"));
+            return Effect.fail(new StandInFailure({ reason: "stopped before the token" }));
           }
           return steps.run(step, context);
         },
