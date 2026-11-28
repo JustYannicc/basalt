@@ -8,6 +8,8 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as Redacted from "effect/Redacted";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Credentials } from "@distilled.cloud/cloudflare/Credentials";
+import * as Clock from "effect/Clock";
+import { virtualClock } from "./virtual-clock.ts";
 
 // beta.80's wildcard exports name directories; its published runtime files are siblings.
 const tree = process.argv[2] ?? "lib";
@@ -304,6 +306,8 @@ const program = Effect.gen(function* () {
 }).pipe(
   Effect.provide(LiveContainerProvider()),
   Effect.provide(NodeServices.layer),
+  // A deleted application is read through the provider's readiness backoff.
+  Effect.provideService(Clock.Clock, virtualClock().clock),
   Effect.provideService(AlchemyContext, { dotAlchemy: context, dev: false, adopt: false }),
   Effect.provideService(Docker, {
     image: { build: () => Effect.die(new Error("Unexpected Docker build")) },

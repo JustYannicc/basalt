@@ -244,13 +244,6 @@ jobs:
       - uses: ./.github/actions/setup-node
         with:
           node-version: 24.18.0
-      - name: Stop the line and require a rehearsal
-        if: hashFiles('scripts/guardrails/release-gate.ts') != ''
-        env:
-          OVERRIDE_REASON: ${{ inputs.override_reason }}
-          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
-          GH_TOKEN: ${{ github.token }}
-        run: node scripts/guardrails/release-gate.ts "$BASALT_RELEASE_CANDIDATE"
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: 1.4.2

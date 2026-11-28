@@ -91,27 +91,12 @@ jobs:
       - name: Install the workflow and source parsers selection reads with
         if: steps.reuse.outputs.reused != 'true'
         run: bun install --frozen-lockfile --cwd scripts/architecture
+      # Every job that compares resolves this commit itself from the event, so each job and each
+      # re-run of the Check gets the same one however main moves (scripts/ci/comparison-base.ts).
       - name: Resolve the comparison commit
         if: steps.reuse.outputs.reused != 'true'
         id: comparison
-        env:
-          PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
-          BASE_REF: ${{ github.base_ref || 'main' }}
-          BATCH_PUSH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/batch/') }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          base="$BASE_SHA"
-          if [ -n "${RECORDED_BASE:-}" ]; then
-            # A re-run whose select carried over compares with the commit select recorded.
-            base="$RECORDED_BASE"
-          elif [ "$PULL_REQUEST" = true ] || [ "$BATCH_PUSH" = true ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
-            target="${BASE_REF:-main}"
-            git fetch --no-tags origin "+refs/heads/$target:refs/remotes/origin/$target"
-            base="$(git merge-base "$HEAD_SHA" "refs/remotes/origin/$target")"
-          fi
-          base="$(git rev-parse --verify "$base^{commit}")"
-          echo "base_sha=$base" >> "$GITHUB_OUTPUT"
+        run: node scripts/ci/comparison-base.ts
       - name: Select the full suite or the fast lane
         if: steps.reuse.outputs.reused != 'true'
         id: jobs
@@ -209,27 +194,19 @@ jobs:
     runs-on: ${{ github.run_attempt == 1 && needs.select.outputs.light_label || 'ubuntu-latest' }}
     # Light job: see select's timeout. The longest run of 26 Nov took 234 s.
     timeout-minutes: 15
+    # The aggregate requires the guard to have compared with select's commit (scripts/ci/gate.ts).
+    outputs:
+      base_sha: ${{ steps.comparison.outputs.base_sha }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Resolve the guard comparison commit
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - name: Resolve the comparison commit
         id: comparison
-        env:
-          PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
-          BASE_REF: ${{ github.base_ref || 'main' }}
-          BATCH_PUSH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/batch/') }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          base="$BASE_SHA"
-          if [ "$PULL_REQUEST" = true ] || [ "$BATCH_PUSH" = true ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
-            target="${BASE_REF:-main}"
-            git fetch --no-tags origin "+refs/heads/$target:refs/remotes/origin/$target"
-            base="$(git merge-base "$HEAD_SHA" "refs/remotes/origin/$target")"
-          fi
-          base="$(git rev-parse --verify "$base^{commit}")"
-          echo "base_sha=$base" >> "$GITHUB_OUTPUT"
+        run: node scripts/ci/comparison-base.ts
       - name: Verify CPA updater and pipeline boundary
         env:
           BASE_SHA: ${{ steps.comparison.outputs.base_sha }}
@@ -2374,15 +2351,11 @@ jobs:
 
   # `fast` and `fast-units` need no selection, so they start with the Check: each resolves the
   # comparison commit and the lane itself, with select's step and select's lane function
-  # (scripts/ci/lane.ts). The aggregate requires each of them to report select's lane and base, so
-  # main moving the merge-base mid-Check fails it rather than running another base's tests.
+  # (scripts/ci/lane.ts). The commit comes from the event alone, so main moving mid-Check or before
+  # a re-run moves none of them; the aggregate still requires each to report select's lane and base.
   fast:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # actions: read lets a re-run read whether select ran again in its attempt.
-    permissions:
-      actions: read
-      contents: read
     env:
       # Bytecode inside the pool context changes its reviewed publication identity.
       PYTHONDONTWRITEBYTECODE: "1"
@@ -2402,47 +2375,9 @@ jobs:
       - uses: ./.github/actions/desktop-release-assets
         with:
           warm: "true"
-      # A re-run that carries select over compares with the commit select recorded; main may have
-      # moved the merge-base since (scripts/ci/rerun-selection.ts). Only then is there a record to
-      # download, so other re-runs show no missing-artifact error.
-      - name: Check whether select carries over into this re-run
-        id: carried
-        if: github.run_attempt > 1
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: node scripts/ci/rerun-selection.ts
-      - name: Download the selection select recorded
-        if: github.run_attempt > 1 && steps.carried.outputs.carried == 'true'
-        continue-on-error: true
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-selection
-          path: ${{ runner.temp }}/ci-selection
-      - name: Take select's comparison commit
-        id: rerun
-        if: github.run_attempt > 1 && steps.carried.outputs.carried == 'true'
-        run: node scripts/ci/rerun-selection.ts base
       - name: Resolve the comparison commit
         id: comparison
-        env:
-          RECORDED_BASE: ${{ steps.rerun.outputs.base_sha }}
-          PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
-          BASE_REF: ${{ github.base_ref || 'main' }}
-          BATCH_PUSH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/batch/') }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          base="$BASE_SHA"
-          if [ -n "${RECORDED_BASE:-}" ]; then
-            # A re-run whose select carried over compares with the commit select recorded.
-            base="$RECORDED_BASE"
-          elif [ "$PULL_REQUEST" = true ] || [ "$BATCH_PUSH" = true ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
-            target="${BASE_REF:-main}"
-            git fetch --no-tags origin "+refs/heads/$target:refs/remotes/origin/$target"
-            base="$(git merge-base "$HEAD_SHA" "refs/remotes/origin/$target")"
-          fi
-          base="$(git rev-parse --verify "$base^{commit}")"
-          echo "base_sha=$base" >> "$GITHUB_OUTPUT"
+        run: node scripts/ci/comparison-base.ts
       # First, so no earlier failure keeps it from reading what the push added.
       - name: Refuse secrets and generated files in the new commits
         env:
@@ -2614,10 +2549,6 @@ jobs:
   fast-units:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # actions: read lets a re-run read whether select ran again in its attempt.
-    permissions:
-      actions: read
-      contents: read
     env:
       PYTHONDONTWRITEBYTECODE: "1"
     # One output per leg: a matrix job's legs merge outputs by name (unitLegs in scripts/ci/gate.ts).
@@ -2638,44 +2569,9 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
-      - name: Check whether select carries over into this re-run
-        id: carried
-        if: github.run_attempt > 1
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: node scripts/ci/rerun-selection.ts
-      - name: Download the selection select recorded
-        if: github.run_attempt > 1 && steps.carried.outputs.carried == 'true'
-        continue-on-error: true
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-selection
-          path: ${{ runner.temp }}/ci-selection
-      - name: Take select's comparison commit
-        id: rerun
-        if: github.run_attempt > 1 && steps.carried.outputs.carried == 'true'
-        run: node scripts/ci/rerun-selection.ts base
       - name: Resolve the comparison commit
         id: comparison
-        env:
-          RECORDED_BASE: ${{ steps.rerun.outputs.base_sha }}
-          PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
-          BASE_REF: ${{ github.base_ref || 'main' }}
-          BATCH_PUSH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/batch/') }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          base="$BASE_SHA"
-          if [ -n "${RECORDED_BASE:-}" ]; then
-            # A re-run whose select carried over compares with the commit select recorded.
-            base="$RECORDED_BASE"
-          elif [ "$PULL_REQUEST" = true ] || [ "$BATCH_PUSH" = true ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
-            target="${BASE_REF:-main}"
-            git fetch --no-tags origin "+refs/heads/$target:refs/remotes/origin/$target"
-            base="$(git merge-base "$HEAD_SHA" "refs/remotes/origin/$target")"
-          fi
-          base="$(git rev-parse --verify "$base^{commit}")"
-          echo "base_sha=$base" >> "$GITHUB_OUTPUT"
+        run: node scripts/ci/comparison-base.ts
       - run: npm run prepare:upstream
       - name: Resolve the lane select chooses
         id: lane
@@ -3078,10 +2974,12 @@ jobs:
           CI_REUSE_EVIDENCE: ${{ needs.select.outputs.evidence }}
           CI_FULL_SUITE: ${{ needs.select.outputs.full_suite }}
           CI_LANE: ${{ needs.select.outputs.lane }}
-          # fast and the unit legs resolve the comparison and lane themselves; they must be select's.
+          # fast, the unit legs and cpa-pipeline resolve the comparison themselves, fast and the legs
+          # the lane too; they must be select's.
           CI_BASE_SHA: ${{ needs.select.outputs.base_sha }}
           CI_FAST_LANE_BASE: ${{ needs.fast.outputs.lane_base }}
           CI_UNIT_LANE_BASES: ${{ toJSON(needs.fast-units.outputs) }}
+          CI_CPA_BASE_SHA: ${{ needs.cpa-pipeline.outputs.base_sha }}
           CI_JOBS: ${{ needs.select.outputs.jobs }}
           CI_BOX_JOBS: ${{ needs.select.outputs.box_jobs }}
         run: node scripts/ci/gate.ts
