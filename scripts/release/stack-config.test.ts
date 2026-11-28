@@ -42,6 +42,29 @@ test("the emulated upstream stack is accepted from the cloud app and from the re
     });
 });
 
+test("the route scratch stack is accepted from the cloud app and from the repo root, on runner-local State", () => {
+  for (const [value, cwd] of [
+    ["../../../../scripts/route-scratch/stack.ts", cloud],
+    ["scripts/route-scratch/stack.ts", root],
+  ] as const)
+    assert.deepEqual(stackConfig(value, root, cwd), {
+      config: "scripts/route-scratch/stack.ts",
+      scaleStack: false,
+      state: "runner-local",
+    });
+  // Its two scratch stages only.
+  for (const stage of ["test-route-scratch-1", "test-route-scratch-2"])
+    assert.equal(stackRunsOn("scripts/route-scratch/stack.ts", stage), true, stage);
+  for (const stage of [
+    "test-route-scratch-3",
+    "test-route-scratch-12",
+    "test-route-scratch-",
+    "production",
+    "test-pr-7",
+  ])
+    assert.equal(stackRunsOn("scripts/route-scratch/stack.ts", stage), false, stage);
+});
+
 test("no config is the production stack; the scale stack is matched by its suffix", () => {
   assert.deepEqual(stackConfig(undefined, root, cloud), {
     config: "alchemy.run.ts",
@@ -56,10 +79,10 @@ test("no config is the production stack; the scale stack is matched by its suffi
   });
 });
 
-test("of the listed stacks only the emulated upstream is on runner-local State; the rest stay shared", () => {
+test("of the listed stacks only the emulated upstream and the route scratch are on runner-local State; the rest stay shared", () => {
   assert.deepEqual(
     stackConfigs.filter((stack) => stack.state === "runner-local").map((stack) => stack.path),
-    ["scripts/emulated-upstream/stack.ts"],
+    ["scripts/emulated-upstream/stack.ts", "scripts/route-scratch/stack.ts"],
   );
   for (const stack of stackConfigs)
     assert.equal(stackConfig(stack.path, root, root).state, stack.state, stack.path);
@@ -154,6 +177,8 @@ test("an unknown config is refused, even one beside the known ones", () => {
     "scripts/preview/stack/alchemy.rehearsal-fixture.js",
     "scripts/emulated-upstream/worker.ts",
     "/frozen/candidate/scripts/emulated-upstream/stack.ts",
+    "scripts/route-scratch/worker.ts",
+    "/frozen/candidate/scripts/route-scratch/stack.ts",
     "/elsewhere/alchemy.run.ts",
   ])
     assert.throws(() => stackConfig(value, root, cloud), /^Error: Unknown stack config /u);
@@ -212,6 +237,7 @@ test("a test-only stack is refused on production and on any stage but its own, b
     ["scripts/preview/stack/alchemy.cleanup.ts", "test-pr-7", "test-emulated-upstream"],
     ["scripts/preview/stack/alchemy.rehearsal-fixture.ts", "test-rehearsal-1", "test-pr-7"],
     ["scripts/emulated-upstream/stack.ts", "test-emulated-upstream", "test-pr-7"],
+    ["scripts/route-scratch/stack.ts", "test-route-scratch-1", "test-emulated-upstream"],
   ] as const) {
     for (const stage of ["production", other]) {
       const refused = runEntryWith(actions, "plan", "--stage", stage, "--config", config);
