@@ -289,7 +289,7 @@ test("no file, summary or log line the driver writes holds the key or the origin
   }
 });
 
-test("the driver refuses any ref but main and any target but production or a rehearsal stage, before sending", () => {
+test("the driver refuses any ref but main and any target but production, before sending", () => {
   const offMain = run({ GITHUB_REF: "refs/heads/feature" }, {});
   assert.equal(offMain.result.status, 1);
   assert.equal(offMain.fetched, 0, "nothing is sent from another ref");
