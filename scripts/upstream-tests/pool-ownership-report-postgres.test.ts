@@ -64,10 +64,10 @@ async function withInventoryDatabase(
   }
 }
 
-const clientOn = (schema: string) =>
+const clientOn = (schema: string, url = postgresUrl()) =>
   ManagedRuntime.make(
     PgClient.layer({
-      url: Redacted.make(postgresUrl()),
+      url: Redacted.make(url),
       maxConnections: 2,
       startupParameters: { search_path: schema },
       prepare: false,
@@ -75,8 +75,8 @@ const clientOn = (schema: string) =>
   );
 
 /** One run of the hourly job, with every line it writes. */
-async function inventoryLines(schema: string) {
-  const runtime = clientOn(schema);
+async function inventoryLines(schema: string, url = postgresUrl()) {
+  const runtime = clientOn(schema, url);
   const lines: string[] = [];
   const captured: Console.Console = {
     ...globalThis.console,
@@ -95,6 +95,22 @@ async function inventoryLines(schema: string) {
   } finally {
     await runtime.dispose();
   }
+  return lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+/** One run of the hourly job whose database service cannot give a connection. */
+async function inventoryLinesWithoutConnection() {
+  const lines: string[] = [];
+  const captured: Console.Console = {
+    ...globalThis.console,
+    info: (...args) => void lines.push(args.join(" ")),
+  };
+  await Effect.runPromise(
+    reportHostPoolInventory.pipe(
+      Effect.provideService(GroupDatabase, Effect.fail(new Error("no connection")) as never),
+      Effect.provideService(Console.Console, captured),
+    ),
+  );
   return lines.map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
@@ -280,7 +296,10 @@ test("a report statement cancelled behind a lock leaves the inventory exactly as
     // A migration holds the apps table, which only the report reads.
     await locker.query("begin");
     await locker.query(`lock table ${schema}.executor_apps in access exclusive mode`);
+    const started = Date.now();
     const locked = await inventoryLines(schema);
+    // The report's own lock bound ends the wait, well before its statement bound would.
+    assert.ok(Date.now() - started < 2_500, `the report waited ${Date.now() - started} ms`);
     await locker.query("rollback");
     assert.deepEqual(inventoryOnly(locked), inventoryOnly(free));
     assert.equal(inventoryOnly(locked).at(-1)?.complete, true);
@@ -329,7 +348,7 @@ test("above its row cap the report still writes an incomplete line", async () =>
   });
 });
 
-test("an inventory whose own read fails names why and where, and the report still covers every pair", async () => {
+test("an inventory whose own read fails in each of its ways names why and where, and the report still covers every pair", async () => {
   await withInventoryDatabase(async ({ admin, locker, schema }) => {
     await admin.query("insert into organization values ('org_a', $1)", [record("app_a")]);
     await admin.query("insert into executor_apps values ('app_a', 'organization:org_a', null)");
@@ -341,6 +360,8 @@ test("an inventory whose own read fails names why and where, and the report stil
       assert.equal(lines.at(-1), line);
       assert.equal(line.complete, true);
       assert.equal((line.counts as { owned: number }).owned, 1);
+      // The report's line carries the snapshot it read itself.
+      assert.equal(typeof line.snapshot, "string");
       return { reason: end.reason, failure: end.failure, section: end.section };
     };
     // A section over the inventory's own row cap.
@@ -370,8 +391,68 @@ test("an inventory whose own read fails names why and where, and the report stil
       failure: "sql_error",
       section: "groups",
     });
-    // And one that reads, with nothing failing: complete, no failure named.
     await admin.query(tables.find((statement) => statement.includes(" hosted_groups "))!);
+    // A value over the inventory's own value cap.
+    await admin.query("insert into executor_accounts values ('acc_long', $1, 'p', 'm')", [
+      "o".repeat(513),
+    ]);
+    assert.deepEqual(await failedWith(), {
+      reason: "query_failed",
+      failure: "value_cap",
+      section: "accounts",
+    });
+    await admin.query("delete from executor_accounts");
+    // Rows under the row cap whose report is over the inventory's own byte cap.
+    for (let index = 0; index < 900; index++)
+      await admin.query("insert into executor_accounts values ($1, $2, 'p', 'm')", [
+        `acc_${index}`,
+        "o".repeat(160),
+      ]);
+    assert.deepEqual(await failedWith(), {
+      reason: "query_failed",
+      failure: "bytes_cap",
+      section: undefined,
+    });
+    await admin.query("delete from executor_accounts");
+    // A section the database ends at the inventory's own statement bound.
+    await admin.query("drop table executor_accounts");
+    await admin.query(`create view executor_accounts as
+      select v.id, v.owner, v.provider, v.method
+      from (select pg_sleep(4)) s, (values ('a', 'o', 'p', 'm')) v(id, owner, provider, method)`);
+    assert.deepEqual(await failedWith(), {
+      reason: "query_failed",
+      failure: "statement_timeout",
+      section: "accounts",
+    });
+    await admin.query("drop view executor_accounts");
+    await admin.query(tables.find((statement) => statement.includes(" executor_accounts "))!);
+    // A database that refuses the connection itself, at its first statement.
+    const refused = await inventoryLines(schema, "postgresql://postgres@127.0.0.1:1/postgres");
+    assert.deepEqual(
+      [inventoryOnly(refused)[0]?.failure, ownership(refused)[0]?.reason],
+      ["connection", "query_failed"],
+    );
+    // A database service that gives no connection: the inventory says so, and the report, which
+    // has no connection either, says it could not read rather than writing nothing.
+    const unconnected = await inventoryLinesWithoutConnection();
+    const [end] = inventoryOnly(unconnected);
+    assert.deepEqual(
+      [end.reason, end.failure, end.section],
+      ["query_failed", "connection", undefined],
+    );
+    assert.deepEqual(
+      ownership(unconnected).map(({ run: _run, ...line }) => line),
+      [
+        {
+          inventory: "pool-ownership-v1",
+          snapshot: null,
+          complete: false,
+          reason: "query_failed",
+          migrationGo: false,
+        },
+      ],
+    );
+    // And one that reads, with nothing failing: complete, no failure named.
     const lines = await inventoryLines(schema);
     assert.equal(inventoryOnly(lines).at(-1)?.complete, true);
     assert.equal(inventoryOnly(lines).at(-1)?.failure, undefined);

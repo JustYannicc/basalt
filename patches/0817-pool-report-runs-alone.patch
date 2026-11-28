@@ -15,7 +15,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/pool-inventory.ts b/apps/hoste
  
  // No caller supplies SQL or a selector. JSON projections stop at known identifier leaves.
  const queries = {
-@@ -58,18 +54,47 @@ const queries = {
+@@ -58,18 +54,49 @@ const queries = {
  } as const;
  
  const Rows = Schema.Array(Schema.Record(Schema.String, Schema.NullOr(Schema.String)));
@@ -49,6 +49,8 @@ diff --git a/apps/hosted/cloud/src/infrastructure/pool-inventory.ts b/apps/hoste
 +  const reason = isRecord(error) && isRecord(error.reason) ? error.reason._tag : undefined;
 +  if (reason === "StatementTimeoutError") return "statement_timeout";
 +  if (reason === "LockTimeoutError") return "lock_timeout";
++  // The pool opens its connection at the first statement, so a refused one arrives as its error.
++  if (reason === "ConnectionError" || reason === "AuthenticationError") return "connection";
 +  return isRecord(error) ? "sql_error" : "unknown";
 +};
 +
@@ -66,7 +68,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/pool-inventory.ts b/apps/hoste
      return yield* sql.withTransaction(
        Effect.gen(function* () {
          yield* sql`set transaction isolation level repeatable read read only`;
-@@ -79,33 +104,35 @@ export const reportHostPoolInventory = Effect.gen(function* () {
+@@ -79,33 +106,35 @@ export const reportHostPoolInventory = Effect.gen(function* () {
          const identity =
            yield* sql`select current_setting('transaction_read_only') as read_only, transaction_timestamp()::text as snapshot`;
          if (identity[0]?.read_only !== "on" || typeof identity[0]?.snapshot !== "string") {
@@ -112,7 +114,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/pool-inventory.ts b/apps/hoste
    );
    if (!report.ok) {
      yield* Console.info(
-@@ -115,10 +142,13 @@ export const reportHostPoolInventory = Effect.gen(function* () {
+@@ -115,10 +144,13 @@ export const reportHostPoolInventory = Effect.gen(function* () {
          event: "end",
          complete: false,
          reason: "query_failed",
@@ -127,7 +129,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/pool-inventory.ts b/apps/hoste
      return;
    }
    const json = JSON.stringify(report.report);
-@@ -149,19 +179,38 @@ export const reportHostPoolInventory = Effect.gen(function* () {
+@@ -149,19 +181,38 @@ export const reportHostPoolInventory = Effect.gen(function* () {
        migrationGo: false,
      }),
    );
@@ -194,6 +196,15 @@ diff --git a/apps/hosted/cloud/src/infrastructure/pool-ownership-report.ts b/app
   * app with the organization that owns it, and each pool app with its owner, recorded or not. A pool
   * app is a copy whose origin is the pool app's source, whatever name it was given: the catalog
   * names it `basalt-pool`, a person's default pool `<brand> pool`. Per pair it reads the facts the
+@@ -69,7 +69,7 @@ const Pairs = Schema.Array(
+ const Count = Schema.Array(Schema.Struct({ n: Schema.Int }));
+ 
+ /**
+- * The facts the report is made from, as read in the inventory's transaction, ordered by
++ * The facts the report is made from, as read in the report's own transaction, ordered by
+  * organization: a pair's `metadata` is its organization's `basaltPools`, as the one key of an
+  * object, on that organization's first pair, and null on the rest.
+  */
 @@ -80,7 +80,7 @@ export interface PopulationFacts {
  
  /**
@@ -203,7 +214,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/pool-ownership-report.ts b/app
   */
  export const readPoolPopulation = (sql: SqlClient.SqlClient) =>
    sql.withTransaction(
-@@ -95,6 +95,26 @@ export const readPoolPopulation = (sql: SqlClient.SqlClient) =>
+@@ -95,6 +95,30 @@ export const readPoolPopulation = (sql: SqlClient.SqlClient) =>
      }),
    );
  
@@ -219,18 +230,22 @@ diff --git a/apps/hosted/cloud/src/infrastructure/pool-ownership-report.ts b/app
 +      yield* sql`set local lock_timeout = '500ms'`;
 +      yield* sql`set local idle_in_transaction_session_timeout = '5s'`;
 +      const [identity] = yield* sql
-+        .unsafe("select transaction_timestamp()::text as snapshot")
++        .unsafe(
++          "select current_setting('transaction_read_only') as read_only, transaction_timestamp()::text as snapshot",
++        )
 +        .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Snapshot)));
++      // The report only ever reads; a transaction that is not read-only reads nothing.
++      if (identity?.read_only !== "on") return yield* Effect.fail(new Error("not read only"));
 +      const facts = yield* readPoolPopulation(sql);
 +      return { facts, snapshot: identity?.snapshot };
 +    }),
 +  );
-+const Snapshot = Schema.Array(Schema.Struct({ snapshot: Schema.String }));
++const Snapshot = Schema.Array(Schema.Struct({ read_only: Schema.String, snapshot: Schema.String }));
 +
  /** The most pool ids one line carries; the rest are counted. */
  const listed = 50;
  /** The most pairs one read covers; above it the line says it is incomplete and lists nothing. */
-@@ -106,18 +126,11 @@ const covered = 1_000;
+@@ -106,18 +130,11 @@ const covered = 1_000;
   * one never look alike. Pool ids only, never organization metadata.
   */
  export function poolOwnershipLine(
