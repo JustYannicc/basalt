@@ -5,6 +5,9 @@ import { test } from "node:test";
 import { decodeProviderApplication } from "../../src/pool/runtime-provider/application.ts";
 import { providerDigest } from "../../src/pool/runtime-provider/canonical.ts";
 import { runtimeApplicationSettings } from "../../src/pool/runtime-provider/settings.ts";
+import { Effect } from "effect";
+import { poolWorkerName } from "./cloudflare.ts";
+import { crashReadyCell } from "./crash-cell.ts";
 import { runPoolFleet, stepSummary, type DispatchInput } from "./dispatch.ts";
 import { FleetLaneRefused, refuse } from "./errors.ts";
 import { CrashPoolRefused } from "../../src/pool/runtime-crash-contract.ts";
@@ -478,6 +481,49 @@ test("crash-cell tries the next ready cell after each other-pool refusal, once p
     assert.equal(record.crash?.status, "proven");
     assert.equal(record.crash?.target?.slotId, "runtime-cell-3");
     assert.equal(record.crash?.cellsTried, 3);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("a run that stops testing while one cell refuses kills no later cell", async () => {
+  let halted = false;
+  const lane = await harness({
+    cells: 2,
+    crashRefusal: (identity) => {
+      if (identity.slotId !== "runtime-cell-1") return undefined;
+      // The user's cap answers while the first cell refuses.
+      halted = true;
+      return new CrashPoolRefused(1, 0);
+    },
+  });
+  try {
+    assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
+    const deps = lane.deps();
+    const controller = deps.controller(await Effect.runPromise(poolWorkerName(deps.cloudflare)));
+    const stop = refuse("cap-reached", "The user's cap answered.", "Rerun after the cap resets.");
+    const result = await Effect.runPromise(
+      Effect.result(
+        crashReadyCell({
+          controller,
+          go: "coordinator-2026-11-18-crash",
+          operator: "pool-fleet",
+          pool: testPool,
+          request: async () => {},
+          // A real tick, so the request loop yields to the crash's own calls.
+          sleep: () => new Promise((resolve) => setTimeout(resolve, 0)),
+          now: Date.now,
+          halted: () => (halted ? stop : undefined),
+        }),
+      ),
+    );
+    assert.equal(result._tag, "Failure");
+    assert.equal(result._tag === "Failure" && result.failure, stop);
+    assert.deepEqual(
+      lane.crashes.map((command) => command.identity.slotId),
+      ["runtime-cell-1"],
+      "the second cell is never asked",
+    );
   } finally {
     await lane.close();
   }

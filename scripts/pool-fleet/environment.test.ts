@@ -153,6 +153,8 @@ test("with both secrets set, each choice signs for its own device", async () => 
       { computer, grant, user, pool },
       choice,
     );
+    // The crash's pool is only ever the test device's own, never the release device's secret's.
+    assert.equal(acceptance.pool, choice === "test" ? testDevice.pool : undefined, choice);
   }
 });
 

@@ -123,11 +123,12 @@ export const crashReadyCell = (input: CrashInput) =>
     const stop = Effect.promise(loop.stop);
     const proof = Effect.gen(function* () {
       yield* call(() => input.sleep(3_000));
-      const halt = input.halted?.();
-      if (halt) return yield* halt;
       let sentTo: SlotIdentity | undefined;
       let cellsTried = 0;
       for (const row of ready) {
+        // Checked before every cell: the run may stop testing while an earlier cell refuses.
+        const halt = input.halted?.();
+        if (halt) return yield* halt;
         cellsTried++;
         const killed = yield* call(() =>
           crashCell(access, row.identity!, nonce, input.operator, input.pool),
