@@ -5,14 +5,11 @@ import { test } from "node:test";
 import { decodeProviderApplication } from "../../src/pool/runtime-provider/application.ts";
 import { providerDigest } from "../../src/pool/runtime-provider/canonical.ts";
 import { runtimeApplicationSettings } from "../../src/pool/runtime-provider/settings.ts";
-import { Effect } from "effect";
-import { poolWorkerName } from "./cloudflare.ts";
-import { crashReadyCell } from "./crash-cell.ts";
 import { runPoolFleet, stepSummary, type DispatchInput } from "./dispatch.ts";
 import { FleetLaneRefused, refuse } from "./errors.ts";
 import { CrashPoolRefused } from "../../src/pool/runtime-crash-contract.ts";
 import { ownerReadVerdict } from "./accept.ts";
-import { AcceptanceFailure } from "../pool-acceptance/types.ts";
+import { AcceptanceFailure, UserCapReached } from "../pool-acceptance/types.ts";
 import { resolvedApplication } from "./test/cloudflare-shapes.ts";
 import {
   accountId,
@@ -463,17 +460,11 @@ test("crash-cell refuses a test device whose pool is not a real pool's id, sends
 });
 
 test("a run that stops testing while the last cell refuses ends as its own stop, not as other-pool-in-flight", async () => {
-  let halted = false;
-  const lane = await harness({
-    cells: 1,
-    crashRefusal: () => {
-      halted = true;
-      return new CrashPoolRefused(1, 0);
-    },
-  });
+  const { lane, result } = await cappedWhileRefusing(1, () => true);
   try {
-    assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
-    assert.equal(await crashUntilHalted(lane, () => halted), haltedRun);
+    assert.equal(result.ok, false);
+    assert.equal("couldNotTest" in result && result.couldNotTest, true, JSON.stringify(result));
+    assert.doesNotMatch(String("cause" in result && result.cause), /other-pool-in-flight/u);
     assert.equal(lane.crashes.length, 1);
   } finally {
     await lane.close();
@@ -510,45 +501,48 @@ test("crash-cell tries the next ready cell after each other-pool refusal, once p
   }
 });
 
-const haltedRun = refuse("cap-reached", "The user's cap answered.", "Rerun after the cap resets.");
-
-/** One crash proof straight from the lane's crash step, halted once `halted` turns true: its failure. */
-async function crashUntilHalted(lane: Awaited<ReturnType<typeof harness>>, halted: () => boolean) {
-  const deps = lane.deps();
-  const controller = deps.controller(await Effect.runPromise(poolWorkerName(deps.cloudflare)));
-  const proof = crashReadyCell({
-    controller,
-    go: "coordinator-2026-11-18-crash",
-    operator: "pool-fleet",
-    pool: testPool,
-    request: async () => {},
-    // A real tick, so the request loop yields to the crash's own calls.
-    sleep: () => new Promise((resolve) => setTimeout(resolve, 0)),
-    now: Date.now,
-    halted: () => (halted() ? haltedRun : undefined),
-  }).pipe(
-    Effect.mapError((error) =>
-      error instanceof FleetLaneRefused ? error : refuse("unexpected", String(error), "-"),
-    ),
-  );
-  const result = await Effect.runPromise(Effect.result(proof));
-  return result._tag === "Failure" ? result.failure : undefined;
-}
-
-test("a run that stops testing while one cell refuses kills no later cell", async () => {
-  let halted = false;
+/**
+ * A lane whose own turn gets the user's cap while the given cells refuse their kill: the cap is
+ * answered by the device's client itself, so the lane knows it before the refusal returns.
+ */
+async function cappedWhileRefusing(cells: number, refusing: (slotId: string) => boolean) {
+  let capping = false;
+  let capped!: () => void;
+  const capAnswered = new Promise<void>((resolve) => (capped = resolve));
   const lane = await harness({
-    cells: 2,
-    crashRefusal: (identity) => {
-      if (identity.slotId !== "runtime-cell-1") return undefined;
-      // The user's cap answers while the first cell refuses.
-      halted = true;
+    cells,
+    crashRefusal: async (identity) => {
+      if (!refusing(identity.slotId)) return undefined;
+      capping = true;
+      await capAnswered;
+      // The lane's own handler of that answer runs before the refusal is sent back.
+      await new Promise((resolve) => setImmediate(resolve));
       return new CrashPoolRefused(1, 0);
     },
   });
+  const configured = await runPoolFleet(dispatch("configure-and-accept"), lane.deps());
+  assert.equal(configured.ok, true);
+  const deps = lane.deps();
+  if (deps.acceptance instanceof FleetLaneRefused) assert.fail(deps.acceptance.message);
+  const { client } = deps.acceptance;
+  const send = client.sendTurn.bind(client);
+  client.sendTurn = async (...args) => {
+    if (!capping) return send(...args);
+    capped();
+    throw new UserCapReached("/v1/chat/completions returned HTTP 429");
+  };
+  const result = await runPoolFleet(
+    dispatch("crash-cell", { go: "coordinator-2026-11-18-crash" }),
+    deps,
+  );
+  return { lane, result };
+}
+
+test("a run that stops testing while one cell refuses kills no later cell", async () => {
+  const { lane, result } = await cappedWhileRefusing(2, (slotId) => slotId === "runtime-cell-1");
   try {
-    assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
-    assert.equal(await crashUntilHalted(lane, () => halted), haltedRun);
+    assert.equal(result.ok, false);
+    assert.equal("couldNotTest" in result && result.couldNotTest, true, JSON.stringify(result));
     assert.deepEqual(
       lane.crashes.map((command) => command.identity.slotId),
       ["runtime-cell-1"],

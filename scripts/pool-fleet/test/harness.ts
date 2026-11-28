@@ -121,7 +121,7 @@ export interface HarnessOptions {
    */
   handoffFailure?: (action: string) => Error | Response | undefined;
   /** The controller's own refusal of a crash it received for a cell, through the real handler. */
-  crashRefusal?: (identity: SlotIdentity) => Error | undefined;
+  crashRefusal?: (identity: SlotIdentity) => Error | undefined | Promise<Error | undefined>;
   /** Ready cells the controller starts once the fleet is enabled; 1 when unset. */
   cells?: number;
   /** The pool the test device's secret names; `testPool` when unset. */
@@ -360,7 +360,7 @@ export async function harness(options: HarnessOptions = {}) {
     },
     crash: async (command) => {
       crashes.push(command);
-      const refused = options.crashRefusal?.(command.identity);
+      const refused = await options.crashRefusal?.(command.identity);
       if (refused) throw refused;
       await storage.put(crashNonceKey(command.nonce), { command, status: "returned" });
       restarting = cells.find((value) => value.slotId === command.identity.slotId)!;
