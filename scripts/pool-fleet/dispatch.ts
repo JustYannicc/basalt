@@ -423,7 +423,7 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
     if (mode === "bookmark")
       return { ...evidence, bookmark: yield* call(() => takeBookmark(access)) };
     const acceptance = yield* needAcceptance(deps);
-    const accept = () =>
+    const accept = (rootUsage = false) =>
       call(() =>
         runFleetAcceptance({
           ...acceptance,
@@ -431,9 +431,12 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
           fleet: () => inspectFleet(access),
           sleep: deps.sleep,
           log: deps.log,
+          rootUsage,
         }),
       );
-    if (mode === "accept") return { ...evidence, acceptance: yield* accept() };
+    // Mode accept changes nothing, so with no cell it still proves the root's usage. Configure-and-
+    // accept waits for a ready cell first and keeps requiring one.
+    if (mode === "accept") return { ...evidence, acceptance: yield* accept(true) };
     if (mode === "crash-cell") {
       const traffic = new OwnTraffic(
         acceptance.client,
