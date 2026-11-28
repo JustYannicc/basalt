@@ -473,24 +473,7 @@ test("a run that stops testing while the last cell refuses ends as its own stop,
   });
   try {
     assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
-    const deps = lane.deps();
-    const controller = deps.controller(await Effect.runPromise(poolWorkerName(deps.cloudflare)));
-    const stop = refuse("cap-reached", "The user's cap answered.", "Rerun after the cap resets.");
-    const result = await Effect.runPromise(
-      Effect.result(
-        crashReadyCell({
-          controller,
-          go: "coordinator-2026-11-18-crash",
-          operator: "pool-fleet",
-          pool: testPool,
-          request: async () => {},
-          sleep: () => new Promise((resolve) => setTimeout(resolve, 0)),
-          now: Date.now,
-          halted: () => (halted ? stop : undefined),
-        }),
-      ),
-    );
-    assert.equal(result._tag === "Failure" && result.failure, stop);
+    assert.equal(await crashUntilHalted(lane, () => halted), haltedRun);
     assert.equal(lane.crashes.length, 1);
   } finally {
     await lane.close();
@@ -527,6 +510,31 @@ test("crash-cell tries the next ready cell after each other-pool refusal, once p
   }
 });
 
+const haltedRun = refuse("cap-reached", "The user's cap answered.", "Rerun after the cap resets.");
+
+/** One crash proof straight from the lane's crash step, halted once `halted` turns true: its failure. */
+async function crashUntilHalted(lane: Awaited<ReturnType<typeof harness>>, halted: () => boolean) {
+  const deps = lane.deps();
+  const controller = deps.controller(await Effect.runPromise(poolWorkerName(deps.cloudflare)));
+  const proof = crashReadyCell({
+    controller,
+    go: "coordinator-2026-11-18-crash",
+    operator: "pool-fleet",
+    pool: testPool,
+    request: async () => {},
+    // A real tick, so the request loop yields to the crash's own calls.
+    sleep: () => new Promise((resolve) => setTimeout(resolve, 0)),
+    now: Date.now,
+    halted: () => (halted() ? haltedRun : undefined),
+  }).pipe(
+    Effect.mapError((error) =>
+      error instanceof FleetLaneRefused ? error : refuse("unexpected", String(error), "-"),
+    ),
+  );
+  const result = await Effect.runPromise(Effect.result(proof));
+  return result._tag === "Failure" ? result.failure : undefined;
+}
+
 test("a run that stops testing while one cell refuses kills no later cell", async () => {
   let halted = false;
   const lane = await harness({
@@ -540,26 +548,7 @@ test("a run that stops testing while one cell refuses kills no later cell", asyn
   });
   try {
     assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
-    const deps = lane.deps();
-    const controller = deps.controller(await Effect.runPromise(poolWorkerName(deps.cloudflare)));
-    const stop = refuse("cap-reached", "The user's cap answered.", "Rerun after the cap resets.");
-    const result = await Effect.runPromise(
-      Effect.result(
-        crashReadyCell({
-          controller,
-          go: "coordinator-2026-11-18-crash",
-          operator: "pool-fleet",
-          pool: testPool,
-          request: async () => {},
-          // A real tick, so the request loop yields to the crash's own calls.
-          sleep: () => new Promise((resolve) => setTimeout(resolve, 0)),
-          now: Date.now,
-          halted: () => (halted ? stop : undefined),
-        }),
-      ),
-    );
-    assert.equal(result._tag, "Failure");
-    assert.equal(result._tag === "Failure" && result.failure, stop);
+    assert.equal(await crashUntilHalted(lane, () => halted), haltedRun);
     assert.deepEqual(
       lane.crashes.map((command) => command.identity.slotId),
       ["runtime-cell-1"],

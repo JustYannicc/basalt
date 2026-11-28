@@ -122,7 +122,8 @@ export const crashReadyCell = (input: CrashInput) =>
     const { outcomes } = loop;
     const stop = Effect.promise(loop.stop);
     const proof = Effect.gen(function* () {
-      yield* call(() => input.sleep(3_000));
+      // A sleep never rejects.
+      yield* Effect.promise(() => input.sleep(3_000));
       let sentTo: SlotIdentity | undefined;
       let cellsTried = 0;
       for (const row of ready) {
