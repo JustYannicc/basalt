@@ -366,6 +366,10 @@ export class RuntimeHandoff {
     await this.options.selectedChanged?.();
     return receipt;
   }
+  /** A fleet first start's witness, read with this controller's code for its endpoint to adopt. */
+  startWitness(target: SlotTarget) {
+    return this.driver.witness(target, this.controllerCode);
+  }
   async witness(target: SlotTarget, expected?: UnattestedActive) {
     const value = await this.driver.witness(target);
     const { kind } = Schema.decodeUnknownSync(Schema.Struct({ kind: Schema.String }))(value);

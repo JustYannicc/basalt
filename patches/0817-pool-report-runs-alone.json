@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-pool-report-runs-alone",
+  "file": "0817-pool-report-runs-alone.patch",
+  "content_sha256": "2de418573794f17e3491055713a22fba5338e59994d244589cb6e610533a3357",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

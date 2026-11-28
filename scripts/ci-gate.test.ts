@@ -19,6 +19,7 @@ const runGate = (
   selected: readonly string[],
   full: boolean,
   fastLaneBase?: string,
+  cpaBase = base,
 ) =>
   spawnSync(process.execPath, [gate], {
     encoding: "utf8",
@@ -42,6 +43,7 @@ const runGate = (
           ]),
         ),
       ),
+      CI_CPA_BASE_SHA: cpaBase,
     },
   });
 
@@ -53,6 +55,7 @@ test("the real workflow dependencies reach the aggregate CLI in fast and full la
   assert.equal(step.env.CI_BASE_SHA, "${{ needs.select.outputs.base_sha }}");
   assert.equal(step.env.CI_FAST_LANE_BASE, "${{ needs.fast.outputs.lane_base }}");
   assert.equal(step.env.CI_UNIT_LANE_BASES, "${{ toJSON(needs.fast-units.outputs) }}");
+  assert.equal(step.env.CI_CPA_BASE_SHA, "${{ needs.cpa-pipeline.outputs.base_sha }}");
   assert.deepEqual(workflow.jobs.fast.outputs, {
     lane_base: "${{ steps.lane.outputs.lane_base }}",
   });
@@ -93,6 +96,27 @@ test("the real workflow dependencies reach the aggregate CLI in fast and full la
       assert.notEqual(refused.status, 0, other);
       assert.match(refused.stderr, /fast: resolved .*, select /, other);
     }
+    // The pipeline guard compared with its own commit, so it must be select's too.
+    for (const other of ["b".repeat(40), ""]) {
+      const refused = runGate(needs, selected, full, undefined, other);
+      assert.notEqual(refused.status, 0, other);
+      assert.match(
+        refused.stderr,
+        new RegExp(`cpa-pipeline: resolved "${other}", select "${base}"`),
+        other,
+      );
+    }
+    // A skipped guard reported no commit, and fails as a skipped required job too.
+    const skipped = runGate(
+      { ...needs, "cpa-pipeline": { result: "skipped" } },
+      selected,
+      full,
+      undefined,
+      "",
+    );
+    assert.notEqual(skipped.status, 0);
+    assert.match(skipped.stderr, /cpa-pipeline: expected success, got skipped/);
+    assert.match(skipped.stderr, /cpa-pipeline: resolved "", select /);
     for (const result of full
       ? ["failure", "cancelled", "skipped"]
       : ["success", "failure", "cancelled"]) {
@@ -141,21 +165,27 @@ test("the retry count runs after every gate verdict but can never change it", ()
   assert.equal(job.steps[upload].with.path, output.replace("$RUNNER_TEMP", "${{ runner.temp }}"));
 });
 
-test("every job that starts with the Check must have resolved select's lane and comparison", () => {
-  const expected = laneBase("affected", "a".repeat(40));
+test("every job that resolves the comparison must have resolved select's lane and commit", () => {
+  const expected = laneBase("affected", base);
   const legs = (value: string) =>
     Object.fromEntries(Array.from({ length: unitLegs }, (_, index) => [`leg_${index + 1}`, value]));
-  assert.deepEqual(startJobErrors("affected", "a".repeat(40), expected, legs(expected)), []);
-  // A leg that compared with a newer main ran another base's focused tests.
+  assert.deepEqual(startJobErrors("affected", base, expected, legs(expected), base), []);
+  // A leg that compared with another commit ran another base's focused tests.
   const moved = { ...legs(expected), leg_2: laneBase("affected", "b".repeat(40)) };
-  assert.deepEqual(startJobErrors("affected", "a".repeat(40), expected, moved), [
+  assert.deepEqual(startJobErrors("affected", base, expected, moved, base), [
     `fast-units leg 2: resolved ${JSON.stringify(moved.leg_2)}, select ${JSON.stringify(expected)}`,
   ]);
   // A leg that reported nothing never proves it ran select's lane.
   const { [`leg_${unitLegs}`]: _missing, ...partial } = legs(expected);
-  assert.equal(startJobErrors("affected", "a".repeat(40), expected, partial).length, 1);
-  assert.equal(startJobErrors("affected", "a".repeat(40), expected, null).length, unitLegs);
-  assert.equal(startJobErrors("affected", "a".repeat(40), "", legs(expected)).length, 1);
+  assert.equal(startJobErrors("affected", base, expected, partial, base).length, 1);
+  assert.equal(startJobErrors("affected", base, expected, null, base).length, unitLegs);
+  assert.equal(startJobErrors("affected", base, "", legs(expected), base).length, 1);
+  // cpa-pipeline reports the commit alone, which its guard compared with.
+  assert.deepEqual(startJobErrors("affected", base, expected, legs(expected), "b".repeat(40)), [
+    `cpa-pipeline: resolved ${JSON.stringify("b".repeat(40))}, select ${JSON.stringify(base)}`,
+  ]);
+  for (const nothing of ["", undefined, null, expected])
+    assert.equal(startJobErrors("affected", base, expected, legs(expected), nothing).length, 1);
   // The workflow's legs are the gate's, and each reports its own output.
   const job = workflow.jobs["fast-units"];
   assert.deepEqual(

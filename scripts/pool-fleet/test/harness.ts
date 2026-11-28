@@ -11,6 +11,10 @@ import { crashNonceKey } from "../../../src/pool/runtime-crash-contract.ts";
 import type { SlotIdentity } from "../../../src/pool/runtime-slots/contract.ts";
 import { openEnvelope } from "../../../src/pool/token.ts";
 import { nativeModelHeader } from "../../../src/pool/native-contract.ts";
+import {
+  nativeUsagePath,
+  type NativeUsageRecord,
+} from "../../../src/pool/native-usage-contract.ts";
 import { runtimeHandoffCommandPrefix } from "../../../src/pool/runtime-slots/handoff-command.ts";
 import { SlotMemory } from "../../pool-tests/runtime-slot-storage.ts";
 import { StorageBookmarks } from "../../../src/pool/storage-bookmark.ts";
@@ -77,9 +81,15 @@ export interface HarnessOptions {
   startCell?: boolean;
   /** What the Worker's POOL_PROVIDER_OBSERVATION_TOKEN Secrets Store binding returns; null is empty. */
   providerSecret?: string | null;
+  /** Rows the device usage read returns for one of the lane's sessions, by the order it was first read. */
+  usage?: (index: number) => NativeUsageRecord[];
+  /** A status the device usage read answers instead of rows, as the route does failing closed. */
+  usageStatus?: number;
+  /** Turns, by call index, the pool refuses with its user-cap 429. */
+  capped?: (index: number) => boolean;
   /** The acceptance device is outside a dedicated acceptance pool: the lane holds no owner access. */
   deviceOnly?: boolean;
-  /** The account the pool's usage records name; a foreign one must fail the usage check. */
+  /** The account the pool's owner usage records name; a foreign one must fail the usage check. */
   usageAccount?: string;
   /** What the controller's inspect reports for the pool's own usage rollup backfill. */
   usageRollup?: unknown;
@@ -105,6 +115,22 @@ export interface HarnessOptions {
   /** A turn on this model is refused as the pool's node relays Home's quota refusal, with this code. */
   quota?: (model: string) => "usage_credit_policy_denied" | "model_cooldown" | undefined;
 }
+
+/** The acceptance device's own Home key, as the device usage read reports it. */
+export const deviceKey = 41;
+/** One success row of the device's key, served by one of the pool's many accounts. */
+export const ownRow = (
+  index: number,
+  extra: Partial<NativeUsageRecord> = {},
+): NativeUsageRecord => ({
+  id: `usage-${index}`,
+  status: "success",
+  at: new Date().toISOString(),
+  key: deviceKey,
+  account: `pool-account-${index % 12}`,
+  inPool: true,
+  ...extra,
+});
 
 export async function harness(options: HarnessOptions = {}) {
   const cloudflareReads: string[] = [];
@@ -439,12 +465,25 @@ export async function harness(options: HarnessOptions = {}) {
   let turns = 0;
   /** How each model call was authorized: the lane's credential, never a bearer. */
   const modelCalls: { call: string; authorization: string | null; assertion: string | null }[] = [];
-  /** Every owner-token read of the pool, with the authorization it carried. */
-  const poolReads: { path: string; authorization: string | null }[] = [];
+  /** Each device usage read and how it was authorized. */
+  const usageReads: {
+    path: string;
+    assertion: string | null;
+    authorization: string | null;
+    sessions: number;
+  }[] = [];
+  const sessionOrder = new Map<string, number>();
+  /** Every read of the pool's owner routes, with the authorization it carried. */
+  const poolReads: { path: string; session: string | null; authorization: string | null }[] = [];
   const pool = await listen(async (request, body) => {
-    const path = new URL(request.url!, "http://local").pathname;
-    if (path.startsWith("/pool/v1/"))
-      poolReads.push({ path, authorization: request.headers.authorization ?? null });
+    const url = new URL(request.url!, "http://local");
+    const path = url.pathname;
+    if (path.startsWith("/pool/v1/") && path !== nativeUsagePath)
+      poolReads.push({
+        path,
+        session: url.searchParams.get("session"),
+        authorization: request.headers.authorization ?? null,
+      });
     if (path === "/v1/models" || path === "/v1/chat/completions")
       modelCalls.push({
         call: `${request.method} ${path}`,
@@ -460,6 +499,22 @@ export async function harness(options: HarnessOptions = {}) {
         { data: (options.models ?? ["model-a"]).map((id) => ({ id })) },
         { headers },
       );
+    if (path === nativeUsagePath) {
+      const ids = url.searchParams.getAll("session");
+      usageReads.push({
+        path: url.pathname + url.search,
+        assertion: (request.headers[nativeModelHeader] as string | undefined) ?? null,
+        authorization: request.headers.authorization ?? null,
+        sessions: ids.length,
+      });
+      if (options.usageStatus) return new Response(null, { status: options.usageStatus });
+      const sessions = ids.map((session) => {
+        if (!sessionOrder.has(session)) sessionOrder.set(session, sessionOrder.size);
+        const index = sessionOrder.get(session)!;
+        return { session, complete: true, records: options.usage?.(index) ?? [ownRow(index)] };
+      });
+      return Response.json({ key: deviceKey, sessions });
+    }
     if (path === "/pool/v1/pool")
       return Response.json({ isOwner: true, accounts: [{ id: "test-1" }, { id: "test-2" }] });
     if (path === "/pool/v1/usage")
@@ -475,6 +530,13 @@ export async function harness(options: HarnessOptions = {}) {
       });
     if (path === "/v1/chat/completions") {
       const index = turns++;
+      if (options.capped?.(index))
+        return Response.json(
+          {
+            error: { message: "cap", type: "rate_limit_error", code: "user_period_limit_exceeded" },
+          },
+          { status: 429 },
+        );
       const quota = options.quota?.((JSON.parse(body) as { model: string }).model);
       // Home's code as the message's prefix under the generic 429, as smoke-models.ts reads it.
       if (quota)
@@ -525,6 +587,8 @@ export async function harness(options: HarnessOptions = {}) {
   return {
     deps,
     modelCalls,
+    turns: () => turns,
+    usageReads,
     poolReads,
     actions,
     crashes,

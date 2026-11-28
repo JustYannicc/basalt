@@ -3,9 +3,10 @@ import { test } from "node:test";
 import { Effect, Result } from "effect";
 import { runPoolFleet, type DispatchInput } from "./dispatch.ts";
 import { refuse } from "./errors.ts";
-import { controllerSettleMs, untilSettled, type SettleWait } from "./operations.ts";
+import { controllerSettleMs, refusedCode, untilSettled, type SettleWait } from "./operations.ts";
 import { fakeClock } from "./test/fake-clock.ts";
 import { harness, worker, type HarnessOptions } from "./test/harness.ts";
+import { otherCodeRefusal } from "./test/other-code.ts";
 import { SlotRefused } from "../../src/pool/runtime-slots/contract.ts";
 import { runtimeErrorResponse } from "../../src/pool/runtime-slots/request-error.ts";
 
@@ -17,8 +18,14 @@ const dispatch = (mode: string, extra: Partial<DispatchInput> = {}): DispatchInp
   event: "workflow_dispatch",
   ...extra,
 });
-/** The Worker's own 409 while the controller still runs the previous code: the new signature is refused. */
-const oldCode = () => runtimeErrorResponse(new SlotRefused("identity"), "handoff");
+/**
+ * The Worker's own 409 while the controller still runs the previous code: the new signature is
+ * refused, with whichever code reason this checkout's Worker writes.
+ */
+const otherCode = await otherCodeRefusal();
+const oldCode = () => otherCode.clone();
+/** The same refusal from a controller on code from before `controller_code`, which said identity. */
+const olderCode = () => runtimeErrorResponse(new SlotRefused("identity"), "handoff");
 const cause = (result: Awaited<ReturnType<typeof runPoolFleet>>) =>
   String("cause" in result ? result.cause : "");
 const reads = new Set(["inspect", "fleet-inspect", "fleet-retire-check"]);
@@ -72,6 +79,21 @@ test("inspect waits while the controller still refuses the new code, then reads,
   }
 });
 
+test("a controller on code from before controller_code, which refuses the new signature as identity, is waited for as old code too", async () => {
+  const { lines, fixture, run } = await lane((clock) => ({
+    handoffFailure: () => (clock.at - clock.start < 20_000 ? olderCode() : undefined),
+  }));
+  try {
+    const result = await run(dispatch("inspect", { go: "" }));
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(waitLines(lines), [
+      "probe_wait window=330 seconds=20 reads=3 for=old_code,old_code",
+    ]);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("a read lost on the way and old code are told apart, in the order they were waited for", async () => {
   const { lines, fixture, run } = await lane((clock) => ({
     handoffFailure: () =>
@@ -97,6 +119,11 @@ test("a read-only probe whose controller never takes the code fails at the bound
     for (const [failure, refusal, waited] of [
       [
         oldCode,
+        /^controller-code-mismatch: The controller refused reads signed for candidate c{40} for 330 s; /u,
+        "old_code",
+      ],
+      [
+        olderCode,
         /^controller-code-mismatch: The controller refused reads signed for candidate c{40} for 330 s; /u,
         "old_code",
       ],
@@ -424,4 +451,17 @@ test("a clock that never moves still ends a shortened wait after the reads its b
   } finally {
     await fixture.close();
   }
+});
+
+test("the lane reads a refusal of its code as old code under either reason, and nothing else", () => {
+  assert.equal(refusedCode("slot_controller_code"), true);
+  assert.equal(refusedCode("slot_identity"), true);
+  for (const answer of [
+    "slot_selection",
+    "slot_uncertain",
+    "unclassified",
+    "undecodable",
+    undefined,
+  ])
+    assert.equal(refusedCode(answer), false, String(answer));
 });
