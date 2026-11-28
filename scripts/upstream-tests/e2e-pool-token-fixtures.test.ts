@@ -6,9 +6,10 @@ import { fileURLToPath } from "node:url";
 
 // The tools service refuses a pool token for a pool its organization does not own, before the pool
 // Worker runs any route. An e2e scenario that made up a pool id and signed its own token for it
-// would read that refusal as a broken pool. So e2e code gets a pool token only from the shared
-// owned-pool fixture, which gives the organization the pool first: no other e2e file may name the
-// token's kind, unless it is listed here with the reason it needs to.
+// would read that refusal as a broken pool. So e2e code that signs its own pool token takes the
+// pool and the token from the shared owned-pool fixture, which gives the organization the pool
+// first: no other e2e file may name the token's kind, unless it is listed here with the reason it
+// needs to. Tokens the product issues (manager tokens) name no kind here and need no entry.
 
 const e2e = resolve(dirname(fileURLToPath(import.meta.url)), "../../.upstream/e2e");
 
@@ -33,7 +34,7 @@ const naming = sources(e2e)
   .filter((path) => readFileSync(path, "utf8").includes("sbp1"))
   .map((path) => relative(e2e, path));
 
-test("e2e code gets pool tokens only from the owned-pool fixture, or says why not", () => {
+test("e2e code that signs its own pool token takes it from the owned-pool fixture, or says why not", () => {
   // The fixture itself names the kind, so a broken scan cannot pass silently.
   assert.ok(naming.includes("support/owned-pool.ts"), naming.join(", "));
   assert.deepEqual(
@@ -48,4 +49,15 @@ test("every listed file still names the pool token's kind and says why", () => {
     assert.ok(reason.trim().length > 0, path);
     assert.ok(naming.includes(path), `${path} no longer needs its entry`);
   }
+});
+
+test("the retired-token builder stays with the retirement fixture, which saves its tokens as accounts", () => {
+  const users = sources(e2e)
+    .filter((path) => readFileSync(path, "utf8").includes("retirementToken"))
+    .map((path) => relative(e2e, path))
+    .sort();
+  assert.deepEqual(users, [
+    "support/retired-pool-token-command.ts",
+    "support/retired-pool-token-fixture.ts",
+  ]);
 });

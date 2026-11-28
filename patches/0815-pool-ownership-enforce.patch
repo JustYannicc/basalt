@@ -284,10 +284,10 @@ new file mode 100644
 + * A pool its organization owns, as the tools service's ownership check reads one, and the owner
 + * token for it. The pool is an app the organization owns, named by a record in the organization's
 + * pools; a token for any other pool is refused before the pool Worker runs a route, so a scenario
-+ * gets its pool token only here. The app keeps no active deployment and the record names no
-+ * membership, so the host's native membership read finds a pool that is neither native nor due a
-+ * handoff and leaves membership to the pool Worker's Home, as for a pool the host never
-+ * registered. Both go when the case ends.
++ * that signs its own pool token gets the pool and the token here. The app keeps no active
++ * deployment and the record names no membership, so the host's native membership read finds a pool
++ * that is neither native nor due a handoff and leaves membership to the pool Worker's Home, as for
++ * a pool the host never registered. Both go when the case ends.
 + */
 +export const ownedPool = Effect.gen(function* () {
 +  const api = yield* Api,
@@ -370,10 +370,11 @@ diff --git a/e2e/tests/pool-empty-home.spec.ts b/e2e/tests/pool-empty-home.spec.
          const identities = yield* Effect.forEach(
            [actors.owner, actors.member, actors.admin],
            (actor) =>
-@@ -66,7 +69,7 @@ layer(RuntimeLive, { excludeTestServices: true })("Empty Home pool reads", (it)
+@@ -65,8 +68,7 @@ layer(RuntimeLive, { excludeTestServices: true })("Empty Home pool reads", (it)
+           outsider = identities[2]!.userId;
          const home = yield* poolEmptyHome(pool);
          const worker = yield* poolWorkerRuntime(target.metadata.origin, home.origin);
-         // This is a retained-token contract fixture, not a second account-link implementation.
+-        // This is a retained-token contract fixture, not a second account-link implementation.
 -        const token = poolMessage("sbp1", { pool, owner, organization: actors.organization.id });
 +        const token = yield* owned.token(owner);
          const headers = (user: string) => ({
