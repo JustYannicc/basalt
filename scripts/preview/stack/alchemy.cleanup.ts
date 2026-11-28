@@ -13,11 +13,13 @@ import {
   TestStageDomainCleanup,
 } from "../../../.upstream/apps/hosted/cloud/src/infrastructure/test-stage-cleanup-providers.ts";
 import { axiomProviders } from "../../../.upstream/apps/hosted/cloud/src/infrastructure/axiom-provider.ts";
+import { cleanupStage } from "./cleanup-stage.ts";
 import { StageBucketCleanup } from "./stage-bucket-cleanup.ts";
 
 const cleanupState = Layer.unwrap(
   Effect.gen(function* () {
-    const stage = yield* Stage;
+    // A state read acts for the configured stage; every other command must name its own.
+    const stage = cleanupStage(yield* Stage, process.argv, process.env.ALCHEMY_STAGE);
     if (!stage.startsWith("test-pr-"))
       return yield* Effect.die(new Error("Preview cleanup is restricted to PR stages."));
     yield* Schema.decodeUnknownEffect(TestStageSlug)(stage.slice("test-".length)).pipe(
