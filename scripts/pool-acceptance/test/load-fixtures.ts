@@ -6,7 +6,7 @@ import type { AddressInfo } from "node:net";
 import { nativeModelHeader } from "../../../src/pool/native-contract.ts";
 import { nativeRuntimeUnavailable } from "../../../src/pool/runtime-unavailable.ts";
 import { acceptanceCredential } from "../../release/acceptance-device.ts";
-import { testDeviceSecret } from "../../release/acceptance-test-device.ts";
+import { testDeviceSecret } from "../../release/acceptance-test-device-secret.ts";
 import { PoolAcceptanceClient } from "../client.ts";
 import { mockWitness } from "../load-witness.ts";
 import type { Clock } from "../load-call.ts";

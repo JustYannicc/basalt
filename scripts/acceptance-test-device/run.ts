@@ -6,25 +6,22 @@
  * leave only sealed for the coordinator's recipient key, and every line names kinds, counts and
  * digests.
  */
-import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Exit, Schema } from "effect";
 import {
-  acceptanceTestDevice,
   registerAcceptanceTestDevice,
   revokeAcceptanceTestDevice,
-  type AcceptanceTestDevice,
 } from "../release/acceptance-test-device.ts";
+import {
+  acceptanceTestDevice,
+  type AcceptanceTestDevice,
+} from "../release/acceptance-test-device-secret.ts";
 import { AcceptanceDeviceRefused } from "../release/acceptance-device.ts";
 import { recipientKey, sealArtifact } from "../production-ops/artifact.ts";
 import { acceptanceOperation, type AcceptanceInput } from "../acceptance-pool/client.ts";
 import { targetOf } from "../acceptance-pool/target.ts";
-
-/** The digest the setup apply's run records for its pool app instead of the id. */
-export const appDigestDomain = "basalt-acceptance-pool-app-v1";
-export const appDigest = (app: string) =>
-  createHash("sha256").update(`${appDigestDomain}\n${app}`).digest("hex");
+import { receiptIdSha256 } from "../acceptance-pool/artifact.ts";
 
 /** Why a run refused, in closed words; never an id, a host or a message from elsewhere. */
 export type TestDeviceRefusal =
@@ -198,7 +195,7 @@ async function provenSetup(run: TestDeviceRun, deps: TestDeviceDeps) {
   const recorded = own.appSha256;
   if (typeof recorded !== "string" || !/^[a-f0-9]{64}$/u.test(recorded))
     throw refuse("pool_digest_missing");
-  if (recorded !== appDigest(receipt.app)) throw refuse("pool_digest_differs");
+  if (recorded !== receiptIdSha256("app", receipt.app)) throw refuse("pool_digest_differs");
   return { ...receipt, app: receipt.app };
 }
 
@@ -242,7 +239,7 @@ export async function runTestDevice(
     }
   const setup = await provenSetup(run, deps);
   const target = { stage: "production", signingKey: run.signingKey, receipt: setup };
-  const appSha256 = appDigest(setup.app);
+  const appSha256 = receiptIdSha256("app", setup.app);
   mkdirSync(run.outputDirectory, { recursive: true, mode: 0o700 });
   if (run.action === "revoke") {
     await deps.revoke({ ...target, device: device! }).catch(() => {

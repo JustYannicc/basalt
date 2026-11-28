@@ -7,7 +7,8 @@ import { test } from "node:test";
 import { brand } from "../../brand.ts";
 import { createRecipient, decryptArtifact, sealArtifact } from "../production-ops/artifact.ts";
 import type { AcceptanceTestDevice } from "../release/acceptance-test-device.ts";
-import { appDigest, runFromEnvironment, type TestDeviceDeps } from "./run.ts";
+import { keptResult, receiptIdSha256 } from "../acceptance-pool/artifact.ts";
+import { runFromEnvironment, type TestDeviceDeps } from "./run.ts";
 
 const app = "app_acceptance0load1";
 const accounts = ["acc_test0a", "acc_test0b"];
@@ -47,15 +48,18 @@ const verified = (
 /** `operation: null` leaves the setup run's record out. */
 async function stage(
   answer: unknown = verified(),
-  operation: unknown = {
+  // What the setup apply's own run keeps, through the writer that run uses.
+  operation: unknown = keptResult({
     action: "apply",
     kind: "setup",
     receipt: {
       migration: "acceptance-pool-setup-v1",
+      organization: "acceptance",
       status: "applied",
-      appSha256: appDigest(app),
+      app,
+      accounts: ["acct_test0one", "acct_test0two"],
     },
-  },
+  }),
   setupRun: unknown = {
     path: ".github/workflows/acceptance-pool.yml",
     head_branch: "main",
@@ -159,7 +163,7 @@ test("register proves the setup by the tools service's own answer, and the ids l
     );
     assert.deepEqual(JSON.parse(opened), device);
     assert.deepEqual(printed, [
-      `test_device action=register outcome=registered pool_sha256=${appDigest(app)} sealed_sha256=${sealed.sha256}`,
+      `test_device action=register outcome=registered pool_sha256=${receiptIdSha256("app", app)} sealed_sha256=${sealed.sha256}`,
     ]);
     assertNoId(await everything(run, printed));
   } finally {
@@ -184,7 +188,7 @@ test("revoke reads the device from its secret, proves the setup first, and write
     assert.equal(run.calls.register.length, 0);
     assert.deepEqual((run.calls.revoke[0] as { device: unknown }).device, device);
     assert.deepEqual(printed, [
-      `test_device action=revoke outcome=revoked pool_sha256=${appDigest(app)}`,
+      `test_device action=revoke outcome=revoked pool_sha256=${receiptIdSha256("app", app)}`,
     ]);
     assertNoId(await everything(run, printed));
   } finally {
@@ -264,7 +268,7 @@ test("each refusal sends nothing, signs nothing for the device, and names only i
           receipt: {
             migration: "acceptance-pool-setup-v1",
             status: "applied",
-            appSha256: appDigest("app_someone0else"),
+            appSha256: receiptIdSha256("app", "app_someone0else"),
           },
         },
       ],
@@ -299,7 +303,7 @@ test("each refusal sends nothing, signs nothing for the device, and names only i
           receipt: {
             migration: "acceptance-pool-teardown-v1",
             status: "applied",
-            appSha256: appDigest(app),
+            appSha256: receiptIdSha256("app", app),
           },
         },
       ],
@@ -316,7 +320,7 @@ test("each refusal sends nothing, signs nothing for the device, and names only i
           receipt: {
             migration: "acceptance-pool-setup-v1",
             status: "incomplete",
-            appSha256: appDigest(app),
+            appSha256: receiptIdSha256("app", app),
           },
         },
       ],
@@ -334,7 +338,7 @@ test("each refusal sends nothing, signs nothing for the device, and names only i
           receipt: {
             migration: "acceptance-pool-setup-v1",
             status: "applied",
-            appSha256: appDigest(app),
+            appSha256: receiptIdSha256("app", app),
           },
         },
       ],
@@ -351,7 +355,7 @@ test("each refusal sends nothing, signs nothing for the device, and names only i
           receipt: {
             migration: "acceptance-pool-setup-v1",
             status: "applied",
-            appSha256: appDigest(app),
+            appSha256: receiptIdSha256("app", app),
           },
         },
       ],
@@ -377,7 +381,7 @@ test("each refusal sends nothing, signs nothing for the device, and names only i
               receipt: {
                 migration: "acceptance-pool-setup-v1",
                 status: "applied",
-                appSha256: appDigest(app),
+                appSha256: receiptIdSha256("app", app),
               },
             },
             {
@@ -570,7 +574,7 @@ test("revoke needs only the applied receipt, so a setup whose checks degraded ca
     );
     assert.equal(run.calls.revoke.length, 1);
     assert.deepEqual(printed, [
-      `test_device action=revoke outcome=revoked pool_sha256=${appDigest(app)}`,
+      `test_device action=revoke outcome=revoked pool_sha256=${receiptIdSha256("app", app)}`,
     ]);
   } finally {
     await rm(run.root, { recursive: true, force: true });

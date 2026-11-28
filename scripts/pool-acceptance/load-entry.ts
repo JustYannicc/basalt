@@ -7,7 +7,7 @@ import {
   acceptanceTestDevice,
   isAcceptanceIdentity,
   testDeviceSecret,
-} from "../release/acceptance-test-device.ts";
+} from "../release/acceptance-test-device-secret.ts";
 import { PoolAcceptanceClient } from "./client.ts";
 import { verdictOf } from "./load-classes.ts";
 import {
