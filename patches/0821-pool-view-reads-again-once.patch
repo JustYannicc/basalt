@@ -1,0 +1,267 @@
+diff --git a/e2e/support/query-read-rounds.ts b/e2e/support/query-read-rounds.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/query-read-rounds.ts
+@@ -0,0 +1,37 @@
++import { Effect, Schema } from "effect";
++
++/** The query read more than once under each of two requests in a row. */
++export class QueryReadAgain extends Schema.TaggedError<QueryReadAgain>()("QueryReadAgain", {
++  message: Schema.String,
++}) {}
++
++/**
++ * A pool view query reads with its accounts' shared facts and, by design, drops that answer and
++ * reads once more when the organization's change head moved during the read; the pool view
++ * cache reads once more again when the head it guards moved. Each read is one `sdk.data.query`
++ * directly under the request's server span.
++ */
++export const readRounds = (
++  spans: ReadonlyArray<{ readonly parentSpanId: string | null; readonly operationName: string }>,
++  server: string,
++) =>
++  spans.filter((span) => span.parentSpanId === server && span.operationName === "sdk.data.query")
++    .length;
++
++/**
++ * Asks a query again on a new request when its first request read more than once, since
++ * something outside the test can move the head mid-read. One such request is tolerated; the
++ * next must read once, so a product that always reads again is still caught.
++ */
++export const askWithOneReadAgain = <A, E, R>(
++  ask: (attempt: number) => Effect.Effect<{ readonly rounds: number; readonly answer: A }, E, R>,
++) =>
++  Effect.gen(function* () {
++    const first = yield* ask(0);
++    if (first.rounds === 1) return first.answer;
++    const second = yield* ask(1);
++    if (second.rounds === 1) return second.answer;
++    return yield* new QueryReadAgain({
++      message: `The query read again after its account head moved on two requests in a row (${first.rounds} and ${second.rounds} reads); one is tolerated`,
++    });
++  });
+diff --git a/e2e/tests/pool-account-view-cloud-read.spec.ts b/e2e/tests/pool-account-view-cloud-read.spec.ts
+--- a/e2e/tests/pool-account-view-cloud-read.spec.ts
++++ b/e2e/tests/pool-account-view-cloud-read.spec.ts
+@@ -1,6 +1,7 @@
+ import { sqlWireProof } from "../support/sql-wire-proof.ts";
+ import { appCallDelivery } from "../support/app-call-delivery.ts";
+ import { sqlCriticalPath } from "../support/sql-critical-path.ts";
++import { askWithOneReadAgain, readRounds } from "../support/query-read-rounds.ts";
+ import { expect, layer } from "@effect/vitest";
+ import { Clock, Effect, Fiber, FileSystem, Schema, Schedule } from "effect";
+ import { randomUUID } from "node:crypto";
+@@ -203,95 +204,128 @@ export default defineApp({
+         yield* browser.login(p.actors.owner);
+         yield* openPrivateApp(yield* waitForAppUrl(p.actors.owner, `${consumerPath}/ui`));
+         for (const name of ["view", "viewAgain"]) {
+-          const trace = randomUUID().replaceAll("-", "");
+-          yield* wire.begin();
+-          const start = yield* Clock.currentTimeMillis;
+-          const reply = yield* browser.use("Read five selected provider accounts", (page) =>
+-            page.evaluate(
+-              ({ trace, name }) => {
+-                const context = JSON.parse(
+-                  document.getElementById("executor-context")?.textContent ?? "{}",
+-                );
+-                const start = performance.now();
+-                return fetch("/_executor/api/query", {
+-                  method: "POST",
+-                  headers: {
+-                    "content-type": "application/json",
+-                    traceparent: `00-${trace}-${trace.slice(0, 16)}-01`,
++          const asked = yield* askWithOneReadAgain((attempt) =>
++            Effect.gen(function* () {
++              const label = attempt === 0 ? name : `${name}-asked-again`;
++              const trace = randomUUID().replaceAll("-", "");
++              yield* wire.begin();
++              const start = yield* Clock.currentTimeMillis;
++              const reply = yield* browser.use("Read five selected provider accounts", (page) =>
++                page.evaluate(
++                  ({ trace, name }) => {
++                    const context = JSON.parse(
++                      document.getElementById("executor-context")?.textContent ?? "{}",
++                    );
++                    const start = performance.now();
++                    return fetch("/_executor/api/query", {
++                      method: "POST",
++                      headers: {
++                        "content-type": "application/json",
++                        traceparent: `00-${trace}-${trace.slice(0, 16)}-01`,
++                      },
++                      body: JSON.stringify({
++                        version: context.version ?? context.deployment,
++                        name,
++                        input: {},
++                      }),
++                    }).then((response) =>
++                      response.json().then((body) => ({
++                        status: response.status,
++                        body,
++                        milliseconds: performance.now() - start,
++                        timing: response.headers.get("server-timing"),
++                      })),
++                    );
+                   },
+-                  body: JSON.stringify({
+-                    version: context.version ?? context.deployment,
+-                    name,
+-                    input: {},
+-                  }),
+-                }).then((response) =>
+-                  response.json().then((body) => ({
+-                    status: response.status,
+-                    body,
+-                    milliseconds: performance.now() - start,
+-                    timing: response.headers.get("server-timing"),
+-                  })),
+-                );
+-              },
+-              { trace, name },
+-            ),
+-          );
+-          const end = yield* Clock.currentTimeMillis;
+-          const observedWires = yield* wire.end(trace);
+-          yield* evidence.json(`${name}-sql-wire.json`, observedWires);
+-          expect(
+-            yield* telemetry.export([
+-              {
+-                traceId: trace,
+-                spanId: trace.slice(0, 16),
+-                name: "POST /_executor/api/query",
+-                kind: 3,
+-                startTimeUnixNano: String(BigInt(start) * 1000000n),
+-                endTimeUnixNano: String(BigInt(end) * 1000000n),
+-                status: { code: reply.status >= 400 ? 2 : 1 },
+-              },
+-            ]),
+-          ).toBe(200);
+-          yield* evidence.json(`${name}.json`, reply);
+-          expect(reply.status).toBe(200);
+-          const view = yield* Schema.decodeUnknownEffect(View)(reply.body);
+-          expect(view.accounts.map((account) => account.nativeAccountId).sort()).toEqual(
+-            [...accounts].sort(),
+-          );
+-          for (const account of view.accounts) {
+-            expect(account.nativeView.account.id).toBe(account.nativeAccountId);
+-            expect(account.nativeView.sourceApp.id).toBe(p.target);
+-            expect(account.nativeView.sourceApp.icons.length).toBeGreaterThan(0);
+-            expect(account.nativeView.observations.account).toBe(account.nativeAccountId);
+-            expect(account.nativeView.observations.reports).toEqual([]);
+-          }
+-          expect(view.providers).toHaveLength(1);
+-          expect(view.providers[0]!.name).toBe(view.accounts[0]!.nativeView.sourceApp.name);
+-          expect(view.providers[0]!.icons).toEqual(view.accounts[0]!.nativeView.sourceApp.icons);
+-          const spans = yield* telemetry.query(trace).pipe(
+-            Effect.flatMap((result) => {
+-              const spans = result.data.map(({ span }) => span);
+-              const ids = new Set(spans.map((span) => span.spanId));
++                  { trace, name },
++                ),
++              );
++              const end = yield* Clock.currentTimeMillis;
++              const observedWires = yield* wire.end(trace);
++              yield* evidence.json(`${label}-sql-wire.json`, observedWires);
++              expect(
++                yield* telemetry.export([
++                  {
++                    traceId: trace,
++                    spanId: trace.slice(0, 16),
++                    name: "POST /_executor/api/query",
++                    kind: 3,
++                    startTimeUnixNano: String(BigInt(start) * 1000000n),
++                    endTimeUnixNano: String(BigInt(end) * 1000000n),
++                    status: { code: reply.status >= 400 ? 2 : 1 },
++                  },
++                ]),
++              ).toBe(200);
++              yield* evidence.json(`${label}.json`, reply);
++              expect(reply.status).toBe(200);
++              const view = yield* Schema.decodeUnknownEffect(View)(reply.body);
++              expect(view.accounts.map((account) => account.nativeAccountId).sort()).toEqual(
++                [...accounts].sort(),
++              );
++              for (const account of view.accounts) {
++                expect(account.nativeView.account.id).toBe(account.nativeAccountId);
++                expect(account.nativeView.sourceApp.id).toBe(p.target);
++                expect(account.nativeView.sourceApp.icons.length).toBeGreaterThan(0);
++                expect(account.nativeView.observations.account).toBe(account.nativeAccountId);
++                expect(account.nativeView.observations.reports).toEqual([]);
++              }
++              expect(view.providers).toHaveLength(1);
++              expect(view.providers[0]!.name).toBe(view.accounts[0]!.nativeView.sourceApp.name);
++              expect(view.providers[0]!.icons).toEqual(
++                view.accounts[0]!.nativeView.sourceApp.icons,
++              );
+               const server = reply.timing?.match(/executor-span;desc="([a-f0-9]{16})"/)?.[1];
+-              return server !== undefined &&
+-                spans.some(
+-                  (span) => span.spanId === server && span.operationName === "http.server POST",
+-                ) &&
+-                spans.filter((span) => span.operationName === "runtime.app.rpc.release").length ===
+-                  6 &&
+-                spans.some((span) => span.operationName === "catalog.lookup") &&
+-                spans.every(
+-                  (span) =>
+-                    !span.operationName.startsWith("[missing parent") &&
+-                    (span.parentSpanId === null || ids.has(span.parentSpanId)),
+-                )
+-                ? Effect.succeed(result.data)
+-                : Effect.fail(
+-                    new Error("The completed query trace is partial or has missing parents"),
+-                  );
++              // Six pool and source releases per read; a request whose head moved reads twice.
++              const traced = yield* telemetry.query(trace).pipe(
++                Effect.flatMap((result) => {
++                  const spans = result.data.map(({ span }) => span);
++                  const ids = new Set(spans.map((span) => span.spanId));
++                  const rounds = server === undefined ? 0 : readRounds(spans, server);
++                  return server !== undefined &&
++                    spans.some(
++                      (span) => span.spanId === server && span.operationName === "http.server POST",
++                    ) &&
++                    rounds > 0 &&
++                    spans.filter((span) => span.operationName === "runtime.app.rpc.release")
++                      .length ===
++                      6 * rounds &&
++                    spans.some((span) => span.operationName === "catalog.lookup") &&
++                    spans.every(
++                      (span) =>
++                        !span.operationName.startsWith("[missing parent") &&
++                        (span.parentSpanId === null || ids.has(span.parentSpanId)),
++                    )
++                    ? Effect.succeed({ rounds, spans: result.data })
++                    : Effect.fail(
++                        new Error(
++                          rounds === 0 &&
++                            spans.some(
++                              (span) =>
++                                span.spanId === server && span.operationName === "http.server POST",
++                            )
++                            ? "The query request answered without reading, as from a cache"
++                            : "The completed query trace is partial or has missing parents",
++                        ),
++                      );
++                }),
++                Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
++              );
++              // Kept for every request, so a tolerated read-again still shows why it was asked again.
++              yield* evidence.json(`${label}-reads.json`, {
++                reads: traced.rounds,
++                releases: traced.spans.filter(
++                  ({ span }) => span.operationName === "runtime.app.rpc.release",
++                ).length,
++                lookups: traced.spans.filter(({ span }) => span.operationName === "catalog.lookup")
++                  .length,
++              });
++              return {
++                rounds: traced.rounds,
++                answer: { reply, observedWires, spans: traced.spans },
++              };
+             }),
+-            Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
+           );
++          const { reply, observedWires, spans } = asked;
+           const lookups = spans.filter(({ span }) => span.operationName === "catalog.lookup");
+           yield* evidence.json(`${name}-catalog-work.json`, { lookups: lookups.length, spans });
+           expect(

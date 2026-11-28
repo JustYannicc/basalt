@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-aws-approval-answer-evidence",
+  "file": "0819-aws-approval-answer-evidence.patch",
+  "content_sha256": "ed4d1a50fe1e4529a2d3bad0ee63a86bce51d03aced31c82709a0fce99d2992c",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
