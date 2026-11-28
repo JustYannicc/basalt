@@ -118,6 +118,15 @@ class RoutePeerTests(unittest.TestCase):
         self.peers.open_tunnel = unreachable
         self.assert_refused_before_any_dial(ROUTED)
 
+    def test_a_route_peer_that_cannot_be_reached_answers_not_allowed_and_never_dials(self):
+        # The real wire to a port nothing listens on: the connect itself fails (#2225).
+        closed = socket.create_server(("127.0.0.1", 0))
+        closed_port = closed.getsockname()[1]
+        closed.close()
+        self.peers.open_tunnel = lambda route_id: RouteWire.open(route_id, "127.0.0.1", closed_port)
+        self.assert_refused_before_any_dial(ROUTED)
+        self.assertEqual(self.records.snapshot()["connects"], [])
+
     def test_only_username_auth_with_a_route_id_is_accepted(self):
         connection = self.client(methods=b"\x00")
         self.assertEqual(self.method, b"\x05\xff")
