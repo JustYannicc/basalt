@@ -21,7 +21,7 @@ import { postgresUrl } from "./org-lock-postgres-fixture.ts";
 const signingKey = "ab".repeat(32);
 const person = "org_person";
 const pool = "app_person_pool";
-const application = `observation-${randomUUID().slice(0, 8)}`;
+const application = `ownership-${randomUUID().slice(0, 8)}`;
 
 /** Each way's delay on the proxy: a database a Worker reaches over the network, not on loopback. */
 const linkDelayMs = 25;
@@ -29,8 +29,7 @@ const linkDelayMs = 25;
 /**
  * A proxy to the test database that never forwards a cancel request, as a Worker's socket that
  * closed with the response never sends one: only the database itself can end a cut read. Every chunk
- * waits `linkDelayMs` each way, in order, so an observation outlasts the answer's bound and the
- * path where the answer stops waiting for a read still running is the one under test.
+ * waits `linkDelayMs` each way, in order, as a database a Worker reaches over the network.
  */
 async function withoutCancels(target: URL) {
   const relay = (from: net.Socket, to: net.Socket) =>
@@ -185,7 +184,7 @@ async function withDatabase(
   { jsonbMetadata = false } = {},
 ) {
   const adminUrl = postgresUrl();
-  const schema = `observation_${randomUUID().replaceAll("-", "")}`;
+  const schema = `ownership_${randomUUID().replaceAll("-", "")}`;
   const admin = new pg.Client({ connectionString: adminUrl });
   const locker = new pg.Client({ connectionString: adminUrl });
   await Promise.all([admin.connect(), locker.connect()]);
@@ -224,59 +223,62 @@ async function withDatabase(
 }
 
 for (const mode of modes)
-  test(`an observation read stuck behind a lock ends in the database, so it keeps no connection (${mode} pool)`, async () => {
+  test(`a read stuck behind a lock ends in the database at its bound as a 503, and keeps no connection (${mode} pool)`, async () => {
     await withDatabase(async ({ admin, locker, schema, url }) => {
       assert.equal((await check(url, schema, mode)).status, 204);
       // A migration holds the apps table: every ownership read now waits on its lock.
       await locker.query("begin");
       await locker.query(`lock table ${schema}.executor_apps in access exclusive mode`);
       const answers = await Promise.all(Array.from({ length: 24 }, () => check(url, schema, mode)));
-      assert.ok(
-        answers.every((answer) => answer.status === 204),
-        answers.map((answer) => answer.status).join(","),
-      );
-      // Each answer waited at most the observation's 300 ms bound beyond the existing read.
-      assert.ok(Math.max(...answers.map((answer) => answer.ms)) < 1_500);
-      // Every read reached the lock and said so, once: not a read that failed for another reason.
-      for (const answer of answers)
+      for (const answer of answers) {
+        // Unavailable, never refused: a read that did not complete says nothing about ownership.
+        assert.equal(answer.status, 503);
         assert.deepEqual(answer.lines, ["Pool organization ownership not observed: timeout"]);
-      // The database ends each stuck read after 250 ms, though no cancel reaches it, and the read
-      // ends its own transaction: no connection is left running, waiting, or aborted in it.
+        // The database ends the read at 8 s, before the pool Worker gives up at 10 s, so the answer
+        // is the tools service's own.
+        assert.ok(answer.ms >= 7_900 && answer.ms < 10_000, String(answer.ms));
+      }
+      // No cancel reaches the database, and each read ended its own transaction: no connection is
+      // left running, waiting, or aborted in it.
       const deadline = performance.now() + 1_000;
       while ((await held(admin)) > 0 && performance.now() < deadline);
-      assert.equal(await held(admin), 0, "a cut observation read still holds its connection");
+      assert.equal(await held(admin), 0, "an ended ownership read still holds its connection");
       await locker.query("rollback");
-      // The next request gets a connection without waiting on the cut ones.
+      // The next request gets a connection without waiting on the ended ones.
       const next = await check(url, schema, mode);
       assert.equal(next.status, 204);
       assert.ok(next.ms < 1_000, String(next.ms));
     });
   });
 
+for (const mode of modes)
+  test(`a read that waits a second on a lock still answers, as on a slow database (${mode} pool)`, async () => {
+    await withDatabase(async ({ locker, schema, url }) => {
+      await locker.query("begin");
+      await locker.query(`lock table ${schema}.executor_apps in access exclusive mode`);
+      const answering = check(url, schema, mode);
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      await locker.query("rollback");
+      const answer = await answering;
+      assert.deepEqual([answer.status, answer.lines], [204, []]);
+      assert.ok(answer.ms >= 1_000, String(answer.ms));
+    });
+  });
+
 test("the route answers and reports the same on the grouped pool as on a plain one", async () => {
   await withDatabase(async ({ schema, url }) => {
-    const unreadable = ["Pool organization would be refused: invalid-metadata"];
     const cases = [
-      [person, pool, 204, { plain: [], grouped: [] }],
-      [
-        "org_other",
-        pool,
-        204,
-        {
-          plain: ["Pool organization would be refused: other-organization"],
-          grouped: ["Pool organization would be refused: other-organization"],
-        },
-      ],
+      [person, pool, 204, []],
+      ["org_other", pool, 403, ["Pool organization refused: other-organization"]],
       [
         "org_unreadable",
         "app_unreadable_pool",
-        204,
-        // Plain, the failed rule read ends its transaction and the shape is read in a second: eight
-        // round trips, past the bound at this link's delay. Grouped, the failed rule's shape is read
-        // again in a second flight: two round trips.
-        { plain: ["Pool organization ownership not observed: timeout"], grouped: unreadable },
+        503,
+        ["Pool organization would be refused: invalid-metadata"],
       ],
-      ["org_missing", pool, 403, { plain: [], grouped: [] }],
+      ["org_missing", pool, 403, []],
+      // One organization's unreadable metadata leaves another's pool as it was.
+      [person, pool, 204, []],
     ] as const;
     for (const mode of modes) {
       const runtime = eventPool(url, schema, mode);
@@ -285,8 +287,8 @@ test("the route answers and reports the same on the grouped pool as on a plain o
           const answer = await checkOn(runtime, mode, organization, poolId);
           assert.deepEqual(
             [answer.status, answer.lines],
-            [status, lines[mode]],
-            `${mode} ${organization}`,
+            [status, lines],
+            `${mode} ${organization} ${poolId}`,
           );
         }
       } finally {
@@ -303,9 +305,15 @@ test("a statement that fails inside the batch leaves the event's connection clea
     try {
       // The rule's cast fails inside the batch's transaction; a second flight reads why.
       const failed = await checkOn(runtime, "grouped", "org_unreadable", "app_unreadable_pool");
-      assert.deepEqual(failed.lines, ["Pool organization would be refused: invalid-metadata"]);
+      assert.deepEqual(
+        [failed.status, failed.lines],
+        [503, ["Pool organization would be refused: invalid-metadata"]],
+      );
       const next = await checkOn(runtime, "grouped", "org_other", pool);
-      assert.deepEqual(next.lines, ["Pool organization would be refused: other-organization"]);
+      assert.deepEqual(
+        [next.status, next.lines],
+        [403, ["Pool organization refused: other-organization"]],
+      );
       const session = await runtime.runPromise(
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
@@ -339,21 +347,20 @@ test("a statement that fails inside the batch leaves the event's connection clea
   });
 });
 
-test("a shape read that fails never blinds a healthy check, on either pool", async () => {
+test("a shape read that fails never blinds a healthy check and never refuses, on either pool", async () => {
   await withDatabase(
     async ({ schema, url }) => {
       for (const mode of modes) {
         const runtime = eventPool(url, schema, mode);
         try {
-          // The rule alone decides a healthy check, so its own pool writes nothing.
-          assert.deepEqual((await checkOn(runtime, mode)).lines, [], mode);
-          // A refusal needs the shape read to say why, and says it could not. Plain, that takes
-          // two transactions, eight round trips, past the bound at this link's delay.
+          // The rule alone decides a healthy check, so its own pool answers 204 and writes nothing.
+          const healthy = await checkOn(runtime, mode);
+          assert.deepEqual([healthy.status, healthy.lines], [204, []], mode);
+          // A refusal needs the shape read to say why; without it the answer is unavailable.
+          const unexplained = await checkOn(runtime, mode, "org_other", pool);
           assert.deepEqual(
-            (await checkOn(runtime, mode, "org_other", pool)).lines,
-            [
-              `Pool organization ownership not observed: ${mode === "plain" ? "timeout" : "read-failed"}`,
-            ],
+            [unexplained.status, unexplained.lines],
+            [503, ["Pool organization ownership not observed: read-failed"]],
             mode,
           );
         } finally {

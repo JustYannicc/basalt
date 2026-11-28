@@ -4,17 +4,20 @@ import { Data, Effect } from "effect";
 import {
   type Answer,
   ask,
+  endedByDatabase,
   notObserved,
   owned,
   ownershipReadAnswers,
   person,
   pool,
+  refused,
   seed,
   wouldRefuse,
 } from "./pool-organization-fixture.ts";
 
-// One test per way a pool relates to its organization (F1 ownership table). The check's answer is
-// today's in every shape; only shapes the ownership rule would refuse write one warning naming why.
+// One test per way a pool relates to its organization (F1 ownership table). A pool its organization
+// owns answers 204 and writes nothing; a completed read that names why it does not answers 403 with
+// one line naming the shape; a read that fails or cannot say why answers 503, never 403 or 204.
 
 const native = (app: string, extra: Record<string, unknown> = {}) => ({
   app,
@@ -33,9 +36,13 @@ const silent = (answer: Answer, status = 204) => {
   assert.equal(answer.status, status);
   assert.deepEqual(answer.lines, []);
 };
-const reported = (answer: Answer, organization: string, shape: string, target = pool) => {
-  assert.equal(answer.status, 204, "nothing is refused yet");
-  assert.deepEqual(answer.lines, [wouldRefuse(organization, shape, target)]);
+const refuses = (answer: Answer, organization: string, shape: string, target = pool) => {
+  assert.equal(answer.status, 403);
+  assert.deepEqual(answer.lines, [refused(organization, shape, target)]);
+};
+const unavailable = (answer: Answer, line: Answer["lines"][number]) => {
+  assert.equal(answer.status, 503);
+  assert.deepEqual(answer.lines, [line]);
 };
 
 test("1. a person's primary pool from Create pool answers 204 and writes nothing", async () => {
@@ -216,30 +223,30 @@ test("16. two records naming the same app answer 204", async () => {
   silent(await ask({ organization: person }));
 });
 
-test("17. a deleted pool still answers 204 and reports deleted-pool", async () => {
+test("17. a deleted pool answers 403 and names deleted-pool", async () => {
   await seed({ organizations: { [person]: { basaltPools: { [pool]: native(pool) } } } });
-  reported(await ask({ organization: person }), person, "deleted-pool");
+  refuses(await ask({ organization: person }), person, "deleted-pool");
 });
 
-test("18. a cleared association still answers 204 and reports cleared-association", async () => {
+test("18. a cleared association answers 403 and names cleared-association", async () => {
   await seed({ organizations: { [person]: { basaltPools: {} } } });
-  reported(await ask({ organization: person }), person, "cleared-association");
+  refuses(await ask({ organization: person }), person, "cleared-association");
 });
 
-test("19. a record naming an app owned elsewhere still answers 204 and reports foreign-owner", async () => {
+test("19. a record naming an app owned elsewhere answers 403 and names foreign-owner", async () => {
   await seed({
     organizations: { [person]: { basaltPools: { [pool]: native(pool) } } },
     apps: { [pool]: { owner: owned("org_elsewhere") } },
   });
-  reported(await ask({ organization: person }), person, "foreign-owner");
+  refuses(await ask({ organization: person }), person, "foreign-owner");
 });
 
-test("20. an organization's app with no pool record still answers 204 and reports no-record", async () => {
+test("20. an organization's app with no pool record answers 403 and names no-record", async () => {
   await seed({ organizations: { [person]: {} }, ...personPool });
-  reported(await ask({ organization: person }), person, "no-record");
+  refuses(await ask({ organization: person }), person, "no-record");
 });
 
-test("21. another existing organization naming a person's pool still answers 204 and reports other-organization", async () => {
+test("21. another existing organization naming a person's pool answers 403 and names other-organization", async () => {
   await seed({
     organizations: {
       [person]: { basaltPools: { [pool]: native(pool) } },
@@ -248,9 +255,31 @@ test("21. another existing organization naming a person's pool still answers 204
     },
     apps: { [pool]: { owner: owned(person) }, app_other_pool: { owner: owned("org_other") } },
   });
-  reported(await ask({ organization: "acceptance" }), "acceptance", "other-organization");
-  reported(await ask({ organization: "org_other" }), "org_other", "other-organization");
+  refuses(await ask({ organization: "acceptance" }), "acceptance", "other-organization");
+  refuses(await ask({ organization: "org_other" }), "org_other", "other-organization");
+  // Each organization keeps its own pool.
   silent(await ask({ organization: person }));
+  silent(await ask({ organization: "org_other", pool: "app_other_pool" }));
+});
+
+test("a pool its organization owns answers 204 whatever its organization's other records say", async () => {
+  const gone = "app_deleted_pool";
+  const theirs = "app_elsewhere_pool";
+  await seed({
+    organizations: {
+      [person]: {
+        basaltPools: {
+          [pool]: native(pool),
+          [gone]: native(gone, { primary: false }),
+          [theirs]: native(theirs, { primary: false }),
+        },
+      },
+    },
+    apps: { [pool]: { owner: owned(person) }, [theirs]: { owner: owned("org_elsewhere") } },
+  });
+  silent(await ask({ organization: person }));
+  refuses(await ask({ organization: person, pool: gone }), person, "deleted-pool", gone);
+  refuses(await ask({ organization: person, pool: theirs }), person, "foreign-owner", theirs);
 });
 
 test("22. a tombstoned organization answers 403 and writes nothing", async () => {
@@ -263,16 +292,27 @@ test("23. an organization that is gone answers 403 and writes nothing", async ()
   silent(await ask({ organization: "acceptance" }), 403);
 });
 
-test("24. unreadable organization metadata still answers 204 and reports invalid-metadata", async () => {
+test("24. unreadable organization metadata answers 503, never 403, and names invalid-metadata", async () => {
   for (const metadata of ["{not json", { basaltPools: [] }, { basaltPools: null }]) {
     await seed({ organizations: { [person]: metadata }, ...personPool });
-    reported(await ask({ organization: person }), person, "invalid-metadata");
+    unavailable(await ask({ organization: person }), wouldRefuse(person, "invalid-metadata"));
   }
   // Metadata that is not an object, or absent, holds no pools; it is readable.
   for (const metadata of [null, "[]", { basaltPools: undefined }]) {
     await seed({ organizations: { [person]: metadata }, ...personPool });
-    reported(await ask({ organization: person }), person, "no-record");
+    refuses(await ask({ organization: person }), person, "no-record");
   }
+});
+
+test("24. one organization's unreadable metadata never takes another organization's pool down", async () => {
+  const theirs = "app_unreadable_pool";
+  await seed({
+    organizations: { [person]: { basaltPools: { [pool]: native(pool) } }, org_unreadable: "{not" },
+    apps: { [pool]: { owner: owned(person) }, [theirs]: { owner: owned("org_unreadable") } },
+  });
+  const broken = await ask({ organization: "org_unreadable", pool: theirs });
+  unavailable(broken, wouldRefuse("org_unreadable", "invalid-metadata", theirs));
+  silent(await ask({ organization: person }));
 });
 
 test("25. stale envelopes and a missing signing key keep their answers and write nothing", async () => {
@@ -285,69 +325,88 @@ test("25. stale envelopes and a missing signing key keep their answers and write
 
 class ReadFailed extends Data.TaggedError("ReadFailed") {}
 
-test("an ownership read that hangs leaves the answer on time and says it was not observed", async () => {
-  await seed({ organizations: { [person]: { basaltPools: {} } }, ...personPool });
-  const started = performance.now();
-  const answer = await ask({ organization: person, database: ownershipReadAnswers(Effect.never) });
-  const took = performance.now() - started;
-  assert.equal(answer.status, 204);
-  assert.deepEqual(answer.lines, [notObserved(person, "timeout")]);
-  // The bound is 300 ms; the rest is the existing read and the test's own work.
-  assert.ok(took < 1_000, String(took));
+test("an ownership read the database ends at its bound answers 503, never 403 or 204", async () => {
+  for (const metadata of [{ basaltPools: { [pool]: native(pool) } }, { basaltPools: {} }]) {
+    await seed({ organizations: { [person]: metadata }, ...personPool });
+    const answer = await ask({
+      organization: person,
+      database: ownershipReadAnswers(Effect.fail(endedByDatabase())),
+    });
+    unavailable(answer, notObserved(person, "timeout"));
+  }
 });
 
-test("an ownership read that fails changes nothing and says it was not observed", async () => {
-  await seed({ organizations: { [person]: { basaltPools: {} } }, ...personPool });
-  const answer = await ask({
-    organization: person,
-    database: ownershipReadAnswers(Effect.fail(new ReadFailed())),
-  });
-  assert.equal(answer.status, 204);
-  assert.deepEqual(answer.lines, [notObserved(person, "read-failed")]);
+test("an ownership read that fails answers 503, never 403 or 204", async () => {
+  // Once for a pool the organization owns, once for one the rule would refuse.
+  for (const organization of [person, "other"]) {
+    await seed({
+      organizations: { [person]: { basaltPools: { [pool]: native(pool) } }, other: {} },
+      ...personPool,
+    });
+    const answer = await ask({
+      organization,
+      database: ownershipReadAnswers(Effect.fail(new ReadFailed())),
+    });
+    unavailable(answer, notObserved(organization, "read-failed"));
+  }
 });
 
-test("a refused organization's answer is unchanged when its ownership read fails", async () => {
-  await seed({ organizations: { other: { basaltPools: {} } }, ...personPool });
-  const answer = await ask({
-    organization: "other",
-    database: ownershipReadAnswers(Effect.fail(new ReadFailed())),
-  });
-  assert.equal(answer.status, 204, "today's answer: the organization exists");
-  assert.deepEqual(answer.lines, [notObserved("other", "read-failed")]);
-});
-
-test("a read that is slow to cancel never holds the answer past the bound", async () => {
-  await seed({ organizations: { [person]: { basaltPools: {} } }, ...personPool });
-  // A driver interrupts a running statement by asking the database to cancel it and waiting.
-  const slowToCancel = Effect.never.pipe(Effect.onInterrupt(() => Effect.sleep("5 seconds")));
-  const started = performance.now();
-  const answer = await ask({ organization: person, database: ownershipReadAnswers(slowToCancel) });
-  const took = performance.now() - started;
-  assert.equal(answer.status, 204);
-  assert.deepEqual(answer.lines, [notObserved(person, "timeout")]);
-  assert.ok(took < 1_000, String(took));
-});
-
-test("a rule that refused while the next read finds ownership says the reads changed", async () => {
+test("a rule that refuses while its shape read finds ownership answers 503, never 403", async () => {
   await seed({
-    organizations: { [person]: { basaltPools: { [pool]: { app: pool } } } },
-    ...personPool,
+    organizations: {
+      [person]: { basaltPools: { [pool]: { app: pool } } },
+      org_other: { basaltPools: { [pool]: { app: "app_other_pool" } } },
+    },
+    apps: { [pool]: { owner: owned(person) }, app_other_pool: { owner: owned("org_other") } },
   });
-  // The rule's read answers no registration; the shape read that follows sees the owned pool.
-  const answer = await ask({
-    organization: person,
-    database: ownershipReadAnswers(Effect.succeed([])),
-  });
-  assert.equal(answer.status, 204);
-  assert.deepEqual(answer.lines, [notObserved(person, "changed")]);
+  // The rule's read answers no registration for this organization only; the shape read sees its
+  // pool owned. A client that sends no batch reads them in one transaction of statements apart.
+  const database = ownershipReadAnswers(Effect.succeed([]), person);
+  unavailable(await ask({ organization: person, database }), notObserved(person, "changed"));
+  // Another organization's pool in the same database still answers on its own read.
+  silent(await ask({ organization: "org_other", pool: "app_other_pool", database }));
 });
 
-test("metadata the database's JSON type refuses is reported as invalid, not as a failed read", async () => {
+test("metadata the database's JSON type refuses answers 503 and names invalid-metadata", async () => {
   await seed({
     organizations: { [person]: '{"basaltPools":{},"name":"a\\u0000b"}' },
     ...personPool,
   });
-  const answer = await ask({ organization: person });
-  assert.equal(answer.status, 204);
-  assert.deepEqual(answer.lines, [wouldRefuse(person, "invalid-metadata")]);
+  unavailable(await ask({ organization: person }), wouldRefuse(person, "invalid-metadata"));
+});
+
+test("a client that sends one batch gives every answer the same, an unexplained refusal included", async () => {
+  const batched = true;
+  await seed({
+    organizations: {
+      [person]: { basaltPools: { [pool]: native(pool) } },
+      acceptance: {},
+      org_unreadable: "{not json",
+    },
+    apps: { [pool]: { owner: owned(person) }, app_unreadable: { owner: owned("org_unreadable") } },
+  });
+  silent(await ask({ organization: person, batched }));
+  refuses(await ask({ organization: "acceptance", batched }), "acceptance", "other-organization");
+  silent(await ask({ organization: "org_gone", batched }), 403);
+  unavailable(
+    await ask({ organization: "org_unreadable", pool: "app_unreadable", batched }),
+    wouldRefuse("org_unreadable", "invalid-metadata", "app_unreadable"),
+  );
+  for (const [read, reason] of [
+    [Effect.fail(new ReadFailed()), "read-failed"],
+    [Effect.fail(endedByDatabase()), "timeout"],
+    // The rule refuses and the shape read, in the same snapshot, finds the pool owned.
+    [Effect.succeed([]), "unexplained"],
+  ] as const) {
+    const database = ownershipReadAnswers(read, person);
+    unavailable(
+      await ask({ organization: person, batched, database }),
+      notObserved(person, reason),
+    );
+    refuses(
+      await ask({ organization: "acceptance", batched, database }),
+      "acceptance",
+      "other-organization",
+    );
+  }
 });
