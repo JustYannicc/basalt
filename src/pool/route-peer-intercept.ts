@@ -18,8 +18,9 @@ export const routePeerInstallMs = 5_000;
  * `route-peer.internal`, and PoolRoutePeer asks the controller `pool` who owns each route. The
  * props come only from this binding. Until PoolRoutePeer is exported nothing is intercepted, so
  * a routed credential's tunnel cannot open and route_peer.py refuses it: blocked, never direct.
- * POOL_ROUTE_PEER_INTERCEPT_PENDING is not retried here: the intercept is installed again at the
- * object's next start (`configure`) or next isolate (`restore`).
+ * POOL_ROUTE_PEER_INTERCEPT_PENDING is not retried here. The intercept still lands if the late
+ * call succeeds, and it is installed again at the object's next start or legacy bootstrap
+ * (`configure`), its next isolate (`restore`), and every controller construction.
  */
 export async function installRoutePeer(ctx: RoutePeerHost, pool: string, boundMs = routePeerInstallMs) {
   const exports: unknown = ctx.exports;

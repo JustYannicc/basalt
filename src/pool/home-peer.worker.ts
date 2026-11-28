@@ -61,7 +61,12 @@ export class RuntimeHomePeerTransport {
       "home-peer.internal",
       this.ctx.exports.PoolHomePeer({ props: { source } }),
     );
-    await installRoutePeer(this.ctx, peerTarget(source).controllerId);
+    const pool = peerTarget(source).controllerId;
+    // A fleet cell's start may wait out the route intercept's bound: it has 180 s. The root's
+    // recovery bootstrap has 2 s for its health read, exec and acknowledgement, so there the route
+    // intercept installs beside it and never holds it.
+    if (source.kind === "legacy") this.ctx.waitUntil(installRoutePeer(this.ctx, pool));
+    else await installRoutePeer(this.ctx, pool);
   }
   async configure(source: HomePeerSource) {
     await this.gate.retain(source);

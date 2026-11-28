@@ -9,6 +9,7 @@ import { routeAcquisitionPrefix } from "./acquisition-contract.ts";
 const routeId = "rt_" + "a".repeat(26);
 const strangerRoute = "rt_" + "z".repeat(26);
 const brokenRoute = "rt_" + "b".repeat(26);
+const ownerlessRoute = "rt_" + "f".repeat(26);
 
 // Real workerd, real RouteGateway, signed acquisitions and PoolRoutePeer relay; only the container is fake.
 const fixture = `
@@ -30,7 +31,11 @@ export class Gateways extends Gateway {
   async fetch(request) { if (this.ctx.id.name === '${brokenRoute}') throw new Error('reset'); return super.fetch(request); }
 }
 export class Controllers extends DurableObject {
-  async routeOwner({ routeId }) { return routeId === '${routeId}' || routeId === '${brokenRoute}' ? 'org/org-1/user/person-1' : null; }
+  async routeOwner({ routeId }) {
+    // A controller that cannot answer, as one mid-restart.
+    if (routeId === '${ownerlessRoute}') throw new Error('controller unavailable');
+    return routeId === '${routeId}' || routeId === '${brokenRoute}' ? 'org/org-1/user/person-1' : null;
+  }
 }
 export class Peer extends PoolRoutePeer { constructor(ctx, env) { super(ctx, routed(env)); } }
 export class BarePeer extends PoolRoutePeer { constructor(ctx, env) { super(ctx, { ...routed(env), RouteGateway: undefined }); } }
@@ -226,6 +231,13 @@ test("real workerd: signed acquisitions drive the gateway and the pool peer tunn
     const broken = await open(mf, `/peer/${brokenRoute}`);
     const reset = await broken.closed;
     assert.deepEqual([reset.code, reset.reason], [1013, "route_gateway_unavailable"]);
+    assert.deepEqual(await refusals(mf), [
+      'POOL_ROUTE_TUNNEL_REFUSED {"reason":"route_gateway_unavailable"}',
+    ]);
+    // A controller that cannot say who owns the route: refused, never sent on.
+    const ownerless = await open(mf, `/peer/${ownerlessRoute}`);
+    const unanswered = await ownerless.closed;
+    assert.deepEqual([unanswered.code, unanswered.reason], [1013, "route_gateway_unavailable"]);
     assert.deepEqual(await refusals(mf), [
       'POOL_ROUTE_TUNNEL_REFUSED {"reason":"route_gateway_unavailable"}',
     ]);

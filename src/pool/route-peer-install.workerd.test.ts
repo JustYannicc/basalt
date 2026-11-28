@@ -13,15 +13,17 @@ import * as main from './src/pool/worker.ts';
 // The platform's ctx.exports: one loopback factory per entrypoint PoolWorker's main module exports.
 const exported = Object.fromEntries(Object.keys(main).map((name) => [name, () => name]));
 export default { async fetch(request) {
-  const mode = new URL(request.url).pathname.slice(1);
+  const [kind, mode] = new URL(request.url).pathname.slice(1).split('/');
   const hosts = [];
   const lines = [];
+  const background = [];
   const error = console.error;
   console.error = (...args) => { lines.push(args.join(' ')); error(...args); };
   const ctx = {
     id: { toString: () => 'instance' },
     storage: {},
     exports: exported,
+    waitUntil: (work) => background.push(work),
     container: {
       interceptOutboundHttp: (host) => {
         hosts.push(host);
@@ -31,10 +33,19 @@ export default { async fetch(request) {
       },
     },
   };
+  const source = kind === 'legacy'
+    ? { kind: 'legacy', identity: { controllerId: 'controller' } }
+    : { kind: 'runtime', witness: { target: { controllerId: 'controller' } } };
   try {
-    await new RuntimeHomePeerTransport(ctx, 'k'.repeat(64), async () => ({}))
-      .install({ kind: 'legacy', identity: { controllerId: 'controller' } });
-    return Response.json({ hosts, lines });
+    const install = new RuntimeHomePeerTransport(ctx, 'k'.repeat(64), async () => ({})).install(source);
+    // Whether the install itself returned within a second, before its route intercept settled.
+    const first = await Promise.race([
+      install.then(() => 'installed'),
+      new Promise((resolve) => setTimeout(() => resolve('held'), 1000)),
+    ]);
+    await install;
+    await Promise.all(background);
+    return Response.json({ first, hosts, lines });
   } finally {
     console.error = error;
   }
@@ -81,30 +92,37 @@ async function start() {
   );
 }
 
-test("a cell's start gets past a route intercept that answers, throws or never answers, home-peer intercept first", { timeout: 30_000 }, async (context) => {
+test("a cell's start gets past a route intercept that answers, throws or never answers, home-peer intercept first", { timeout: 60_000 }, async (context) => {
   const mf = await start();
   context.after(() => mf.dispose());
-  const install = async (mode: string) => {
+  const install = async (kind: string, mode: string) => {
     const started = performance.now();
-    const answer = (await (await mf.dispatchFetch(`http://fixture/${mode}`)).json()) as {
+    const answer = (await (await mf.dispatchFetch(`http://fixture/${kind}/${mode}`)).json()) as {
+      first: string;
       hosts: string[];
       lines: string[];
     };
     return { ...answer, waited: performance.now() - started };
   };
   const pendingLine = "POOL_ROUTE_PEER_INTERCEPT_PENDING";
-  const answered = await install("answer");
-  assert.deepEqual(answered.hosts, ["home-peer.internal", "route-peer.internal"]);
-  assert.deepEqual(answered.lines, []);
-  const thrown = await install("throw");
-  assert.deepEqual(thrown.hosts, ["home-peer.internal", "route-peer.internal"]);
-  assert.deepEqual(thrown.lines, [pendingLine]);
-  // The start waits the bound and no longer: it goes on with routed credentials refused.
-  const hung = await install("hang");
-  assert.deepEqual(hung.hosts, ["home-peer.internal", "route-peer.internal"]);
-  assert.deepEqual(hung.lines, [pendingLine]);
+  for (const kind of ["runtime", "legacy"]) {
+    const answered = await install(kind, "answer");
+    assert.deepEqual(answered.hosts, ["home-peer.internal", "route-peer.internal"], kind);
+    assert.deepEqual([answered.first, answered.lines], ["installed", []], kind);
+    const thrown = await install(kind, "throw");
+    assert.deepEqual(thrown.hosts, ["home-peer.internal", "route-peer.internal"], kind);
+    assert.deepEqual([thrown.first, thrown.lines], ["installed", [pendingLine]], kind);
+  }
+  // A fleet cell's start waits the bound and no longer: it goes on with routed credentials refused.
+  const cell = await install("runtime", "hang");
+  assert.deepEqual(cell.hosts, ["home-peer.internal", "route-peer.internal"]);
+  assert.deepEqual([cell.first, cell.lines], ["held", [pendingLine]]);
   assert.ok(
-    hung.waited >= routePeerInstallMs - 100 && hung.waited < routePeerInstallMs + 5_000,
-    String(hung.waited),
+    cell.waited >= routePeerInstallMs - 100 && cell.waited < routePeerInstallMs + 5_000,
+    String(cell.waited),
   );
+  // The root's recovery bootstrap has 2 s: there the hung route intercept never holds the install.
+  const root = await install("legacy", "hang");
+  assert.deepEqual(root.hosts, ["home-peer.internal", "route-peer.internal"]);
+  assert.deepEqual([root.first, root.lines], ["installed", [pendingLine]]);
 });
