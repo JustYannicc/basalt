@@ -81,10 +81,19 @@ index e26a1fb..a70755f 100644
        if (current === undefined) return yield* new BillingUnavailable();
 diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/cloud.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/cloud.ts
 new file mode 100644
-index 0000000..f50f08c
+index 0000000..9202fca
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/cloud.ts
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,66 @@
++import {
++  acceptanceMembership,
++  acceptanceState,
++  createAcceptancePool,
++  createCustomAccount,
++  customProviderName,
++  installCustomProvider,
++  linkCustomAccount,
++} from "@executor-js/hosted-server/acceptance-pool-product";
 +import { Config, Effect, Option, Redacted } from "effect";
 +import { productionOpsRelease } from "../../implementation/production-ops-release.ts";
 +import { cloudDirectDatabaseConnection } from "../database.ts";
@@ -92,7 +101,31 @@ index 0000000..f50f08c
 +import { cloudEncryptionKey } from "../secrets.ts";
 +import { cloudHosts } from "../stage.ts";
 +import { acceptancePoolHandler } from "./http.ts";
-+import { acceptancePoolSteps } from "./steps.ts";
++import { makeAcceptancePoolSteps } from "./steps.ts";
++
++type Needs<T> = T extends (...args: never[]) => Effect.Effect<unknown, unknown, infer R>
++  ? R
++  : T extends Effect.Effect<unknown, unknown, infer R>
++    ? R
++    : never;
++/** Everything the product calls need; the route's request layer provides each of them. */
++type ProductNeeds =
++  | Needs<typeof acceptanceState>
++  | Needs<typeof createAcceptancePool>
++  | Needs<typeof installCustomProvider>
++  | Needs<typeof createCustomAccount>
++  | Needs<typeof linkCustomAccount>
++  | Needs<typeof acceptanceMembership>;
++
++const steps = makeAcceptancePoolSteps<ProductNeeds>({
++  state: acceptanceState,
++  createPool: createAcceptancePool,
++  installProvider: installCustomProvider,
++  providerName: customProviderName,
++  createAccount: createCustomAccount,
++  link: linkCustomAccount,
++  membership: acceptanceMembership,
++});
 +
 +/** The deployed route: production-ops' key, hosts, release and database identity. */
 +export const cloudAcceptancePool = Effect.gen(function* () {
@@ -115,7 +148,7 @@ index 0000000..f50f08c
 +        upstreamHost: Option.getOrUndefined(upstreamHost),
 +      };
 +    }),
-+    steps: acceptancePoolSteps,
++    steps,
 +  });
 +});
 diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/contracts.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/contracts.ts
@@ -1200,17 +1233,89 @@ index 0000000..3ad6eac
 +  });
 diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/steps.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/steps.ts
 new file mode 100644
-index 0000000..d476b3c
+index 0000000..b4e99b9
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/steps.ts
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,272 @@
 +import {
 +  refuse,
 +  type AcceptancePoolSteps,
++  type Json,
 +  type PlannedWrite,
++  type StepContext,
 +} from "@executor-js/hosted-server/acceptance-pool";
-+import { Effect } from "effect";
++import { Effect, Schema } from "effect";
++import { canonical, sha256 } from "../production-ops/crypto.ts";
 +import { ensureIdentity, inspectIdentity, verifyIdentity } from "./identity.ts";
++import { setupRequest, upstreamProfiles } from "./request.ts";
++
++/** The organization's pools, apps and links, as the product reads them. */
++export interface AcceptanceState {
++  readonly pools: ReadonlyArray<{
++    readonly app: string;
++    readonly request: string | null;
++    readonly name: string | null;
++    readonly owner: string | null;
++    readonly primary: boolean | null;
++    readonly live: boolean;
++  }>;
++  readonly apps: ReadonlyArray<{ readonly id: string; readonly name: string }>;
++  readonly links: ReadonlyArray<{
++    readonly app: string;
++    readonly requirement: string;
++    readonly account: string;
++  }>;
++}
++
++/** The product calls the steps make, each run as the acceptance identity by the tools service. */
++export interface AcceptanceProduct<R> {
++  readonly state: Effect.Effect<AcceptanceState, unknown, R>;
++  readonly createPool: (name: string, requestId: string) => Effect.Effect<string, unknown, R>;
++  readonly installProvider: Effect.Effect<string, unknown, R>;
++  readonly providerName: string;
++  readonly createAccount: (input: {
++    readonly app: string;
++    readonly creation: string;
++    readonly method: string;
++    readonly label: string;
++    readonly fields: { readonly baseUrl: string; readonly models: string; readonly token: string };
++  }) => Effect.Effect<string, unknown, R>;
++  readonly link: (pool: string, account: string) => Effect.Effect<void, unknown, R>;
++  readonly membership: (
++    pool: string,
++  ) => Effect.Effect<
++    { readonly native: boolean; readonly accounts: readonly string[] },
++    unknown,
++    R
++  >;
++}
++
++/** The ids a setup plan fixes when it is made, so a resumed apply reuses every one of them. */
++const SetupData = Schema.Struct({
++  pool: Schema.String,
++  requestId: Schema.String,
++  accounts: Schema.Array(
++    Schema.Struct({
++      profile: Schema.Literals(upstreamProfiles),
++      method: Schema.Literals(["anthropic", "openai"]),
++      models: Schema.String,
++      creation: Schema.String,
++    }),
++  ),
++});
++type SetupData = typeof SetupData.Type;
++const setupData = (data: Json) =>
++  Schema.decodeUnknownEffect(SetupData)(data).pipe(Effect.mapError(() => refuse("stale_plan")));
++
++const Recorded = Schema.Struct({ app: Schema.String });
++const RecordedAccount = Schema.Struct({ account: Schema.String });
++const recorded = (progress: StepContext["progress"], step: string) =>
++  Schema.decodeUnknownOption(Recorded)(progress[step]);
++const recordedAccount = (progress: StepContext["progress"], step: string) =>
++  Schema.decodeUnknownOption(RecordedAccount)(progress[step]);
++
++const digest = (value: unknown) => sha256(`${canonical(value)}\n`);
++const uuid = Effect.sync(() => crypto.randomUUID());
 +
 +const identityWrites = (observed: Readonly<Record<string, string>>): PlannedWrite[] =>
 +  (
@@ -1223,25 +1328,186 @@ index 0000000..d476b3c
 +    .filter(([key]) => observed[key] === "absent")
 +    .map(([, table, key]) => ({ store: "tools", table, key, action: "insert" }));
 +
-+/** The steps the deployed route runs, in plan order. */
-+export const acceptancePoolSteps: AcceptancePoolSteps = {
-+  inspect: (kind) =>
-+    kind === "setup"
-+      ? Effect.map(inspectIdentity, (observed) => ({
-+          observed,
-+          steps: ["identity"],
-+          writes: identityWrites(observed),
-+          data: {},
-+        }))
-+      : Effect.fail(refuse("pool_state")),
-+  run: (step) => (step === "identity" ? ensureIdentity : Effect.fail(refuse("pool_state"))),
-+  verify: (context) =>
-+    context.kind === "setup"
-+      ? Effect.map(verifyIdentity, (checks) => ({
-+          ok: Object.values(checks).every(Boolean),
-+          checks,
-+        }))
-+      : Effect.fail(refuse("pool_state")),
++const setupSteps = (data: Pick<SetupData, "accounts">) => [
++  "identity",
++  "create",
++  "provider",
++  ...data.accounts.flatMap((account) => [`account:${account.profile}`, `link:${account.profile}`]),
++];
++
++/** Every account the setup has recorded so far. */
++const recordedAccounts = (progress: StepContext["progress"]) =>
++  upstreamProfiles.flatMap((profile) => {
++    const value = recordedAccount(progress, `account:${profile}`);
++    return value._tag === "Some" ? [value.value.account] : [];
++  });
++
++export const makeAcceptancePoolSteps = <R>(
++  product: AcceptanceProduct<R>,
++): AcceptancePoolSteps<R> => {
++  const inspectSetup = (request: Json) =>
++    Effect.gen(function* () {
++      const parsed = yield* setupRequest(request);
++      const identity = yield* inspectIdentity;
++      const state = yield* product.state;
++      // Exactly one pool: a setup starts only when the identity holds none and owns no app.
++      if (state.pools.some((pool) => pool.live)) return yield* refuse("identity_holds_pool");
++      if (state.apps.length > 0) return yield* refuse("unrecorded_app");
++      const accounts = [];
++      for (const account of parsed.accounts) accounts.push({ ...account, creation: yield* uuid });
++      const data = { pool: parsed.pool, requestId: yield* uuid, accounts };
++      return {
++        observed: {
++          ...identity,
++          "acceptance.pools": digest(state.pools),
++          "acceptance.apps": digest(state.apps),
++          "acceptance.links": digest(state.links),
++        },
++        steps: setupSteps(data),
++        writes: <PlannedWrite[]>[
++          ...identityWrites(identity),
++          { store: "tools", table: "executor_apps", key: parsed.pool, action: "insert" },
++          { store: "tools", table: "executor_apps", key: product.providerName, action: "insert" },
++          ...accounts.flatMap((account): PlannedWrite[] => [
++            {
++              store: "tools",
++              table: "executor_accounts",
++              key: `acc_${account.creation}`,
++              action: "insert",
++            },
++            {
++              store: "tools",
++              table: "hosted_app_account_links",
++              key: `acc_${account.creation}`,
++              action: "insert",
++            },
++          ]),
++          { store: "pool", table: "pool-directory-v1", key: parsed.pool, action: "call" },
++          { store: "home", table: "channel-group", key: parsed.pool, action: "call" },
++        ],
++        data,
++      };
++    });
++
++  const ourPool = (state: AcceptanceState, data: SetupData) =>
++    state.pools.find((pool) => pool.request === data.requestId)?.app;
++
++  const runSetup = (step: string, context: StepContext) =>
++    Effect.gen(function* () {
++      const data = yield* setupData(context.data);
++      if (step === "identity") return (yield* ensureIdentity) as Json;
++      const state = yield* product.state;
++      if (step === "create") {
++        if (state.pools.some((pool) => pool.live && pool.request !== data.requestId))
++          return yield* refuse("identity_holds_pool");
++        const mine = ourPool(state, data);
++        if (state.apps.some((app) => app.id !== mine)) return yield* refuse("unrecorded_app");
++        return { app: yield* product.createPool(data.pool, data.requestId) };
++      }
++      const pool = recorded(context.progress, "create");
++      if (pool._tag === "None") return yield* refuse("pool_state");
++      if (step === "provider") {
++        // Only this operation writes in the organization; a resumed install finds its own default.
++        const others = state.apps.filter((app) => app.id !== pool.value.app);
++        if (others.length > 1 || others.some((app) => app.name !== product.providerName))
++          return yield* refuse("unrecorded_app");
++        return { app: yield* product.installProvider };
++      }
++      const [kind, profile] = step.split(":");
++      const account = data.accounts.find((entry) => entry.profile === profile);
++      if (account === undefined) return yield* refuse("pool_state");
++      if (kind === "account") {
++        const provider = recorded(context.progress, "provider");
++        if (provider._tag === "None") return yield* refuse("pool_state");
++        if (context.upstreamOrigin === undefined) return yield* refuse("upstream_unset");
++        if (context.upstreamKey === undefined) return yield* refuse("upstream_key_invalid");
++        // The address is the server's own: the deploy's host and the profile, never the request.
++        return {
++          account: yield* product.createAccount({
++            app: provider.value.app,
++            creation: account.creation,
++            method: account.method,
++            label: `Acceptance ${account.profile}`,
++            fields: {
++              baseUrl: `${context.upstreamOrigin}/${account.profile}`,
++              models: account.models,
++              token: context.upstreamKey,
++            },
++          }),
++        };
++      }
++      if (kind === "link") {
++        const created = recordedAccount(context.progress, `account:${profile}`);
++        if (created._tag === "None") return yield* refuse("pool_state");
++        const allowed = new Set(recordedAccounts(context.progress));
++        if (
++          state.links.some(
++            (link) =>
++              link.app === pool.value.app &&
++              link.requirement !== "pool" &&
++              !allowed.has(link.account),
++          )
++        )
++          return yield* refuse("unrecorded_link");
++        yield* product.link(pool.value.app, created.value.account);
++        return { account: created.value.account };
++      }
++      return yield* refuse("pool_state");
++    });
++
++  const verifySetup = (context: StepContext) =>
++    Effect.gen(function* () {
++      const identity = yield* verifyIdentity;
++      const data = yield* setupData(context.data);
++      const state = yield* product.state;
++      const pool = recorded(context.progress, "create");
++      const provider = recorded(context.progress, "provider");
++      const accounts = recordedAccounts(context.progress).toSorted();
++      const app = pool._tag === "Some" ? pool.value.app : undefined;
++      const live = state.pools.filter((entry) => entry.live);
++      const poolLinks = state.links.filter((link) => link.app === app);
++      const membership = app === undefined ? undefined : yield* product.membership(app);
++      return {
++        ...identity,
++        onePool:
++          live.length === 1 &&
++          live[0]?.app === app &&
++          live[0]?.owner === "acceptance" &&
++          live[0]?.primary === true &&
++          live[0]?.name === data.pool &&
++          live[0]?.request === data.requestId,
++        recordedApps:
++          provider._tag === "Some" &&
++          canonical(state.apps.map((entry) => entry.id).toSorted()) ===
++            canonical([app, provider.value.app].toSorted()),
++        poolLinks:
++          poolLinks.filter((link) => link.requirement === "pool").length === 1 &&
++          canonical(
++            poolLinks
++              .filter((link) => link.requirement !== "pool")
++              .map((link) => link.account)
++              .toSorted(),
++          ) === canonical(accounts),
++        membership:
++          membership !== undefined &&
++          membership.native &&
++          canonical([...membership.accounts].toSorted()) === canonical(accounts),
++      };
++    });
++
++  return {
++    inspect: (kind, request) =>
++      kind === "setup" ? inspectSetup(request) : Effect.fail(refuse("pool_state")),
++    run: (step, context) =>
++      context.kind === "setup" ? runSetup(step, context) : Effect.fail(refuse("pool_state")),
++    verify: (context) =>
++      context.kind === "setup"
++        ? Effect.map(verifySetup(context), (checks) => ({
++            ok: Object.values(checks).every(Boolean),
++            checks,
++          }))
++        : Effect.fail(refuse("pool_state")),
++  };
 +};
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
 index 88d5697..4568ad9 100644
@@ -1276,14 +1542,15 @@ index 88d5697..4568ad9 100644
          HttpRouter.provideRequest(executor),
        ),
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
-index bafb8cd..4c6bcd4 100644
+index bafb8cd..bd90491 100644
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
-@@ -59,6 +59,7 @@
+@@ -59,6 +59,8 @@
      "./pool-account-acquisition-contract": "./src/implementation/pool-account-acquisition-contract.ts",
      "./account-key-mirror": "./src/implementation/account-key-mirror.ts",
      "./pool-token": "./src/implementation/pool-token.ts",
 +    "./acceptance-pool": "./src/contracts/acceptance-pool.ts",
++    "./acceptance-pool-product": "./src/implementation/acceptance-pool.ts",
      "./hosted-routes": "./src/implementation/hosted-routes-accounts.ts",
      "./hosted-routes-token": "./src/implementation/hosted-routes-token.ts",
      "./hosted-routes/contracts": "./src/contracts/hosted-routes.ts",
@@ -1417,6 +1684,166 @@ index 0000000..ac8b103
 +    context: StepContext,
 +  ) => Effect.Effect<Verification, unknown, SqlClient.SqlClient | R>;
 +}
+diff --git a/apps/hosted/server/src/implementation/acceptance-pool.ts b/apps/hosted/server/src/implementation/acceptance-pool.ts
+new file mode 100644
+index 0000000..7a0f014
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/acceptance-pool.ts
+@@ -0,0 +1,131 @@
++/**
++ * The product paths the signed acceptance-pool operation drives, each run as the acceptance
++ * identity exactly as an owner's own request would run it. Nothing here bypasses a product check:
++ * the pool is created, its provider installed, its accounts created and linked, unlinked and
++ * removed through the same calls the dashboard makes.
++ */
++import { AccountId, AppId } from "@executor-js/sdk/core";
++import { Effect, Redacted, Schema } from "effect";
++import { acceptanceIdentity } from "../contracts/acceptance-pool.ts";
++import { CurrentUserId } from "../contracts/auth.ts";
++import { HostedExecutor } from "../contracts/executor.ts";
++import {
++  CurrentOrganization,
++  OrganizationId,
++  organizationOwner,
++} from "../contracts/organization.ts";
++import { appLinkSelection } from "./app-account-links.ts";
++import { installApp } from "./apps.ts";
++import { nativePoolMembership } from "./pool-membership.ts";
++import { createPool } from "./pools.ts";
++import { createRequirementAccount } from "./requirement-account-creation.ts";
++import { policyDatabase } from "./resource-policy.ts";
++
++const organization = OrganizationId.make(acceptanceIdentity.organization);
++export const acceptanceOwner = organizationOwner(organization);
++/** The catalog entry and requirement of the custom endpoint provider app. */
++export const customProviderEntry = "provider-custom";
++export const customRequirement = "custom";
++export const customProviderName = "Custom endpoint";
++
++const asAcceptance = <A, E, R>(work: Effect.Effect<A, E, R>) =>
++  work.pipe(
++    Effect.provideService(CurrentUserId, acceptanceIdentity.user),
++    Effect.provideService(CurrentOrganization, {
++      organization,
++      owner: acceptanceOwner,
++      role: "owner",
++    }),
++  );
++
++const PoolRecord = Schema.Struct({
++  app: Schema.String,
++  request: Schema.NullOr(Schema.String),
++  name: Schema.NullOr(Schema.String),
++  owner: Schema.NullOr(Schema.String),
++  primary: Schema.NullOr(Schema.Boolean),
++  account: Schema.NullOr(Schema.String),
++  live: Schema.Boolean,
++});
++const OwnedApp = Schema.Struct({ id: Schema.String, name: Schema.String });
++const Link = Schema.Struct({
++  app: Schema.String,
++  requirement: Schema.String,
++  account: Schema.String,
++});
++
++/** What the acceptance organization holds now: its pool records, its apps and their links. */
++export const acceptanceState = Effect.gen(function* () {
++  const sql = yield* policyDatabase;
++  const pools = yield* sql`select pool.key as app, pool.value ->> 'requestId' as request,
++      pool.value ->> 'requestName' as name, pool.value ->> 'owner' as owner,
++      (pool.value ->> 'primary')::boolean as primary, pool.value ->> 'account' as account,
++      exists (select 1 from executor_apps a where a.id = pool.key) as live
++    from organization o
++    cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) pool
++    where o.id = ${organization} order by pool.key`.pipe(
++    Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(PoolRecord))),
++  );
++  const apps = yield* sql`select id, name from executor_apps where owner = ${acceptanceOwner}
++    order by id`.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(OwnedApp))));
++  const links = yield* sql`select l.app, l.requirement, l.account from hosted_app_account_links l
++    join executor_apps a on a.id = l.app where a.owner = ${acceptanceOwner}
++    order by l.app, l.requirement, l.account`.pipe(
++    Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Link))),
++  );
++  return { pools, apps, links };
++});
++export type AcceptanceState = Effect.Success<typeof acceptanceState>;
++
++/** The product's pool creation; the same request id replays the same pool. */
++export const createAcceptancePool = (name: string, requestId: string) =>
++  asAcceptance(createPool({ name, requestId, newInstance: false })).pipe(
++    Effect.map((app) => app.id as string),
++  );
++
++/** The catalog install; the organization's default instance is reused when it exists. */
++export const installCustomProvider = asAcceptance(
++  installApp(acceptanceOwner, { entry: customProviderEntry, name: customProviderName }),
++).pipe(Effect.map((app) => app.id as string));
++
++/** The provider's own account creation; the same creation id returns the same account. */
++export const createCustomAccount = (input: {
++  readonly app: string;
++  readonly creation: string;
++  readonly method: string;
++  readonly label: string;
++  readonly fields: { readonly baseUrl: string; readonly models: string; readonly token: string };
++}) =>
++  asAcceptance(
++    createRequirementAccount(
++      "app",
++      { app: AppId.make(input.app), requirement: customRequirement },
++      {
++        creation: input.creation,
++        method: input.method,
++        fields: Redacted.make({ ...input.fields }),
++        label: input.label,
++      },
++    ),
++  ).pipe(Effect.map((account) => account.id as string));
++
++/** The pool's own link path, whose hook tells the pool Worker and mirrors the account to Home. */
++export const linkCustomAccount = (pool: string, account: string) =>
++  asAcceptance(
++    appLinkSelection({
++      app: AppId.make(pool),
++      requirement: customRequirement,
++      account: AccountId.make(account),
++    }),
++  ).pipe(Effect.asVoid);
++
++/** The read the pool Worker itself uses to decide a pool's accounts. */
++export const acceptanceMembership = (pool: string) =>
++  Effect.gen(function* () {
++    const executor = yield* Effect.flatten(HostedExecutor);
++    const membership = yield* nativePoolMembership(organization, AppId.make(pool), executor);
++    return {
++      native: membership.native,
++      accounts: membership.accounts.map((account) => String(account.account)).toSorted(),
++    };
++  });
+diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/hosted/server/src/implementation/app-account-links.ts
+index 188c8d3..842dcc2 100644
+--- a/apps/hosted/server/src/implementation/app-account-links.ts
++++ b/apps/hosted/server/src/implementation/app-account-links.ts
+@@ -489,7 +489,7 @@ const connect = (
+   });
+ 
+ /** Retire app-owned credentials before deleting their links, keeping a failed remove reversible. */
+-const unlink = (
++export const unlink = (
+   scope: AccountScope,
+   params: { readonly app: AppId; readonly requirement: string; readonly account: AccountId },
+ ) =>
+@@ -530,7 +530,8 @@ const unlink = (
+     return { requirement: params.requirement, account: params.account };
+   });
+ 
+-const appLinkSelection = (
++/** Exported for the acceptance-pool operation, which links its own accounts as its own identity. */
++export const appLinkSelection = (
+   params: { readonly app: AppId; readonly requirement: string; readonly account: AccountId },
+   source?: AppAccountSource,
+ ) =>
 diff --git a/apps/hosted/server/src/implementation/pool-app-upgrades.ts b/apps/hosted/server/src/implementation/pool-app-upgrades.ts
 index eb034b5..6c7aa38 100644
 --- a/apps/hosted/server/src/implementation/pool-app-upgrades.ts

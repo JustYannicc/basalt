@@ -9,7 +9,6 @@ import {
   AcceptancePoolRefused,
   acceptanceIdentity,
 } from "../../.upstream/apps/hosted/server/src/contracts/acceptance-pool.ts";
-import { migrateProvisioning } from "../../.upstream/apps/hosted/server/src/implementation/provisioning-schema.ts";
 import { queuePoolAppUpgrades } from "../../.upstream/apps/hosted/server/src/implementation/pool-app-upgrades.ts";
 import { seatReconcileCandidates } from "../../.upstream/apps/hosted/cloud/src/implementation/billing-seats.ts";
 import {
@@ -18,6 +17,7 @@ import {
   verifyIdentity,
 } from "../../.upstream/apps/hosted/cloud/src/infrastructure/acceptance-pool/identity.ts";
 import { cloudAuthOptions } from "../../.upstream/apps/hosted/cloud/src/implementation/auth-options.ts";
+import { identitySchema as schema } from "./acceptance-pool-fixture.ts";
 
 const require = createRequire(
   new URL("../../.upstream/apps/hosted/cloud/package.json", import.meta.url),
@@ -29,40 +29,6 @@ const refusal = (error: unknown) => {
   assert.ok(error instanceof AcceptancePoolRefused, `expected a refusal, got ${String(error)}`);
   return error.reason;
 };
-
-/** Better Auth's columns the identity reads and writes, the real lifecycle triggers, and the welcome trigger. */
-const schema = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient;
-  for (const statement of [
-    `create table "user" (id text primary key, name text, email text unique, "emailVerified" boolean,
-      image text, "createdAt" timestamptz, "updatedAt" timestamptz)`,
-    `create table organization (id text primary key, name text, slug text unique, logo text,
-      "createdAt" timestamptz, metadata text)`,
-    `create table member (id text primary key, "organizationId" text references organization(id)
-      on delete cascade, "userId" text references "user"(id) on delete cascade, role text, "createdAt" timestamptz)`,
-    `create table account (id text primary key, "userId" text)`,
-    `create table session (id text primary key, "userId" text)`,
-    `create table apikey (id text primary key, "referenceId" text)`,
-    `create table passkey (id text primary key, "userId" text)`,
-    `create table invitation (id text primary key, "organizationId" text)`,
-    `create table hosted_organization_removal (organization_id text primary key)`,
-    `create table cloud_billing_seats (organization_id text primary key, seat_plan boolean not null default false,
-      synced_count integer)`,
-    // The product migration's welcome queue (apps/hosted/cloud/src/implementation/migrations.ts).
-    `create table cloud_welcome_email (user_id text primary key references "user"(id) on delete cascade,
-      status text not null default 'pending')`,
-    `create or replace function cloud_queue_welcome_email() returns trigger as $$
-      begin insert into cloud_welcome_email (user_id) values (NEW.id) on conflict do nothing; return NEW; end;
-      $$ language plpgsql`,
-    `create trigger cloud_welcome_email_created after insert on "user"
-      for each row execute function cloud_queue_welcome_email()`,
-    `create table private_hosted_data_steps (name text not null, run text not null, mode text not null,
-      cursor text, pass integer not null default 0, completed_at timestamptz, primary key (name, run))`,
-  ])
-    yield* sql.unsafe(statement);
-  yield* migrateProvisioning;
-  return sql;
-});
 
 const pglite = <A, E>(body: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.runPromise(body.pipe(Effect.provide(pgliteLayer()), Effect.provide(NodeCrypto.layer)));
