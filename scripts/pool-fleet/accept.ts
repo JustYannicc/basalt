@@ -14,7 +14,7 @@ import { quotaRefusal, smokeModels, turnFailure } from "../release/smoke-models.
 
 export interface AcceptanceInput {
   client: PoolAcceptanceClient;
-  /** Signs each model call for the release's acceptance device. */
+  /** Signs each model call for the device the run chose: the release's own, or the test pool's. */
   credential: ModelAuth;
   model?: string;
   /**

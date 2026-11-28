@@ -593,8 +593,8 @@ test("with a dedicated acceptance pool the usage check still runs and fails on a
 
 test("inspect says which acceptance the lane would run, and names no id", async () => {
   for (const [options, expected] of [
-    [{}, "full"],
-    [{ deviceOnly: true }, "device-only (no dedicated acceptance pool)"],
+    [{}, "test device, full"],
+    [{ deviceOnly: true }, "release device, device-only (no owner token)"],
   ] as const) {
     const log: string[] = [];
     const lane = await harness(options);
