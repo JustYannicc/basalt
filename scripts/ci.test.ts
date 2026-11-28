@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
@@ -415,20 +415,31 @@ test("batch pushes compare with main even when a force push removes the previous
     writeFileSync(join(root, "input"), "batch");
     git("commit", "-qam", "batch");
     const head = git("rev-parse", "HEAD");
-    for (const [before, batchPush] of [
-      ["0".repeat(40), "false"],
-      [base, "false"],
-      ["f".repeat(40), "true"],
+    mkdirSync(join(root, "scripts/ci"), { recursive: true });
+    copyFileSync(
+      new URL("./ci/comparison-base.ts", import.meta.url),
+      join(root, "scripts/ci/comparison-base.ts"),
+    );
+    // Every commit above is dated by now, so main as of the batch push is its base.
+    const pushedAt = Math.ceil(Date.now() / 1000);
+    for (const [before, ref] of [
+      ["0".repeat(40), "refs/heads/main"],
+      [base, "refs/heads/main"],
+      ["f".repeat(40), "refs/heads/batch/x"],
     ]) {
       const output = join(root, "output");
+      const event = join(root, "event.json");
       writeFileSync(output, "");
+      writeFileSync(event, JSON.stringify({ ref, before, repository: { pushed_at: pushedAt } }));
       execFileSync("bash", ["-e", "-c", step.run], {
         cwd: root,
+        stdio: ["ignore", "pipe", "pipe"],
         env: {
           ...process.env,
-          BASE_SHA: before,
-          HEAD_SHA: head,
-          BATCH_PUSH: batchPush,
+          GITHUB_EVENT_NAME: "push",
+          GITHUB_REF: ref,
+          GITHUB_SHA: head,
+          GITHUB_EVENT_PATH: event,
           GITHUB_OUTPUT: output,
         },
       });
