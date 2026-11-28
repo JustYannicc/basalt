@@ -381,7 +381,29 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
    });
    scoped.set(base, feed);
    feed.onStatus(() => {
-@@ -83,8 +148,9 @@
+@@ -65,6 +130,21 @@
+ };
+ 
+ const decodeHeads = Schema.decodeUnknownSync(ChangeReceipt);
++/** The topics whose head differs between two head reads, by name only. */
++const movedTopics = (before: ChangeReceipt, after: ChangeReceipt, topics: readonly string[]) =>
++  topics.filter((topic) => headVersion(before, [topic]) !== headVersion(after, [topic])).sort();
++/**
++ * One line when a read the document renders gives up. The reason is closed: heads that kept
++ * moving (which topics), heads that could not be read, or a request that ended before the read
++ * answered. `watching` names the read by the topics it follows. Topics are fixed names; the line
++ * carries no organization, account or content.
++ */
++const documentReadGaveUp = (
++  watching: readonly string[],
++  detail:
++    | { readonly reason: "moved"; readonly topics: readonly string[] }
++    | { readonly reason: "unavailable" | "ended" },
++) => console.warn("Dashboard committed read gave up", { ...detail, watching });
+ const headVersion = (receipt: ChangeReceipt, topics: readonly string[]) =>
+   JSON.stringify(
+     receipt.revisions
+@@ -83,8 +163,9 @@
    organization: OrganizationReference,
    after: number,
    pools: readonly string[],
@@ -392,7 +414,7 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
    let scoped = reads.get(registry);
    if (scoped === undefined) {
      scoped = new Map();
-@@ -119,7 +185,12 @@
+@@ -119,7 +200,12 @@
  
  /** One accepted body owns its fence through server rendering, hydration and warm navigation. */
  const changeRetained =
@@ -406,7 +428,7 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
    <A, E extends HostedError>(self: Atom.Atom<AsyncResult.AsyncResult<A, E>>) => {
      type Value = AsyncResult.AsyncResult<A, E | OrganizationForbidden | ChangeRefreshFailed>;
      const { source, cache, document: carriesDocument } = acceptedRead(self);
-@@ -137,26 +208,48 @@
+@@ -137,28 +223,52 @@
            retained = new Map();
            retainedReads.set(registry, retained);
          }
@@ -461,8 +483,12 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
 +              : (held?.result ?? AsyncResult.initial(true))
              : AsyncResult.initial(true);
          let ended = false;
++        // On the server: fenced reads still waiting for their body or heads.
++        let inFlight = 0;
          let subscribed = false;
-@@ -185,7 +278,7 @@
+         let resolveBody: ((value: AsyncResult.AsyncResult<A, E>) => void) | undefined;
+         const publish = (value: Value) => {
+@@ -185,7 +295,7 @@
          const revoked = () => {
            ended = true;
            held = undefined;
@@ -471,7 +497,7 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
            resolveBody?.(AsyncResult.initial());
            resolveBody = undefined;
            publish(AsyncResult.fail(new OrganizationForbidden()));
-@@ -200,7 +293,11 @@
+@@ -200,20 +310,26 @@
                    waiting: result.waiting,
                  })
                : result;
@@ -484,16 +510,23 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
            get.set(cache, held);
            publish(retained);
          };
-@@ -213,7 +310,7 @@
+         const fenced = async () => {
+           if (ended) return;
+           publish(AsyncResult.waiting(shown));
++          inFlight++;
+           try {
+             if (watch !== undefined) {
+               await watch.read(body, (result, _version, receipt) => accept(result, receipt));
              } else {
                // The document uses its request-bound fetch; no browser stream or prior identity.
++              let moved: readonly string[] = [];
                for (let attempt = 0; attempt < 3; attempt++) {
 -                const before = await currentHeads(get.registry, organization, 0, pools);
 +                const before = await currentHeads(get.registry, organization, 0, pools, accounts);
                  if (ended) return;
                  const result = await body();
                  if (ended) return;
-@@ -222,6 +319,7 @@
+@@ -222,31 +338,51 @@
                    organization,
                    before.sequence,
                    pools,
@@ -501,10 +534,28 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
                  );
                  if (ended) return;
                  if (before.receipt.identity !== after.receipt.identity) return revoked();
-@@ -236,6 +334,13 @@
+-                if (headVersion(before.receipt, watched) !== headVersion(after.receipt, watched))
++                if (headVersion(before.receipt, watched) !== headVersion(after.receipt, watched)) {
++                  moved = movedTopics(before.receipt, after.receipt, watched);
+                   continue;
++                }
+                 accept(result, after.receipt);
+                 return;
+               }
++              documentReadGaveUp(watched, { reason: "moved", topics: moved });
+               throw new ChangeReadRetry("moving");
+             }
+           } catch (error) {
              if (ended) return;
              if (error instanceof OrganizationForbidden) return revoked();
              if (error instanceof ChangeReadRetry && error.reason === "hidden") return;
++            // Any other failure on the server, a heads response that cannot be read included, is
++            // heads the read could not use; moving heads were already named above.
++            if (
++              watch === undefined &&
++              !(error instanceof ChangeReadRetry && error.reason === "moving")
++            )
++              documentReadGaveUp(watched, { reason: "unavailable" });
 +            if (held === undefined)
 +              get.set(
 +                cache,
@@ -515,7 +566,12 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
              publish(
                AsyncResult.fail(new ChangeRefreshFailed(), {
                  previousSuccess: AsyncResult.isSuccess(shown) ? Option.some(shown) : Option.none(),
-@@ -246,7 +351,7 @@
+               }),
+             );
++          } finally {
++            inFlight--;
+           }
+         };
          const watch =
            typeof window === "undefined"
              ? undefined
@@ -524,7 +580,16 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
                  topics: watched,
                  ...(held === undefined ? {} : { accepted: held.receipt }),
                  confirmed: () => {
-@@ -277,10 +382,15 @@
+@@ -257,6 +393,8 @@
+               });
+         get.subscribe(requests, () => (watch === undefined ? void fenced() : watch.request()));
+         get.addFinalizer(() => {
++          // The request ended while its read still waited for an answer.
++          if (watch === undefined && inFlight > 0) documentReadGaveUp(watched, { reason: "ended" });
+           ended = true;
+           watch?.stop();
+           resolveBody?.(AsyncResult.initial());
+@@ -277,10 +415,15 @@
   * retry becomes one fenced read, and an invalidation only clears what is shown.
   */
  export const changeProtected =
