@@ -29,22 +29,24 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
  export type Refusal =
    | "deleted-pool"
    | "cleared-association"
-@@ -34,8 +34,12 @@ export const Facts = Schema.Array(
+@@ -34,8 +34,14 @@ export const Facts = Schema.Array(
    }),
  );
  
 -/** How long the database lets one observation read run or wait for a lock before it ends it. */
 -const readBound = "250ms";
 +/**
-+ * How long the database lets one ownership read run or wait for a lock before it ends it: the
-+ * answer's own budget, just under the pool Worker's 10 s for the whole check, so a read the Worker
-+ * would still wait for is never ended first. A slower read answers unavailable, never refused.
++ * How long the database lets each statement of the ownership read run or wait for a lock before it
++ * ends it: the answer's own budget, under the pool Worker's 10 s for the whole check, so a stuck read
++ * ends here as unavailable, never refused. The bound is per statement: a flight whose statements
++ * together run past 10 s meets the Worker's own unavailable answer instead, and its line, if any,
++ * lands after it.
 + */
 +const readBound = "8s";
  /**
   * One read in its own read-only transaction that the database ends after `readBound`, so a read
   * stuck behind a lock never keeps its connection, whether or not a cancel reaches it. The settings
-@@ -107,54 +111,53 @@ export const shapeOf = (
+@@ -107,54 +113,53 @@ export const shapeOf = (
          : "other-organization";
  };
  
@@ -139,17 +141,23 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
  
  /** Whether the event's client leases one connection at a time and sends a batch in one write. */
  const sendsBatches = (sql: SqlClient.SqlClient) => {
-@@ -179,7 +182,8 @@ const leaf = <A, E>(read: Effect.Effect<A, E>) => {
+@@ -179,10 +184,11 @@ const leaf = <A, E>(read: Effect.Effect<A, E>) => {
  
  /**
   * The settings, the rule and the shape read in one write and one read-only transaction (Cloud's
 - * grouped event pool): one round trip. The rule goes first, so a shape read that fails (a database
-+ * grouped event pool): one round trip. The shape read also says whether the organization exists, so
-+ * no read runs before the flight. The rule goes first, so a shape read that fails (a database
-  * without `pg_input_is_valid`) never blinds a healthy check. A rule that fails for a reason other
-  * than the database's timeouts aborts the transaction, so only then is its shape read again, in a
-  * second flight.
-@@ -206,7 +210,7 @@ const inOneFlight = (
+- * without `pg_input_is_valid`) never blinds a healthy check. A rule that fails for a reason other
+- * than the database's timeouts aborts the transaction, so only then is its shape read again, in a
+- * second flight.
++ * grouped event pool): one round trip after the tombstone check. The shape read also says whether
++ * the organization exists, so no existence read runs before it. The rule goes first, so a shape
++ * read that fails (a database without `pg_input_is_valid`) never blinds a healthy check. A rule
++ * that fails for a reason other than the database's timeouts aborts the transaction, so only then
++ * is its shape read again, in a second flight.
+  */
+ const inOneFlight = (
+   batch: Batch,
+@@ -206,7 +212,7 @@ const inOneFlight = (
      const facts = leaf(factsOf(sql, organization, pool));
      yield* batch([bounded.effect, rule.effect, facts.effect], { outside: 0 });
      const [set, owns, read] = [bounded.exit(), rule.exit(), facts.exit()];
@@ -158,7 +166,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
      const causes: Array<Cause.Cause<unknown>> = [];
      if (Exit.isFailure(set)) causes.push(set.cause);
      if (Exit.isFailure(owns)) causes.push(owns.cause);
-@@ -226,22 +230,14 @@ const inOneFlight = (
+@@ -226,22 +232,14 @@ const inOneFlight = (
        return shape !== undefined ? { shape } : { unobserved: "read-failed" as const };
      }
      if (Exit.isFailure(read)) return { unobserved: "read-failed" as const };
@@ -183,7 +191,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
  /** The rule and its shape in bounded transactions, for a client that cannot send them in one write. */
  const inTransactions = (
    sql: SqlClient.SqlClient,
-@@ -259,8 +255,8 @@ const inTransactions = (
+@@ -259,8 +257,8 @@ const inTransactions = (
          }),
        ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
      );
@@ -194,7 +202,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
      if (Exit.isFailure(first) && endedByDatabase(first.cause))
        return { unobserved: "timeout" as const };
      // A failed read ends its transaction, so what says why is read again in a new one.
-@@ -268,14 +264,24 @@ const inTransactions = (
+@@ -268,14 +266,24 @@ const inTransactions = (
      const facts = Exit.isSuccess(first)
        ? first.value.facts
        : yield* boundedRead(sql, factsOf(sql, organization, pool));
@@ -221,7 +229,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
  /** No positive cache: an unexpired pool credential cannot outlive organization removal. */
  export const readPoolOrganization = Effect.gen(function* () {
    const key = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
-@@ -293,10 +299,10 @@ export const readPoolOrganization = Effect.gen(function* () {
+@@ -293,10 +301,10 @@ export const readPoolOrganization = Effect.gen(function* () {
    const removed = yield* OrganizationTombstones;
    if (yield* removed(value.organization)) return HttpServerResponse.empty({ status: 403 });
    const sql = yield* policyDatabase;

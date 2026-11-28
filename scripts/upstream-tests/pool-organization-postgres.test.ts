@@ -29,13 +29,16 @@ const linkDelayMs = 25;
 /**
  * A proxy to the test database that never forwards a cancel request, as a Worker's socket that
  * closed with the response never sends one: only the database itself can end a cut read. Every chunk
- * waits `linkDelayMs` each way, in order, as a database a Worker reaches over the network.
+ * waits `linkDelayMs` each way, in order, as a database a Worker reaches over the network. It
+ * counts round trips: each time a client sends after the database last spoke.
  */
 async function withoutCancels(target: URL) {
-  const relay = (from: net.Socket, to: net.Socket) =>
-    from.on("data", (chunk: Buffer) =>
-      setTimeout(() => to.writable && to.write(chunk), linkDelayMs),
-    );
+  let roundTrips = 0;
+  const relay = (from: net.Socket, to: net.Socket, heard: () => void) =>
+    from.on("data", (chunk: Buffer) => {
+      heard();
+      setTimeout(() => to.writable && to.write(chunk), linkDelayMs);
+    });
   const sockets = new Set<net.Socket>();
   const server = net.createServer((client) => {
     sockets.add(client);
@@ -43,10 +46,14 @@ async function withoutCancels(target: URL) {
       // A cancel request is 16 bytes: its length, then the code 80877102.
       if (first.length >= 8 && first.readUInt32BE(0) === 16 && first.readUInt32BE(4) === 80877102)
         return;
+      let awaitingClient = false;
       const upstream = net.connect(Number(target.port || 5432), target.hostname, () => {
         setTimeout(() => upstream.write(first), linkDelayMs);
-        relay(client, upstream);
-        relay(upstream, client);
+        relay(client, upstream, () => {
+          if (awaitingClient) roundTrips += 1;
+          awaitingClient = false;
+        });
+        relay(upstream, client, () => (awaitingClient = true));
       });
       sockets.add(upstream);
       for (const [a, b] of [
@@ -64,6 +71,7 @@ async function withoutCancels(target: URL) {
   proxied.port = String((server.address() as net.AddressInfo).port);
   return {
     url: proxied.toString(),
+    roundTrips: () => roundTrips,
     close: async () => {
       for (const socket of sockets) socket.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -178,6 +186,7 @@ async function withDatabase(
     locker: pg.Client;
     schema: string;
     url: string;
+    roundTrips: () => number;
   }) => Promise<void>,
   // Metadata stored as jsonb: the rule's cast works, but `pg_input_is_valid(jsonb, …)` does not
   // exist, so only the shape read fails, as on a database without that function.
@@ -212,7 +221,7 @@ async function withDatabase(
         `dpl_${app}`,
       ]);
     }
-    await work({ admin, locker, schema, url: proxy.url });
+    await work({ admin, locker, schema, url: proxy.url, roundTrips: proxy.roundTrips });
   } finally {
     // The lock goes first, so a failed run can still clean up after itself.
     await locker.query("rollback").catch(() => {});
@@ -266,7 +275,7 @@ for (const mode of modes)
   });
 
 test("the route answers and reports the same on the grouped pool as on a plain one", async () => {
-  await withDatabase(async ({ schema, url }) => {
+  await withDatabase(async ({ schema, url, roundTrips }) => {
     const cases = [
       [person, pool, 204, []],
       ["org_other", pool, 403, ["Pool organization refused: other-organization"]],
@@ -280,16 +289,22 @@ test("the route answers and reports the same on the grouped pool as on a plain o
       // One organization's unreadable metadata leaves another's pool as it was.
       [person, pool, 204, []],
     ] as const;
+    // An owned pool's check on a warm connection: the grouped pool sends the settings, the rule and
+    // the shape read in one write; a plain one sends begin, settings, rule and commit apart.
+    const expectedRoundTrips = { grouped: 1, plain: 4 };
     for (const mode of modes) {
       const runtime = eventPool(url, schema, mode);
       try {
-        for (const [organization, poolId, status, lines] of cases) {
+        for (const [index, [organization, poolId, status, lines]] of cases.entries()) {
+          const before = roundTrips();
           const answer = await checkOn(runtime, mode, organization, poolId);
           assert.deepEqual(
             [answer.status, answer.lines],
             [status, lines],
             `${mode} ${organization} ${poolId}`,
           );
+          if (index === cases.length - 1)
+            assert.equal(roundTrips() - before, expectedRoundTrips[mode], `${mode} round trips`);
         }
       } finally {
         await runtime.dispose();

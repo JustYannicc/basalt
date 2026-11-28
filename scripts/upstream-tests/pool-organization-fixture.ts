@@ -123,7 +123,8 @@ export const answer = async (
       const db = yield* SqlClient.SqlClient;
       const given = input.database?.(db) ?? db;
       return yield* readPoolOrganization.pipe(
-        // Each leaf keeps its own exit; one that fails aborts the transaction for the ones after it.
+        // Each leaf keeps its own exit. A statement the database fails aborts the transaction for
+        // the ones after it, as on Cloud; a failure injected without running SQL does not.
         Effect.provideService(
           StatementBatch,
           input.batched

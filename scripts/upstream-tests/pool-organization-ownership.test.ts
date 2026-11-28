@@ -409,4 +409,16 @@ test("a client that sends one batch gives every answer the same, an unexplained 
       "other-organization",
     );
   }
+  // A failed read for an organization the rule would refuse is unavailable too: the shape read
+  // that follows a failed rule never turns the failure into a refusal.
+  for (const [read, reason] of [
+    [Effect.fail(new ReadFailed()), "read-failed"],
+    [Effect.fail(endedByDatabase()), "timeout"],
+  ] as const) {
+    const database = ownershipReadAnswers(read, "acceptance");
+    unavailable(
+      await ask({ organization: "acceptance", batched, database }),
+      notObserved("acceptance", reason),
+    );
+  }
 });
