@@ -1,6 +1,12 @@
 import { execFileSync } from "node:child_process";
 import { matchesGlob } from "node:path";
-import { onReleasePath, releasePaths, releasePathsAt, unionOfPaths } from "./release-path.ts";
+import {
+  laneModules,
+  onReleasePath,
+  releasePaths,
+  releasePathsAt,
+  unionOfPaths,
+} from "./release-path.ts";
 
 // A change to how releases are made ships alone, so a failed release can be traced to it and
 // reverted without taking product work with it. Release-path files may travel only with the
@@ -24,6 +30,13 @@ export function shipAlone(files: string[], paths: readonly string[] = releasePat
   );
   return { pass: releasePath.length === 0 || other.length === 0, releasePath, other };
 }
+
+/**
+ * Pool modules the fleet lane imports directly. They are not release path, since they are pool
+ * Worker code, but a change to one can change what the lane does, so the guard names them.
+ */
+export const laneTouches = (files: readonly string[], modules: readonly string[] = laneModules) =>
+  files.filter((file) => modules.includes(file));
 
 export function changedFiles(base: string, head: string, cwd = "."): string[] {
   return execFileSync("git", ["diff", "--name-only", "--no-renames", "-z", `${base}...${head}`], {
@@ -84,7 +97,12 @@ if (import.meta.main) {
     releasePathsAt(".", base),
     releasePathsAt(".", head),
   );
-  const result = shipAlone(batchFiles(main, base, head), paths.length ? paths : releasePaths);
+  const files = batchFiles(main, base, head);
+  const result = shipAlone(files, paths.length ? paths : releasePaths);
+  // Information only: never fails the check by itself.
+  const lane = laneTouches(files);
+  if (lane.length)
+    console.log(`Touches ${lane.length} modules the fleet lane imports: ${lane.join(", ")}.`);
   if (result.pass) {
     console.log(
       result.releasePath.length

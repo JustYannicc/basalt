@@ -1,5 +1,5 @@
 {
-  "about": "Globs for the files that decide how a production release is made: release code, its workflows, the stack declarations it applies and every carry that patches Alchemy. The Guardrails checks warn when a change here does not ship alone or grows the release tooling past its budget. Entries for the Alchemy release path match nothing until it lands.",
+  "about": "Globs for the files that decide how a production release is made: release code, its workflows, the stack declarations it applies and every carry that patches Alchemy. The Guardrails checks warn when a change here does not ship alone or grows the release tooling past its budget. Entries for the Alchemy release path match nothing until it lands. `cuts` are where the release closure check (release-closure.test.ts) stops walking imports; `decided` names files the release reaches but that are not release path, each with its reason; `laneModules` are the decided pool modules a release-path file imports directly, which the guard names in an information line.",
   "paths": [
     "alchemy.run.ts",
     "infrastructure/**",
@@ -34,6 +34,184 @@
     ".github/workflows/release-manual.yml",
     ".github/workflows/release-rollback.yml",
     ".github/workflows/pool-runtime-provision.yml",
-    ".github/workflows/guardrails.yml"
+    ".github/workflows/guardrails.yml",
+    "brand.ts",
+    "framework-release.ts",
+    "scripts/artifacts-http-failure.ts",
+    "scripts/database-budget-command.ts",
+    "scripts/database-budget-postgres.ts",
+    "scripts/database-budget-readiness.ts",
+    "scripts/database-budget-receipt.ts",
+    "scripts/database-budget-verification.ts",
+    "scripts/ensure-artifacts.ts",
+    "scripts/ensure-pool-database.ts",
+    "scripts/environment.ts",
+    "scripts/fresh-dns.ts",
+    "scripts/oauth-client-config.ts",
+    "scripts/oauth-client-id.ts",
+    "scripts/pool-acceptance/client.ts",
+    "scripts/pool-acceptance/sse.ts",
+    "scripts/pool-acceptance/types.ts",
+    "scripts/pool-crash-dispatch-sources.ts",
+    "scripts/pool-crash-operator.ts",
+    "scripts/pool-database-ownership.ts",
+    "scripts/pool-database-provisioning.ts",
+    "scripts/pool-history/recovery-envelope.ts",
+    "scripts/pool-operations-node-worker.mjs",
+    "scripts/pool-operations-node.ts",
+    "scripts/pool-operations.ts",
+    "scripts/pool-readiness.ts",
+    "scripts/release-preview/keys.ts",
+    "scripts/releases/github-read.ts",
+    "scripts/releases/github-retry.ts",
+    "scripts/site-readiness.ts",
+    "scripts/startup-profiler/package.json",
+    "scripts/verify-database-budget.ts",
+    "scripts/visible-text.ts",
+    "src/browser-check.ts",
+    "src/pool/availability-config.ts",
+    "src/pool/database-budget.ts",
+    "src/pool/database-settings.ts",
+    "src/pool/fleet-observation.ts",
+    "src/pool/image-release-plan.ts",
+    "src/pool/inventory-record.ts",
+    "src/pool/inventory.ts",
+    "src/pool/model-history/bulk-schema.ts",
+    "src/pool/model-history/capture-hours-schema.ts",
+    "src/pool/model-history/change-journal-schema.ts",
+    "src/pool/model-history/change-schema.ts",
+    "src/pool/model-history/counter-shape-sql.ts",
+    "src/pool/model-history/history-row-schema.ts",
+    "src/pool/model-history/import-completion-schema.ts",
+    "src/pool/model-history/schema.ts",
+    "src/pool/model-history/sources.ts",
+    "src/pool/model-history/usage-rollup-people-schema.ts",
+    "src/pool/model-history/usage-rollup-schema.ts",
+    "src/pool/privacy-receipt.ts",
+    "src/pool/readiness-budget.ts",
+    "src/pool/root-image-pin.ts",
+    "src/pool/worker-compatibility.ts",
+    "src/pool/worker-database.ts",
+    "src/telemetry/bun.lock",
+    "src/telemetry/deployment.ts",
+    "src/telemetry/package.json",
+    "src/telemetry/sentry-target.ts",
+    "upstream.json",
+    "patches/0001-optional-cloud-vendors.*",
+    "patches/0002-cloud-deployment.*",
+    "patches/0005-app-hosting.*",
+    "patches/0028-embedded-app-ui.*",
+    "patches/0064-one-account-many-apps.*",
+    "patches/0098-private-sso-worker.*",
+    "patches/0099-pool-recovery-cron-order.*",
+    "patches/0314-shared-database-budget.*",
+    "patches/0343-release-database-phase.*",
+    "patches/0348-runtime-ready-database-budget.*",
+    "patches/0372-release-command-attempt.*",
+    "patches/0417-mcp-worker-headroom.*",
+    "patches/0693-commands-keyed-on-inputs.*",
+    "patches/0712-database-recovery-parameters.*"
+  ],
+  "cuts": [
+    {
+      "path": "package.json",
+      "why": "Every file's manifest edge; dependency changes have their own lockfile and upstream lanes."
+    },
+    {
+      "path": "src/pool/worker.ts",
+      "why": "A Worker entry: deployed code, whose changes show as that Worker's plan row."
+    },
+    {
+      "path": "src/catalog/worker.ts",
+      "why": "A Worker entry: deployed code, whose changes show as that Worker's plan row."
+    },
+    {
+      "path": "src/site/worker.ts",
+      "why": "A Worker entry: deployed code, whose changes show as that Worker's plan row."
+    },
+    {
+      "path": "src/router.ts",
+      "why": "A Worker entry: deployed code, whose changes show as that Worker's plan row."
+    },
+    {
+      "path": "scripts/preview-auth/seed.ts",
+      "why": "Runs only for a pull-request preview stage, never in a production release."
+    },
+    {
+      "path": ".upstream/apps/hosted/cloud/src/app-ui.ts",
+      "why": "The AppPages Worker's entry, which the stack imports to declare it: deployed code, whose changes show as that Worker's plan row."
+    }
+  ],
+  "decided": [
+    {
+      "path": "src/pool/runtime-slots/**",
+      "why": "Shared with the pool Worker: a change shows as the pool Worker's plan row, and the lane's own tests cover what it reads."
+    },
+    {
+      "path": "src/pool/runtime-fleet/**",
+      "why": "Shared with the pool Worker: a change shows as the pool Worker's plan row, and the lane's own tests cover what it reads."
+    },
+    {
+      "path": "src/pool/runtime-provider/**",
+      "why": "Shared with the pool Worker: a change shows as the pool Worker's plan row, and the lane's own tests cover what it reads."
+    },
+    {
+      "path": "src/pool/runtime-*.ts",
+      "why": "Shared with the pool Worker: a change shows as the pool Worker's plan row, and the lane's own tests cover what it reads."
+    },
+    {
+      "path": "src/pool/{automatic-recovery,dependency-failure,deployment-readiness,error-shape,json,launch-contract,lifecycle,model-lifetime-contract,native-contract,native-policy-diagnostic,native-streams,native-usage-contract,operations-call,pending-failure,recovery-approval,storage-bookmark,token}.ts",
+      "why": "Shared with the pool Worker: a change shows as the pool Worker's plan row, and the lane's own tests cover what it reads."
+    },
+    {
+      "path": "src/catalog/settings.ts",
+      "why": "A Worker environment value the deploy reads; a change shows as a binding row in the plan."
+    },
+    {
+      "path": "src/catalog/zendesk/metadata.ts",
+      "why": "A Worker environment value the deploy reads; a change shows as a binding row in the plan."
+    },
+    {
+      "path": "src/feedback/ui.ts",
+      "why": "A Worker environment value the deploy reads; a change shows as a binding row in the plan."
+    },
+    {
+      "path": "src/site/content.ts",
+      "why": "The text the site smoke expects; a change to the site shows as the site Worker's plan row."
+    },
+    {
+      "path": "src/pool/pool-group.ts",
+      "why": "One prefix constant the change schema imports for its names; the pool Worker owns it."
+    }
+  ],
+  "laneModules": [
+    "src/pool/deployment-readiness.ts",
+    "src/pool/native-contract.ts",
+    "src/pool/native-usage-contract.ts",
+    "src/pool/operations-call.ts",
+    "src/pool/recovery-approval.ts",
+    "src/pool/runtime-crash-contract.ts",
+    "src/pool/runtime-fleet/configuration.ts",
+    "src/pool/runtime-fleet/failure-record.ts",
+    "src/pool/runtime-fleet/phase-bounds.ts",
+    "src/pool/runtime-fleet/state.ts",
+    "src/pool/runtime-provider/application.ts",
+    "src/pool/runtime-provider/canonical.ts",
+    "src/pool/runtime-provider/observation.ts",
+    "src/pool/runtime-provider/read.ts",
+    "src/pool/runtime-provider/settings.ts",
+    "src/pool/runtime-ready-signals.ts",
+    "src/pool/runtime-route-diagnostic.ts",
+    "src/pool/runtime-slots/admission-proof.ts",
+    "src/pool/runtime-slots/configuration.ts",
+    "src/pool/runtime-slots/container-end.ts",
+    "src/pool/runtime-slots/contract.ts",
+    "src/pool/runtime-slots/forced-restart-timing.ts",
+    "src/pool/runtime-slots/handoff-command.ts",
+    "src/pool/runtime-slots/recovery-record.ts",
+    "src/pool/runtime-slots/request-error.ts",
+    "src/pool/runtime-slots/storage.ts",
+    "src/pool/storage-bookmark.ts",
+    "src/pool/token.ts"
   ]
 }

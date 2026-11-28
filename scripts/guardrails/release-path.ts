@@ -3,10 +3,22 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { matchesGlob } from "node:path";
 
+type Reasoned = { readonly path: string; readonly why: string };
+const list = JSON.parse(readFileSync(new URL("./release-path.json", import.meta.url), "utf8")) as {
+  paths: string[];
+  cuts?: Reasoned[];
+  decided?: Reasoned[];
+  laneModules?: string[];
+};
+
 // One list decides what "the release path" is; every guardrail reads it from here.
-export const releasePaths: readonly string[] = JSON.parse(
-  readFileSync(new URL("./release-path.json", import.meta.url), "utf8"),
-).paths;
+export const releasePaths: readonly string[] = list.paths;
+/** Where the release closure check stops walking imports, each with its reason. */
+export const releaseCuts: readonly Reasoned[] = list.cuts ?? [];
+/** Files a release reaches that are not release path, each with its reason. */
+export const releaseDecided: readonly Reasoned[] = list.decided ?? [];
+/** Decided pool modules a release-path file imports directly: the guard names a change to one. */
+export const laneModules: readonly string[] = list.laneModules ?? [];
 
 // The list as a given commit had it. Gates judge with the union of the lists on both sides of a
 // change, so narrowing the list cannot take a change off the release path.

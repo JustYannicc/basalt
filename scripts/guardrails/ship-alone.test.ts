@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { batchFiles, comparisonBase, shipAlone } from "./ship-alone.ts";
+import { batchFiles, comparisonBase, laneTouches, shipAlone } from "./ship-alone.ts";
 import { git, measured } from "./test/history.ts";
 
 // Files a merge into main brought in, compared with main before it.
@@ -96,4 +96,12 @@ test("a stacked batch is judged from the batch below it until that batch is on m
   const merged = commit("docs/pools.md");
   assert.equal(comparisonBase(merged, upper, "batch/guard-1", dir), merged);
   assert.equal(judged(merged, "batch/guard-1"), true);
+});
+
+test("a change to a module the fleet lane imports is named, and never fails the check alone", () => {
+  const lane = ["src/pool/runtime-fleet/phase-bounds.ts"];
+  const files = ["src/pool/runtime-fleet/phase-bounds.ts", "src/pool/worker.ts"];
+  assert.deepEqual(laneTouches(files, lane), ["src/pool/runtime-fleet/phase-bounds.ts"]);
+  assert.equal(shipAlone(files).pass, true);
+  assert.deepEqual(laneTouches(["src/pool/worker.ts"], lane), []);
 });

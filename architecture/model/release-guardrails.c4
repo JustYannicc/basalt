@@ -9,4 +9,5 @@ model {
     }
   }
   basalt.releaseGuardrails -[sync]-> repositoryApi "read production deployments, merged pull requests and comparisons"
+  basalt.releaseGuardrails -[sync]-> basalt.build "walk the repository import graph from the release entries"
 }
