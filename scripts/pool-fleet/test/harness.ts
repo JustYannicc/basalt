@@ -93,6 +93,8 @@ export interface HarnessOptions {
   capped?: (index: number) => boolean;
   /** The acceptance device is outside a dedicated acceptance pool: the lane holds no owner access. */
   deviceOnly?: boolean;
+  /** The test device of an identity other than acceptance: device-only, and no pool a crash may cut. */
+  otherIdentity?: boolean;
   /** The account the pool's owner usage records name; a foreign one must fail the usage check. */
   usageAccount?: string;
   /** How many success rows the pool owner's usage read returns for one session; one by default. */
@@ -118,6 +120,12 @@ export interface HarnessOptions {
    * `throughController` is the pool's own.
    */
   handoffFailure?: (action: string) => Error | Response | undefined;
+  /** The controller's own refusal of a crash it received for a cell, through the real handler. */
+  crashRefusal?: (identity: SlotIdentity) => Error | undefined | Promise<Error | undefined>;
+  /** Ready cells the controller starts once the fleet is enabled; 1 when unset. */
+  cells?: number;
+  /** The pool the test device's secret names; `testPool` when unset. */
+  devicePool?: string;
   /** As production's upkeep does, a disabled fleet's rows drain and retire (at once, here). */
   drainOnDisable?: boolean;
   /** While true, a colour's application read-back carries a rollout Cloudflare still runs. */
@@ -127,6 +135,9 @@ export interface HarnessOptions {
   /** A turn on this model is refused as the pool's node relays Home's quota refusal, with this code. */
   quota?: (model: string) => "usage_credit_policy_denied" | "model_cooldown" | undefined;
 }
+
+/** The pool the acceptance device's calls run in, as a real pool's id is shaped. */
+export const testPool = "app_11111111-1111-4111-8111-111111111111";
 
 /** The acceptance device's own Home key, as the device usage read reports it. */
 export const deviceKey = 41;
@@ -268,24 +279,46 @@ export async function harness(options: HarnessOptions = {}) {
     homePeerOrdinal: 1,
     bootId: "cell-boot",
   };
+  const cells: SlotIdentity[] = Array.from({ length: options.cells ?? 1 }, (_, index) =>
+    index === 0
+      ? cell
+      : {
+          ...cell,
+          slotId: `runtime-cell-${index + 1}`,
+          instanceId: "abcd"[index - 1]!.repeat(64),
+          homePeerOrdinal: index + 1,
+          bootId: `cell-${index + 1}-boot`,
+        },
+  );
+  const resourcesKey = "runtime-fleet-v1:resources";
+  type Resource = { target: SlotIdentity; identity: SlotIdentity; phase: string; active: number };
+  /** Replaces one cell's row, leaving the others as they are. */
+  const setCell = (slotId: string, row: (current: Resource) => Resource) =>
+    storage.values.set(
+      resourcesKey,
+      (storage.values.get(resourcesKey) as Resource[]).map((current) =>
+        current.target.slotId === slotId ? row(current) : current,
+      ),
+    );
   storage.afterCommit = (draft) => {
     const record = draft.get("runtime-fleet-v1:configuration") as { enabled?: boolean } | undefined;
-    if (options.drainOnDisable && record?.enabled === false)
-      storage.values.delete("runtime-fleet-v1:resources");
-    if (
-      options.startCell !== false &&
-      record?.enabled &&
-      !draft.has("runtime-fleet-v1:resources")
-    ) {
+    if (options.drainOnDisable && record?.enabled === false) storage.values.delete(resourcesKey);
+    if (options.startCell !== false && record?.enabled && !draft.has(resourcesKey))
       // A cell starts on the image its colour runs now.
-      const started = { ...cell, imageDigest: colours.blue.image, imageInput: colours.blue.input };
-      storage.values.set("runtime-fleet-v1:resources", [
-        { target: started, identity: started, phase: "ready", active: 0, lastUsedAt: 0 },
-      ]);
-    }
+      storage.values.set(
+        resourcesKey,
+        cells.map((value) => {
+          const started = {
+            ...value,
+            imageDigest: colours.blue.image,
+            imageInput: colours.blue.input,
+          };
+          return { target: started, identity: started, phase: "ready", active: 0, lastUsedAt: 0 };
+        }),
+      );
   };
   const actions: string[] = [];
-  const crashes: { kind?: string; identity: SlotIdentity }[] = [];
+  const crashes: { kind?: string; onlyPool?: string; nonce: string; identity: SlotIdentity }[] = [];
   const retires: { operationId: string; go: string; key: string }[] = [];
   const checks: string[] = [];
   // What the cell's 8317 read returns to the next fleet-retire.
@@ -296,6 +329,7 @@ export async function harness(options: HarnessOptions = {}) {
       | undefined,
   };
   let restart = 0;
+  let restarting = cell;
   const enabled = async () => (await configuration.inspect())?.enabled === true;
   const providerRequests: string[] = [];
   const providerSecret = {
@@ -309,15 +343,11 @@ export async function harness(options: HarnessOptions = {}) {
     inspect: async (operationId) => {
       // After a kill: two reads show the cell gone, then a replacement boots in the same instance.
       if (restart > 0 && --restart === 0)
-        storage.values.set("runtime-fleet-v1:resources", [
-          {
-            target: cell,
-            identity: { ...cell, bootId: "cell-boot-2" },
-            phase: "ready",
-            active: 0,
-            lastUsedAt: 0,
-          },
-        ]);
+        setCell(restarting.slotId, (row) => ({
+          ...row,
+          identity: { ...restarting, bootId: `${restarting.bootId}-2` },
+          phase: "ready",
+        }));
       const permission = await configuration.inspect(operationId);
       return {
         permission,
@@ -330,10 +360,11 @@ export async function harness(options: HarnessOptions = {}) {
     },
     crash: async (command) => {
       crashes.push(command);
+      const refused = await options.crashRefusal?.(command.identity);
+      if (refused) throw refused;
       await storage.put(crashNonceKey(command.nonce), { command, status: "returned" });
-      storage.values.set("runtime-fleet-v1:resources", [
-        { target: cell, identity: cell, phase: "warming", active: 0, lastUsedAt: 0 },
-      ]);
+      restarting = cells.find((value) => value.slotId === command.identity.slotId)!;
+      setCell(restarting.slotId, (row) => ({ ...row, phase: "warming" }));
       restart = 3;
       return { signalled: true };
     },
@@ -604,7 +635,12 @@ export async function harness(options: HarnessOptions = {}) {
       credential: async (method, path) => ({ [nativeModelHeader]: `assertion ${method} ${path}` }),
       // As in production: only the test pool's device ever holds an owner token.
       device: options.deviceOnly ? ("release" as const) : ("test" as const),
-      ...(options.deviceOnly ? {} : { access: { token: "pool-token", owner: "acceptance" } }),
+      ...(options.deviceOnly || options.otherIdentity
+        ? {}
+        : {
+            pool: options.devicePool ?? testPool,
+            access: { token: "pool-token", owner: "acceptance" },
+          }),
     },
     sleep: async () => {},
     now: Date.now,

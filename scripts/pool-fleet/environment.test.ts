@@ -4,7 +4,11 @@ import { createRequire } from "node:module";
 import { test } from "node:test";
 import { nativeModelHeader, nativeModelPrefix } from "../../src/pool/native-contract.ts";
 import { openEnvelope, verifyPoolToken } from "../../src/pool/token.ts";
-import { acceptanceFromEnvironment, dependenciesFromEnvironment } from "./environment.ts";
+import {
+  acceptanceFromEnvironment,
+  dependenciesFromEnvironment,
+  dispatchInput,
+} from "./environment.ts";
 import { FleetLaneRefused } from "./errors.ts";
 
 const signingKey = "ab".repeat(32);
@@ -68,6 +72,7 @@ test("the release's device signs each model call and never gets an owner token, 
     assert.ok(!(acceptance instanceof FleetLaneRefused), String(acceptance));
     assert.equal(acceptance.device, "release");
     assert.equal("access" in acceptance, false, "no owner access at all, not a dummy");
+    assert.equal("pool" in acceptance, false, "no pool a crash could cut");
     const { computer, grant, user, pool } = value;
     assert.deepEqual(await signedFor(acceptance.credential), { computer, grant, user, pool });
   }
@@ -105,6 +110,7 @@ test("the test device of the acceptance identity signs for the test pool and get
     { pool, owner: "acceptance", organization: "acceptance", exp: 1_000 + 35 * 60 },
   ]);
   assert.deepEqual(acceptance.access, { token: "pool-token", owner: "acceptance" });
+  assert.equal(acceptance.pool, pool, "the crash's pool is the test device's own secret's");
   // With the real signer the token names that pool, and is no longer valid once it has expired.
   const real = await acceptanceFromEnvironment(testRun());
   assert.ok(!(real instanceof FleetLaneRefused) && real.access);
@@ -124,6 +130,7 @@ test("a test device of any other identity proves usage by its own read alone and
     assert.ok(!(acceptance instanceof FleetLaneRefused), String(acceptance));
     assert.equal(acceptance.device, "test", field);
     assert.equal("access" in acceptance, false, field);
+    assert.equal("pool" in acceptance, false, field);
   }
   assert.deepEqual(minted, []);
 });
@@ -146,6 +153,8 @@ test("with both secrets set, each choice signs for its own device", async () => 
       { computer, grant, user, pool },
       choice,
     );
+    // The crash's pool is only ever the test device's own, never the release device's secret's.
+    assert.equal(acceptance.pool, choice === "test" ? testDevice.pool : undefined, choice);
   }
 });
 
@@ -223,4 +232,33 @@ test("the fleet workflow passes each run only the device it chose, as secrets, a
   assert.equal(env?.POOL_FLEET_DEVICE, "${{ inputs.device }}");
   assert.equal(env?.POOL_APP_SIGNING_KEY, "${{ secrets.POOL_APP_SIGNING_KEY }}");
   assert.equal(env?.POOL_APP_SIGNING_KEY_PREVIOUS, "${{ secrets.POOL_APP_SIGNING_KEY_PREVIOUS }}");
+});
+
+test("no workflow input or step env carries a pool: the crash's pool comes from the device secret", async () => {
+  const { parse } = createRequire(new URL("../architecture/package.json", import.meta.url))("yaml");
+  const text = await readFile(
+    new URL("../../.github/workflows/pool-fleet.yml", import.meta.url),
+    "utf8",
+  );
+  const workflow = parse(text) as {
+    on: { workflow_dispatch: { inputs: Record<string, unknown> } };
+    jobs: { fleet: { steps: { env?: Record<string, string> }[] } };
+  };
+  // GitHub prints inputs and every step's env in clear; only secrets are masked.
+  const inputs = ["mode", "go", "active", "key", "device", "target-active"];
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), inputs);
+  assert.deepEqual(
+    [...new Set([...text.matchAll(/inputs\.([a-z-]+)/gu)].map((match) => match[1]))].sort(),
+    [...inputs].sort(),
+  );
+  // Every step's env reads only masked secrets, variables, the runner or the inputs above.
+  for (const step of workflow.jobs.fleet.steps)
+    for (const [name, value] of Object.entries(step.env ?? {}))
+      for (const [, expression] of value.matchAll(/\$\{\{(.*?)\}\}/gu))
+        for (const [, context] of expression!.matchAll(/\b([a-z]+)\.[A-Za-z_-]+/gu))
+          assert.ok(
+            ["secrets", "vars", "runner", "inputs"].includes(context!),
+            `${name}: ${expression}`,
+          );
+  assert.equal("pool" in dispatchInput({ POOL_FLEET_POOL: "app_x" }), false);
 });

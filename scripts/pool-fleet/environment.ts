@@ -36,8 +36,8 @@ const missing = (why: string, fix: string) => refuse("acceptance-credentials-mis
  * secret only; an unset one is refused, never replaced by the other. The test pool is exactly the
  * pool the test device's secret names. Only when that device's user, owner and organization are
  * all the acceptance identity does the lane also hold an owner token, to read the pool's accounts
- * and usage; otherwise, and always with the release's device, it proves usage by the device's own
- * read alone and mints nothing.
+ * and usage, and carry that pool as the only one a crash may cut; otherwise, and always with the
+ * release's device, it proves usage by the device's own read alone, mints nothing and names no pool.
  */
 /** The owner token outlives the lane's job, whose timeout is 30 minutes, and nothing after it. */
 export const ownerTokenLifetimeSeconds = 35 * 60;
@@ -73,6 +73,7 @@ export async function acceptanceFromEnvironment(
     if (!isAcceptanceIdentity(test)) return device;
     return {
       ...device,
+      pool: test.pool,
       access: {
         token: await mint(acceptanceSigningKey(env), {
           pool: test.pool,

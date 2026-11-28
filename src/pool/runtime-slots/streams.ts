@@ -43,8 +43,13 @@ export class SlotStreams {
     this.abort((entry) => entry.slot === slot);
   }
   active(slot: string) {
-    return [...this.entries].filter((entry) => entry.slot === slot || entry.slot === undefined)
-      .length;
+    return this.pools(slot).length;
+  }
+  /** The pool of each call `active` counts; "" for a call admitted under no pool. */
+  pools(slot: string) {
+    return [...this.entries]
+      .filter((entry) => entry.slot === slot || entry.slot === undefined)
+      .map((entry) => entry.pool);
   }
   forSlot(slot: string) {
     const active = () => [...this.entries].filter((entry) => entry.slot === slot).length;

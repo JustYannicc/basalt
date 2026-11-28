@@ -17,7 +17,8 @@ import {
   type ControllerAccess,
   type ReadSessions,
 } from "./controller.ts";
-import { crashReadyCell } from "./crash-cell.ts";
+import { crashReadyCell, testPoolPattern } from "./crash-cell.ts";
+import { testDeviceSecret } from "../release/acceptance-test-device-secret.ts";
 import { readEnd, type RuntimeEnd } from "../../src/pool/runtime-slots/container-end.ts";
 import {
   readFailure,
@@ -73,6 +74,11 @@ export interface DispatchInput {
 export interface FleetAcceptance {
   client: PoolAcceptanceClient;
   credential: ModelAuth;
+  /**
+   * The test device's own pool, from its masked secret, present exactly when `access` is: the only
+   * pool a crash may cut. No input, env value, log line or output ever carries it.
+   */
+  pool?: string;
   model?: string;
   /** Which device signs: the release's own, or the test pool's. */
   device: "release" | "test";
@@ -238,6 +244,39 @@ const needAcceptance = ({ acceptance }: DispatchDependencies) =>
   acceptance instanceof FleetLaneRefused ? Effect.fail(acceptance) : Effect.succeed(acceptance);
 
 /**
+ * A crash cuts calls, so it runs only on the test device of the acceptance identity, in that
+ * device's own pool. Nothing turns it on for the release's device, whose pool may hold people's work.
+ */
+const crashPool = (acceptance: FleetAcceptance) => {
+  if (acceptance.device !== "test")
+    return Effect.fail(
+      refuse(
+        "crash-needs-test-device",
+        "crash-cell runs only on the test pool's device; the release's device is never crashed.",
+        "Dispatch with device test once the test device is registered in its test pool.",
+      ),
+    );
+  if (acceptance.pool === undefined)
+    return Effect.fail(
+      refuse(
+        "test-device-not-acceptance",
+        `The test device (${testDeviceSecret}) is not the acceptance identity's, so its pool is not a test pool.`,
+        `Register the test device for the acceptance identity and update the ${testDeviceSecret} secret.`,
+      ),
+    );
+  // Its value is never echoed: it comes from a masked secret.
+  if (!testPoolPattern.test(acceptance.pool))
+    return Effect.fail(
+      refuse(
+        "test-pool-invalid",
+        `The test device's pool (${testDeviceSecret}) is not a real pool's id (app_ followed by 1 to 124 letters, digits, - or _); the crash may cut only that pool's calls.`,
+        `Register the test device in an app pool and update the ${testDeviceSecret} secret.`,
+      ),
+    );
+  return Effect.succeed(acceptance.pool);
+};
+
+/**
  * The GO is the gate. A model socket can outlive the isolate that took its lease, so the cell's own
  * read of its open connections is said plainly whenever it doesn't show the cell idle.
  */
@@ -297,6 +336,8 @@ const program = (input: DispatchInput, deps: DispatchDependencies, retried: Read
           "Leave it empty for the default.",
         ),
       );
+    // Before anything is read, signed or sent.
+    if (mode === "crash-cell") yield* needAcceptance(deps).pipe(Effect.flatMap(crashPool));
     const worker = yield* poolWorkerName(deps.cloudflare);
     const access: ControllerAccess = {
       ...deps.controller(worker),
@@ -446,6 +487,7 @@ const program = (input: DispatchInput, deps: DispatchDependencies, retried: Read
     // accept waits for a ready cell first and keeps requiring one.
     if (mode === "accept") return { ...evidence, acceptance: yield* accept(true) };
     if (mode === "crash-cell") {
+      const pool = yield* crashPool(acceptance);
       const traffic = new OwnTraffic(
         acceptance.client,
         acceptance.credential,
@@ -469,6 +511,8 @@ const program = (input: DispatchInput, deps: DispatchDependencies, retried: Read
         controller: access,
         go: input.go,
         operator: "pool-fleet",
+        // The controller lets the kill cut only this pool's calls.
+        pool,
         // Every fifth request is a streamed turn, so inference is proven, not only routing.
         // Past the turn budget, or once the user's cap answers, it reads the catalog instead:
         // the cap is the user's, so its turn is no failed request.

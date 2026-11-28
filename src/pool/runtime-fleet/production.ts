@@ -140,6 +140,8 @@ export class PoolRuntimeFleet {
       state: this.state,
       configuration: this.configuration,
       endpoint: (identity) => this.namespace(identity).endpoint(identity),
+      // No fleet here yet means no call was forwarded to a cell through this isolate.
+      inFlight: (identity) => (this.runtime ? this.runtime.inFlight(identity) : []),
     });
     this.peers = new RuntimeFleetPeers({
       controllerId: deps.ctx.id.toString(),

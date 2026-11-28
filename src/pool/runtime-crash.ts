@@ -2,6 +2,7 @@ import { Schema } from "effect";
 import { deploymentReadinessPrefix } from "./deployment-readiness.ts";
 import { signEnvelope } from "./token.ts";
 import {
+  CrashPoolRefused,
   crashNonceKey,
   currentCrashCommand,
   targetsCell,
@@ -27,6 +28,36 @@ interface Dependencies {
   state: RuntimeFleetState;
   configuration: RuntimeFleetConfiguration;
   endpoint(identity: SlotTarget): RuntimeStub;
+  /** The pool of each call in flight on a cell ("" for none), or undefined when unreadable. */
+  inFlight(identity: SlotIdentity): readonly string[] | undefined;
+}
+
+/**
+ * A cell kill may cut only the calls of the packet's own pool. Calls the ledger counts beyond those
+ * the controller can name (a reservation not yet forwarded, a count a lost release left) have no
+ * known pool, so they refuse it as another pool's would.
+ */
+function assertOnlyPool(
+  pool: string | undefined,
+  counted: number,
+  inFlight: readonly string[] | undefined,
+) {
+  const named = inFlight ?? [];
+  const otherPools = named.filter((value) => value !== "" && value !== pool).length;
+  const unnamed =
+    named.filter((value) => value === "").length + Math.max(0, counted - named.length);
+  if (pool !== undefined && inFlight !== undefined && otherPools === 0 && unnamed === 0) return;
+  console.warn(
+    "POOL_CRASH_REFUSED " +
+      JSON.stringify({
+        target: "cell",
+        reason: "other_pool_in_flight",
+        otherPools,
+        unnamed,
+        readable: inFlight !== undefined,
+      }),
+  );
+  throw new CrashPoolRefused(otherPools, unnamed);
 }
 
 /**
@@ -136,16 +167,16 @@ export class RuntimeCrash {
       const current = await configuration.inspect(undefined, transaction);
       const live = await state.inspect(transaction);
       const primary = await transaction.get<unknown>(slotSelectionKey);
+      const target = live.find(
+        (row) => row.phase === "ready" && sameIdentity(row.identity, command.identity),
+      );
       if (
         (await transaction.get(crashNonceKey(command.nonce))) ||
         JSON.stringify(Schema.decodeUnknownSync(SlotSelection)(primary)) !==
           JSON.stringify(selection) ||
         current?.digest !== permission.digest ||
         !current.enabled ||
-        (cell &&
-          !live.some(
-            (row) => row.phase === "ready" && sameIdentity(row.identity, command.identity),
-          )) ||
+        (cell && !target) ||
         // An unchanged selection, checked above, is what keeps a primary sibling valid.
         (!sameIdentity(selection.active.identity, sibling!) &&
           !live.some(
@@ -157,6 +188,13 @@ export class RuntimeCrash {
         capacityExpiresAt <= Date.now()
       )
         throw new SlotRefused("selection");
+      // Read in this decision, beside the ledger count it is checked against. A call placed on the
+      // cell after this commits is not seen here, but the cell runs the kill in the same queue that
+      // admits its model calls: one reaching the cell after the kill waits behind it, finds the
+      // container stopped and is placed again unsent. Only a call whose whole path to the cell
+      // beats the kill's single hop is admitted and cut, inside the capacity proof's 1 s bound.
+      if (cell)
+        assertOnlyPool(command.onlyPool, target!.active, this.deps.inFlight(command.identity));
       await transaction.put(crashNonceKey(command.nonce), submitted);
     });
     const receipt = await handoff.crash(command.identity, envelope);
