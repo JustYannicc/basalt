@@ -16,7 +16,7 @@
     "check:startup": "node --test scripts/worker-startup-tests/*.test.ts && node scripts/worker-startup.ts",
     "check:providers": "node scripts/pool-providers.ts --check",
     "check:upstream": "node --experimental-transform-types --test scripts/upstream-tests/*.test.ts scripts/upstream-tests/*.test.mjs",
-    "check:releases": "node --test scripts/release/*.test.ts scripts/release/legacy/*.test.ts scripts/pool-fleet/*.test.ts scripts/pool-history/*.test.ts scripts/releases/*.test.ts scripts/release-credentials/*.test.ts scripts/release-preview/*.test.ts scripts/release-merge/*.test.ts scripts/deploy-safety/*.test.ts scripts/state-store-upgrade/*.test.ts scripts/preview/*.test.ts",
+    "check:releases": "node --test --test-reporter=./scripts/ci/unit-progress.ts scripts/release/*.test.ts scripts/release/legacy/*.test.ts scripts/pool-fleet/*.test.ts scripts/pool-history/*.test.ts scripts/releases/*.test.ts scripts/release-credentials/*.test.ts scripts/release-preview/*.test.ts scripts/release-merge/*.test.ts scripts/deploy-safety/*.test.ts scripts/state-store-upgrade/*.test.ts scripts/preview/*.test.ts",
     "check:preview-auth": "node .upstream/apps/hosted/cloud/scripts/check-preview-password-sign-in.ts && node scripts/preview-auth/tests/check.ts",
     "prove:releases": "node scripts/releases/simulate.ts",
     "check:atlassian": "node scripts/check-atlassian.ts",
