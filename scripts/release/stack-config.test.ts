@@ -59,6 +59,8 @@ test("the route scratch stack is accepted from the cloud app and from the repo r
     "test-route-scratch-3",
     "test-route-scratch-12",
     "test-route-scratch-",
+    // Another test stage that merely ends in a scratch stage's name.
+    "test-x-test-route-scratch-1",
     "production",
     "test-pr-7",
   ])
