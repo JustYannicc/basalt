@@ -184,18 +184,15 @@ test("a refusal or a provider's 429 after this run's admitted boot read rolls ba
         outputs: await outputs(join(dir, `accept-${label}`)),
       };
     };
-    // The workflow reads the check mode from the policy file before any of these steps; a policy
-    // not yet on main is named with the mode it will carry.
+    // The workflow reads the check mode from the policy file before any of these steps.
     const modeOf = async (policy: string) =>
-      policy === "route-gateway-class"
-        ? "cutover-classes"
-        : String(
-            (
-              JSON.parse(
-                await readFile(new URL(`./policies/${policy}.json`, import.meta.url), "utf8"),
-              ) as { check: { mode: string } }
-            ).check.mode,
-          );
+      String(
+        (
+          JSON.parse(
+            await readFile(new URL(`./policies/${policy}.json`, import.meta.url), "utf8"),
+          ) as { check: { mode: string } }
+        ).check.mode,
+      );
     const modes = Object.fromEntries(
       await Promise.all(
         ["code", "cutover-classes", "route-gateway-class"].map(
