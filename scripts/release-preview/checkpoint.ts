@@ -15,7 +15,11 @@ export function manifestPath(root: string, pullRequest: number): string {
 }
 
 export async function checkpoint(
-  mode: "seal" | "restore", root: string, encryptedPath: string, key: string, pullRequest: number,
+  mode: "seal" | "restore",
+  root: string,
+  encryptedPath: string,
+  key: string,
+  pullRequest: number,
 ): Promise<void> {
   const path = manifestPath(root, pullRequest);
   if (mode === "seal") {
@@ -41,10 +45,18 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     if ((mode !== "seal" && mode !== "restore") || !destination) {
       throw new Error("Usage: checkpoint.ts seal|restore PR encrypted-file");
     }
-    await checkpoint(mode, process.cwd(), resolve(destination), process.env.PREVIEW_STATE_KEY ?? "", previewNumber(number));
+    await checkpoint(
+      mode,
+      process.cwd(),
+      resolve(destination),
+      process.env.PREVIEW_STATE_KEY ?? "",
+      previewNumber(number),
+    );
     console.log(`Preview cleanup checkpoint ${mode === "seal" ? "encrypted" : "restored"}`);
-  } catch {
-    console.error("Preview cleanup checkpoint failed");
+  } catch (error) {
+    // Loaded here: modules that import this one for its paths need no failure package.
+    const { reportFailure } = await import("../failure/report.ts");
+    await reportFailure(error, { title: "Preview cleanup checkpoint failed" });
     process.exitCode = 1;
   }
 }
