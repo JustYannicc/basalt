@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-acceptance-pool-operation",
+  "file": "0816-acceptance-pool-operation.patch",
+  "content_sha256": "160916fadf31133f0a7023bf1ee16bda20ca4a47aa376095e7d85eb40dd083b2",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}
