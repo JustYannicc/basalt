@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-free-ports-below-ephemeral-range",
+  "file": "0820-free-ports-below-ephemeral-range.patch",
+  "content_sha256": "00a92be227b04e9d81cdbdab1dad050b05160adb07b72842e44d24d01bc02ce3",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
