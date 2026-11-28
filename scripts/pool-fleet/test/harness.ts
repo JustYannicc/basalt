@@ -95,6 +95,10 @@ export interface HarnessOptions {
   deviceOnly?: boolean;
   /** The account the pool's owner usage records name; a foreign one must fail the usage check. */
   usageAccount?: string;
+  /** How many success rows the pool owner's usage read returns for one session; one by default. */
+  ownerRows?: number;
+  /** Owner usage reads, by their order, that the route answers with HTTP 500 instead of rows. */
+  ownerFailure?: (read: number) => boolean;
   /** What the controller's inspect reports for the pool's own usage rollup backfill. */
   usageRollup?: unknown;
   /** What the controller's inspect reports for the pool's own capture-hour counts. */
@@ -492,6 +496,7 @@ export async function harness(options: HarnessOptions = {}) {
     sessions: number;
   }[] = [];
   const sessionOrder = new Map<string, number>();
+  let ownerReads = 0;
   /** Every read of the pool's owner routes, with the authorization it carried. */
   const poolReads: { path: string; session: string | null; authorization: string | null }[] = [];
   const pool = await listen(async (request, body) => {
@@ -536,16 +541,16 @@ export async function harness(options: HarnessOptions = {}) {
     }
     if (path === "/pool/v1/pool")
       return Response.json({ isOwner: true, accounts: [{ id: "test-1" }, { id: "test-2" }] });
+    if (path === "/pool/v1/usage" && options.ownerFailure?.(ownerReads++))
+      return new Response(null, { status: 500 });
     if (path === "/pool/v1/usage")
       return Response.json({
-        records: [
-          {
-            id: crypto.randomUUID(),
-            account: options.usageAccount ?? "test-1",
-            status: "success",
-            at: new Date().toISOString(),
-          },
-        ],
+        records: Array.from({ length: options.ownerRows ?? 1 }, () => ({
+          id: crypto.randomUUID(),
+          account: options.usageAccount ?? "test-1",
+          status: "success",
+          at: new Date().toISOString(),
+        })),
       });
     if (path === "/v1/chat/completions") {
       const index = turns++;
