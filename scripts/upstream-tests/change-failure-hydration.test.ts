@@ -18,9 +18,19 @@ const organization = Schema.decodeUnknownSync(OrganizationSlug)("fixture-organiz
 
 const globals = globalThis as { window?: unknown; document?: unknown };
 
-for (const reason of ["moving", "unavailable", "revoked"] as const)
+/** What the server says when its read gives up: one line with a closed reason, per case. */
+const gaveUp = {
+  moving: [{ reason: "moved", topics: ["apps"] }],
+  unavailable: [{ reason: "unavailable" }],
+  revoked: [],
+  deadline: [{ reason: "deadline" }],
+} as const;
+
+for (const reason of ["moving", "unavailable", "revoked", "deadline"] as const)
   test(
-    `a server ${reason} fence failure hydrates as the same body-free failure`,
+    reason === "deadline"
+      ? "a server read the document finished without says it ran past the render"
+      : `a server ${reason} fence failure hydrates as the same body-free failure`,
     { timeout: 5000 },
     async (t) => {
       const previousWindow = globals.window;
@@ -32,6 +42,8 @@ for (const reason of ["moving", "unavailable", "revoked"] as const)
       let calls = 0;
       const fetch = () => {
         calls++;
+        // A read the document never hears back from.
+        if (reason === "deadline") return new Promise<Response>(() => {});
         return Promise.resolve(
           reason === "moving"
             ? new Response(
@@ -63,6 +75,22 @@ for (const reason of ["moving", "unavailable", "revoked"] as const)
         else globals.document = previousDocument;
         globalThis.fetch = previousFetch;
       });
+      const warnings = t.mock.method(console, "warn");
+      const logged = () =>
+        warnings.mock.calls
+          .map((call) => call.arguments)
+          .filter(([message]) => message === "Dashboard committed read gave up")
+          .map(([, detail]) => detail);
+      if (reason === "deadline") {
+        const stop = server.subscribe(query, () => {});
+        server.get(query);
+        assert.deepEqual(logged(), [], "nothing is said while the read is in flight");
+        // The request ends while its read waits: the document has rendered it as loading.
+        stop();
+        server.dispose();
+        assert.deepEqual(logged(), gaveUp.deadline);
+        return;
+      }
       const failure = await new Promise<unknown>((resolve) => {
         server.subscribe(query, (value: unknown) => {
           if (AsyncResult.isFailure(value)) resolve(value);
@@ -84,6 +112,7 @@ for (const reason of ["moving", "unavailable", "revoked"] as const)
         return error._tag;
       };
       assert.equal(tag(failure), expected);
+      assert.deepEqual(logged(), gaveUp[reason], "the server names why its read gave up");
       const document = [...server.getNodes()].flatMap(([key, node]) => {
         if (typeof key !== "string" || !Atom.isSerializable(node.atom)) return [];
         try {
