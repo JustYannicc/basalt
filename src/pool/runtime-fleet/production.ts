@@ -44,6 +44,7 @@ import { physicalPrimaryTargets, sameGeneration } from "./physical.ts";
 import { RuntimeImageUpdate, type ImageUpdateIntent } from "./image-update.ts";
 import { pendingFields } from "../pending-failure.ts";
 import { recoveryPassMs } from "../runtime-slots/forced-restart-timing.ts";
+import { PoolUpkeepTrace } from "../upkeep-trace.ts";
 
 /**
  * Once cells exist, ready cells take every model call and the root serves only when no cell can.
@@ -521,18 +522,24 @@ export class PoolRuntimeFleet {
       .sort((left, right) => left.active - right.active || left.lastUsedAt - right.lastUsedAt)[0];
     if (candidate?.identity) await (await this.fleet())?.drain(candidate.identity);
   }
-  async upkeep() {
+  /** The alarm's fleet phase; given the alarm's trace, the fleet's upkeep is a phase on its line. */
+  async upkeep(alarm?: PoolUpkeepTrace<"alarm">) {
     try {
+      // A pass of its own: supervision outlives the alarm, and its line comes when it ends.
+      const supervision = new PoolUpkeepTrace("fleet");
       this.deps.ctx.waitUntil(
-        (this.runtime ? this.runtime.recoverPrimary() : this.deps.handoff.supervise()).catch(
-          (error: unknown) =>
+        supervision
+          .pass("supervise", () =>
+            this.runtime ? this.runtime.recoverPrimary() : this.deps.handoff.supervise(),
+          )
+          .catch((error: unknown) =>
             console.error("POOL_SELECTED_RECOVERY_PENDING", JSON.stringify(pendingFields(error))),
-        ),
+          ),
       );
       await this.primaryHeadroom();
       const fleet = await this.fleet();
       if (!this.enabled) await this.replacement.cancel();
-      await fleet?.upkeep();
+      await fleet?.upkeep(alarm);
       if (this.enabled) await this.replacement.upkeep();
     } finally {
       await this.schedule();

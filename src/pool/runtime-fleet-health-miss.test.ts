@@ -26,7 +26,7 @@ import { readFailure, readSuspect } from "./runtime-fleet/failure-record.ts";
 async function suspectFleet(context: TestContext) {
   let clock = 0;
   context.mock.method(Date, "now", () => clock);
-  context.mock.method(console, "info", () => {});
+  const info = context.mock.method(console, "info", () => {});
   context.mock.method(console, "warn", () => {});
   const f = await fixture(2),
     cell = await f.add();
@@ -71,6 +71,13 @@ async function suspectFleet(context: TestContext) {
     create,
     row,
     starts: () => starts,
+    /** Each fleet pass line's failed health reads, in pass order. */
+    misses: () =>
+      info.mock.calls
+        .filter(({ arguments: [name] }) => name === "POOL_RUNTIME_UPKEEP")
+        .map(({ arguments: [, line] }) => line as { phase: string; misses?: unknown[] })
+        .filter((line) => line.phase === "upkeep")
+        .map((line) => line.misses),
     /** One upkeep pass at `at` ms, answering this cell's health read with `answer`. */
     read: async (at: number, answer: () => Promise<unknown>) => {
       clock = at;
@@ -158,6 +165,20 @@ test("two failed reads 2 s apart do not quarantine; the same two 6 s apart do, w
     ],
   );
   assert.equal(typeof failure?.reads[1]?.roundTripMs, "number");
+  // Each pass line says which miss quarantined the cell, on its own.
+  assert.deepEqual(
+    s
+      .misses()
+      .map((misses) =>
+        (misses as Array<{ ordinal: number; quarantined: boolean; cause: string }>).map(
+          ({ ordinal, quarantined, cause }) => [ordinal, quarantined, cause],
+        ),
+      ),
+    [
+      [[s.cell.homePeerOrdinal, false, "slot_unhealthy"]],
+      [[s.cell.homePeerOrdinal, true, "timeout"]],
+    ],
+  );
   // The process is gone: the next pass reclaims the row, with no recorded end.
   s.f.stop();
   await s.read(8_000, good);

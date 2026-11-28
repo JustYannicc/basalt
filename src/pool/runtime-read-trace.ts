@@ -10,8 +10,13 @@ export type RuntimeReadPhase =
 type RuntimeReadPort = 8318 | 8327 | 8329;
 let sequence = 0;
 
+/** What times a read's steps: its own `POOL_RUNTIME_READ` lines, or the upkeep pass it runs in. */
+export interface RuntimeReadSteps {
+  run<T>(phase: RuntimeReadPhase, work: () => Promise<T>, port?: RuntimeReadPort): Promise<T>;
+}
+
 /** Emit before awaiting: even a tunnel that ignores cancellation leaves its pending phase. */
-export class RuntimeReadTrace {
+export class RuntimeReadTrace implements RuntimeReadSteps {
   private read = ++sequence;
   private started = performance.now();
   private signal: AbortSignal;
@@ -50,7 +55,7 @@ export class RuntimeReadTrace {
 }
 
 export function runtimeReadStep<T>(
-  trace: RuntimeReadTrace | undefined,
+  trace: RuntimeReadSteps | undefined,
   phase: RuntimeReadPhase,
   work: () => Promise<T>,
   port?: RuntimeReadPort,

@@ -98,6 +98,7 @@ test(
               result.deadlines.homeDeadline > Date.now(),
               "joining a held Home pass must retain its next wake-up",
             );
+            // One line per pass: its phases' times in `phases`, a fleet pass's rows in `rows`.
             const upkeep = result.upkeepEvents as Array<{
               at: number;
               side: string;
@@ -107,33 +108,55 @@ test(
               active?: number;
               known?: boolean;
               fleetDeadline?: number | null;
+              phases?: Record<string, number>;
+              rows?: Array<{ ordinal?: number; phase: string; outcome: string; elapsedMs: number }>;
             }>;
             assert.ok(upkeep.every((event) => Number.isSafeInteger(event.at) && event.at > 0));
             assert.ok(
               upkeep.some(
                 (event) =>
-                  event.side === "alarm" && event.phase === "alarm" && event.outcome === "ended",
+                  event.side === "alarm" &&
+                  event.phase === "alarm" &&
+                  event.outcome === "ended" &&
+                  typeof event.phases?.fleet === "number" &&
+                  typeof event.phases.rearm === "number",
               ),
             );
-            assert.ok(upkeep.some((event) => event.phase === "home_shared"));
             assert.ok(
               upkeep.some(
-                (event) => event.phase === "deadlines" && typeof event.fleetDeadline === "number",
+                (event) =>
+                  event.side === "home" &&
+                  event.phase === "home_shared" &&
+                  typeof event.phases?.memberships === "number",
+              ),
+            );
+            assert.ok(
+              upkeep.some(
+                (event) =>
+                  event.side === "alarm" &&
+                  event.phase === "alarm" &&
+                  typeof event.fleetDeadline === "number",
               ),
             );
             for (const ordinal of [1, 2]) {
+              // Each row's entry says how its upkeep ended, so the pass line answers on its own.
               assert.ok(
                 upkeep.some(
                   (event) =>
-                    event.phase === "draining" &&
-                    event.ordinal === ordinal &&
-                    event.outcome === "ended",
+                    event.side === "fleet" &&
+                    event.phase === "upkeep" &&
+                    event.rows?.some(
+                      (row) =>
+                        row.phase === "draining" &&
+                        row.ordinal === ordinal &&
+                        row.outcome === "ended",
+                    ),
                 ),
               );
               assert.ok(
                 upkeep.some(
                   (event) =>
-                    event.phase === "drain_recheck" &&
+                    typeof event.phases?.drain_recheck === "number" &&
                     event.ordinal === ordinal &&
                     event.active === 0 &&
                     event.known === true,

@@ -29,12 +29,14 @@ interface Episode {
   attempts: number;
   latest: Refusal;
   still: boolean;
+  /** Every try so far was refused for an announced image rollout. */
+  rollout: boolean;
 }
 
 /**
  * What growth's refusals say. A refusal logs when any of its fields changes. Each slot whose start
  * fails has its own episode, counting every failed try of that start, growth's first and upkeep's
- * retries, a refusal or a start that doesn't answer yet: once it has lasted `stillRefusedMs` it warns once more, and that slot's
+ * retries, a refusal or a start that doesn't answer yet: once it has lasted `stillRefusedMs` it logs once more, and that slot's
  * admission logs how long it lasted and how many tries were refused. An episode whose slot leaves
  * unadmitted ends without a line. Episodes live in memory, so a replaced isolate opens a fresh one
  * at the start's next refused try.
@@ -67,14 +69,21 @@ export class GrowthRefusals {
       attempts: 0,
       latest: refusal,
       still: false,
+      rollout: true,
     };
     this.episodes.set(slot, episode);
     episode.attempts++;
     episode.latest = refusal;
+    episode.rollout &&= refusal.reason === "rollout_active";
     if (episode.still || now - episode.since < stillRefusedMs) return;
     episode.still = true;
-    // However expected the reason, a start held this long holds scale-out with it.
-    console.warn("POOL_FLEET_GROWTH_STILL_REFUSED", this.summary(episode));
+    // A start held only by an announced image rollout is the designed state, and warn lines count
+    // as findings, so it logs at info. One try refused for any other reason makes the episode
+    // warn: a start held this long holds scale-out, and a mixed episode must not go quiet.
+    (episode.rollout ? console.info : console.warn)(
+      "POOL_FLEET_GROWTH_STILL_REFUSED",
+      this.summary(episode),
+    );
   }
   /** A pass that ended unrefused, so the same refusal logs again. */
   passed() {

@@ -1947,7 +1947,7 @@ test("two model-history passes never overlap, and the next starts once the first
   t.mock.method(console, "error", () => {});
   t.mock.method(console, "log", () => {});
   const trace = t.mock.method(console, "info", () => {});
-  // The controller's own trace: each pass it starts, and each time one already running is joined.
+  // The controller's own trace: each history pass's line when it ends, and each joined one's.
   const traced = (phase: string, outcome: string) =>
     trace.mock.calls.filter(
       (call) =>
@@ -1955,6 +1955,18 @@ test("two model-history passes never overlap, and the next starts once the first
         (call.arguments[1] as { phase?: string; outcome?: string }).phase === phase &&
         (call.arguments[1] as { phase?: string; outcome?: string }).outcome === outcome,
     ).length;
+  // A pass's own line, whatever its outcome: `ended`, or `error` for one cut short. Only a pass line
+  // carries `phases`, so a phase's error line under the same name never counts as one.
+  const passes = (phase: string) =>
+    trace.mock.calls.filter((call) => {
+      const line = call.arguments[1] as { phase?: string; outcome?: string; phases?: unknown };
+      return (
+        call.arguments[0] === "POOL_RUNTIME_UPKEEP" &&
+        line.phase === phase &&
+        (line.outcome === "ended" || line.outcome === "error") &&
+        line.phases !== undefined
+      );
+    }).length;
   const controller = await slowHistoryController(t);
   try {
     await controller.home();
@@ -1963,13 +1975,22 @@ test("two model-history passes never overlap, and the next starts once the first
     controller.tick(5 * 60_000 + 1_000);
     await controller.home();
     assert.equal(controller.counts.warm, 2);
-    assert.equal(traced("model_history", "started"), 1);
-    assert.equal(traced("model_history_shared", "observed"), 1);
+    // The first pass is still in flight, so it has no line yet; the joined one wrote its own.
+    assert.equal(passes("model_history"), 0);
+    assert.equal(traced("model_history_shared", "ended"), 1);
     await controller.drop();
     controller.tick(5 * 60_000 + 1_000);
     await controller.home();
     await controller.connections(2);
-    assert.equal(traced("model_history", "started"), 2);
+    // The first pass, cut by the dropped connection, wrote its line before the second started; the
+    // second is still in flight.
+    assert.equal(passes("model_history"), 1);
+    assert.equal(traced("model_history_shared", "ended"), 1);
+    assert.equal(controller.accepted(), 2);
+    await controller.drop();
+    // Not due again: a Home pass with no history to run writes no history line.
+    await controller.home();
+    assert.equal(passes("model_history"), 2);
     assert.equal(controller.accepted(), 2);
   } finally {
     await controller.release();

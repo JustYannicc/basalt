@@ -70,11 +70,19 @@ export class HomeDatabasePoolMonitor {
     return work;
   }
 
-  /** Once per report interval, read Home and hand the result to the upkeep record. */
-  async report(record: (observation: HomeDatabasePoolObservation | null) => void) {
+  /**
+   * Once per report interval, read Home and hand the result to the upkeep record. `timed` wraps only
+   * a read that is due, so a pass that reads nothing writes nothing.
+   */
+  async report(
+    record: (observation: HomeDatabasePoolObservation | null) => void,
+    timed: (read: () => Promise<void>) => Promise<void> = (read) => read(),
+  ) {
     if (this.now() - this.reportedAt < homeDatabasePoolReportMs) return;
     this.reportedAt = this.now();
-    await this.refresh();
-    record(this.observation());
+    await timed(async () => {
+      await this.refresh();
+      record(this.observation());
+    });
   }
 }
