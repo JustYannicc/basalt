@@ -19,6 +19,12 @@ import {
 import { makeAcceptancePoolSteps } from "../../.upstream/apps/hosted/cloud/src/infrastructure/acceptance-pool/steps.ts";
 import { fixtureProduct, operationSchema } from "./acceptance-pool-fixture.ts";
 
+/** A dry run's answer, narrowed from the runner's union of answers. */
+const planOf = <A extends { readonly action: string }>(result: A) => {
+  if (result.action !== "dry-run") throw new Error(`expected a dry run, got ${result.action}`);
+  return result as Extract<A, { readonly action: "dry-run" }>;
+};
+
 const target = "https://app.example.test";
 const host = "upstream.example.test";
 const key = "u".repeat(40);
@@ -82,7 +88,7 @@ const dryRun = (steps: AcceptancePoolSteps, body: unknown = request, s = setting
       upstreamOriginSha256: digest,
     }),
     steps,
-  );
+  ).pipe(Effect.map(planOf));
 const apply = (
   steps: AcceptancePoolSteps,
   planned: { readonly artifact: NonNullable<Operation["artifact"]>; readonly planSha256: string },

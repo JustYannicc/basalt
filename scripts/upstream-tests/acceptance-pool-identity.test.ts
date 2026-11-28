@@ -10,6 +10,7 @@ import {
   acceptanceIdentity,
 } from "../../.upstream/apps/hosted/server/src/contracts/acceptance-pool.ts";
 import { queuePoolAppUpgrades } from "../../.upstream/apps/hosted/server/src/implementation/pool-app-upgrades.ts";
+import { PoolAppSource } from "../../.upstream/apps/hosted/server/src/contracts/pool-defaults.ts";
 import { queueCatalogAppUpdates } from "../../.upstream/apps/hosted/server/src/implementation/catalog-app-upgrades.ts";
 import { catalogAppJobPrefix } from "../../.upstream/apps/hosted/server/src/contracts/catalog-app-updates.ts";
 import { seatReconcileCandidates } from "../../.upstream/apps/hosted/cloud/src/implementation/billing-seats.ts";
@@ -159,7 +160,10 @@ test("release rollouts queue no member job for the identity, and still queue one
       })} where id = 'acceptance'`;
       yield* sql`insert into member (id, "organizationId", "userId", role) values ('m1', 'team', 'person', 'owner')`;
       yield* sql`delete from hosted_provisioning`;
-      yield* queuePoolAppUpgrades(Redacted.make("ab".repeat(32)), "bundle-1");
+      // The version is given, so the source is never read.
+      yield* queuePoolAppUpgrades(Redacted.make("ab".repeat(32)), "bundle-1").pipe(
+        Effect.provideService(PoolAppSource, { version: "bundle-1", files: Effect.die("unread") }),
+      );
       const jobs = yield* sql<{
         user_id: string;
         organization_id: string;

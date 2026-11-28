@@ -19,6 +19,12 @@ import {
 import { makeAcceptancePoolSteps } from "../../.upstream/apps/hosted/cloud/src/infrastructure/acceptance-pool/steps.ts";
 import { fixtureProduct, operationSchema } from "./acceptance-pool-fixture.ts";
 
+/** A dry run's answer, narrowed from the runner's union of answers. */
+const planOf = <A extends { readonly action: string }>(result: A) => {
+  if (result.action !== "dry-run") throw new Error(`expected a dry run, got ${result.action}`);
+  return result as Extract<A, { readonly action: "dry-run" }>;
+};
+
 const target = "https://app.example.test";
 const host = "upstream.example.test";
 const settings: RunnerSettings = {
@@ -81,7 +87,7 @@ const setupDry = (steps: AcceptancePoolSteps) =>
     request,
     recipient,
     upstreamOriginSha256: upstreamOriginSha256(`https://${host}`),
-  });
+  }).pipe(Effect.map(planOf));
 const setupApply = (steps: AcceptancePoolSteps, planned: Planned) =>
   operate(steps, {
     kind: "setup",
@@ -94,7 +100,9 @@ const setupApply = (steps: AcceptancePoolSteps, planned: Planned) =>
     upstreamKey: "u".repeat(40),
   });
 const teardownDry = (steps: AcceptancePoolSteps, setup: string) =>
-  operate(steps, { kind: "teardown", action: "dry-run", request: { setup }, recipient });
+  operate(steps, { kind: "teardown", action: "dry-run", request: { setup }, recipient }).pipe(
+    Effect.map(planOf),
+  );
 const teardownApply = (steps: AcceptancePoolSteps, setup: string, planned: Planned) =>
   operate(steps, {
     kind: "teardown",

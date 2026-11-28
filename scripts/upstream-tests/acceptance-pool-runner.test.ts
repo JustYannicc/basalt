@@ -42,6 +42,12 @@ import {
 } from "../../.upstream/apps/hosted/cloud/src/infrastructure/acceptance-pool/runner.ts";
 import { upstreamOriginSha256 as driverDigest } from "../acceptance-pool/client.ts";
 
+/** A dry run's answer, narrowed from the runner's union of answers. */
+const planOf = <A extends { readonly action: string }>(result: A) => {
+  if (result.action !== "dry-run") throw new Error(`expected a dry run, got ${result.action}`);
+  return result as Extract<A, { readonly action: "dry-run" }>;
+};
+
 const key = "ab".repeat(32);
 const target = "https://app.example.test";
 const host = "upstream.example.test";
@@ -165,7 +171,7 @@ const dryRun = (steps: AcceptancePoolSteps, overrides: Partial<Operation> = {}, 
       ...overrides,
     }),
     steps,
-  );
+  ).pipe(Effect.map(planOf));
 
 const applyOf = (planned: {
   readonly artifact: NonNullable<Operation["artifact"]>;
@@ -548,7 +554,7 @@ test("a teardown needs a recorded setup, and a setup never resumes once a teardo
           settings(),
           signed({ kind: "teardown", action: "dry-run", request: { setup }, recipient }),
           steps,
-        );
+        ).pipe(Effect.map(planOf));
       assert.equal(refusal(yield* Effect.flip(teardownDry("1".repeat(64)))), "setup_missing");
       const planned = yield* dryRun(steps);
       assert.equal(refusal(yield* Effect.flip(apply(applyOf(planned), steps))), "step_failed");

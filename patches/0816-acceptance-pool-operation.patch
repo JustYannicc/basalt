@@ -1654,10 +1654,10 @@ index 0000000..36d19d8
 +};
 diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/teardown.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/teardown.ts
 new file mode 100644
-index 0000000..e69cf63
+index 0000000..3cb2818
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/teardown.ts
-@@ -0,0 +1,276 @@
+@@ -0,0 +1,279 @@
 +import {
 +  acceptanceIdentity,
 +  acceptancePoolName,
@@ -1679,6 +1679,9 @@ index 0000000..e69cf63
 +  type SetupData,
 +} from "./product.ts";
 +import { upstreamProfiles } from "./request.ts";
++
++/** A step's record in the receipt. */
++const recordedAs = (value: Json): Json => value;
 +
 +/** What a teardown removes, fixed when it is planned. Null means it is already gone. */
 +const TeardownData = Schema.Struct({
@@ -1856,7 +1859,7 @@ index 0000000..e69cf63
 +      if (kind === "unlink" && account !== undefined && targets.pool !== null) {
 +        if (state.links.some((link) => link.app === targets.pool && link.account === account.id))
 +          yield* product.unlink(targets.pool, account.id);
-+        return { unlinked: account.id };
++        return recordedAs({ unlinked: account.id });
 +      }
 +      if (step === "remove-provider" && targets.provider !== null) {
 +        if (state.apps.some((app) => app.id === targets.provider)) {
@@ -1864,11 +1867,11 @@ index 0000000..e69cf63
 +            return yield* refuse("unrecorded_link");
 +          yield* product.removeApp(targets.provider);
 +        }
-+        return { removed: targets.provider };
++        return recordedAs({ removed: targets.provider });
 +      }
 +      if (kind === "disconnect" && account !== undefined) {
 +        if (state.accounts.includes(account.id)) yield* product.disconnect(account.id);
-+        return { disconnected: account.id };
++        return recordedAs({ disconnected: account.id });
 +      }
 +      if (step === "remove-pool" && targets.pool !== null) {
 +        if (state.apps.some((app) => app.id === targets.pool)) {
@@ -1883,11 +1886,11 @@ index 0000000..e69cf63
 +            return yield* refuse("unrecorded_link");
 +          yield* product.removeApp(targets.pool);
 +        }
-+        return { removed: targets.pool };
++        return recordedAs({ removed: targets.pool });
 +      }
 +      if (step === "disconnect-token" && targets.token !== null) {
 +        if (state.accounts.includes(targets.token)) yield* product.disconnect(targets.token);
-+        return { disconnected: targets.token };
++        return recordedAs({ disconnected: targets.token });
 +      }
 +      return yield* refuse("pool_state");
 +    });
