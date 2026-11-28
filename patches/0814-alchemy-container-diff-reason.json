@@ -7,5 +7,5 @@
   "database_sensitive": false,
   "workflow_sensitive": false,
   "remove_with": "alchemy-dependency-upgrade",
-  "requires": "A pinned Alchemy release plans a Container's bare update without saying which branch of its diff asked; remove when the pinned release's Container diff names its reason and the planner keeps it on the node."
+  "requires": "A pinned Alchemy release plans a Container's bare update without saying which branch of its diff asked; remove when the pinned release's Container diff names its reason and the planner keeps it on the node. Only a settled resource's update carries a word; an update that finishes an interrupted apply is planned whatever the diff says, and names none."
 }
