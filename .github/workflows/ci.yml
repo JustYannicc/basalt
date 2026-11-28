@@ -1067,7 +1067,11 @@ jobs:
             .upstream/.local/e2e/**/report/**
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
-            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud*.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud-forwarding-errors.ndjson
+            ${{ runner.temp }}/basalt-e2e-evidence/**/runtime-preboot.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/runtime-launches.ndjson
+            ${{ runner.temp }}/basalt-e2e-evidence/**/runtime-switches.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   google-account-diagnostics:
@@ -1128,7 +1132,11 @@ jobs:
             .upstream/.local/e2e/**/report/**
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
-            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud*.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud-forwarding-errors.ndjson
+            ${{ runner.temp }}/basalt-e2e-evidence/**/runtime-preboot.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/runtime-launches.ndjson
+            ${{ runner.temp }}/basalt-e2e-evidence/**/runtime-switches.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   oauth-account-regressions:
@@ -1224,6 +1232,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud-forwarding-errors.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   sso-service-binding:
@@ -1313,6 +1322,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud-forwarding-errors.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/autumn-emulator.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/postgres.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
@@ -1360,7 +1370,11 @@ jobs:
           path: |
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
-            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud*.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud-forwarding-errors.ndjson
+            ${{ runner.temp }}/basalt-e2e-evidence/**/runtime-preboot.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/runtime-launches.ndjson
+            ${{ runner.temp }}/basalt-e2e-evidence/**/runtime-switches.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/change-journal.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
@@ -1404,6 +1418,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud-forwarding-errors.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   production-ops-identity:
@@ -1462,7 +1477,11 @@ jobs:
             .upstream/.local/e2e/**/report/**
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
-            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud*.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud-forwarding-errors.ndjson
+            ${{ runner.temp }}/basalt-e2e-evidence/**/runtime-preboot.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/runtime-launches.ndjson
+            ${{ runner.temp }}/basalt-e2e-evidence/**/runtime-switches.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/autumn-emulator.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/change-journal.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/physical-state-digests.ndjson
@@ -2249,6 +2268,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud-forwarding-errors.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
       # The check job counts retries from these alone instead of downloading every shard's evidence.
@@ -2457,7 +2477,7 @@ jobs:
       - name: Check the provider table against the pinned pool backend
         run: npm run check:providers
       - name: Check the pool bootstrap
-        run: python3 -m unittest containers.pool.test_dispatch_signals containers.pool.test_quota_signals containers.pool.test_bootstrap containers.pool.test_sources containers.pool.test_release_cache containers.pool.test_output_privacy containers.pool.test_native_policy containers.pool.test_policy_diagnostic containers.pool.test_policy_check containers.pool.test_recovery containers.pool.test_recovery_supervisor containers.pool.test_service_health containers.pool.test_recovery_readiness containers.pool.test_launch_readiness containers.pool.test_recovery_http containers.pool.test_recovery_cleanup containers.pool.test_capture_recovery containers.pool.test_billing_policy containers.pool.test_usage_write_signals containers.pool.test_home_peer containers.pool.test_database_distance containers.pool.test_container_ends containers.pool.test_safe_stop containers.pool.test_resume_layer containers.pool.test_readiness_lapse_flip
+        run: python3 -m unittest containers.pool.test_dispatch_signals containers.pool.test_quota_signals containers.pool.test_bootstrap containers.pool.test_sources containers.pool.test_release_cache containers.pool.test_output_privacy containers.pool.test_native_policy containers.pool.test_policy_diagnostic containers.pool.test_policy_check containers.pool.test_recovery containers.pool.test_recovery_supervisor containers.pool.test_service_health containers.pool.test_recovery_readiness containers.pool.test_launch_readiness containers.pool.test_recovery_http containers.pool.test_recovery_cleanup containers.pool.test_capture_recovery containers.pool.test_billing_policy containers.pool.test_usage_write_signals containers.pool.test_home_peer containers.pool.test_route_peer containers.pool.test_database_distance containers.pool.test_container_ends containers.pool.test_safe_stop containers.pool.test_resume_layer containers.pool.test_readiness_lapse_flip
       - name: Check the route gateway
         run: python3 -m unittest discover -s containers/route-gateway -t containers/route-gateway
       - name: Prove the output regression catches the previous image source
@@ -2579,18 +2599,22 @@ jobs:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'pool-runtime')
     runs-on: ubuntu-latest
-    # The longest job of a full Check, in shards that each build the candidate image. The
-    # compatibility shard also loads the frozen compatibility images and runs the files that read
-    # them plus the one-off proofs; the contracts shard runs every other pool test file, split in
-    # parts by scripts/ci/pool-test-shard.ts (its step took 11.5 of the job's 21.6 hosted minutes).
+    # The longest job of a full Check, in shards picked by scripts/ci/pool-test-shard.ts. The
+    # compatibility shard loads the frozen compatibility images and runs the files that read them
+    # plus the one-off proofs. contracts-image runs the other files that reach the pool image.
+    # contracts-postgres runs the rest, which need only PostgreSQL, in parts cut by recorded time;
+    # they skip the image build, 8 of a shard's 11 setup minutes, and fail on any docker use.
     strategy:
       fail-fast: false
       matrix:
         include:
-          - shard: contracts
-            part: 1/2
-          - shard: contracts
-            part: 2/2
+          - shard: contracts-image
+          - shard: contracts-postgres
+            part: 1/3
+          - shard: contracts-postgres
+            part: 2/3
+          - shard: contracts-postgres
+            part: 3/3
           - shard: compatibility
     services:
       postgres:
@@ -2625,6 +2649,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Free runner disk before pool builds
+        if: matrix.shard != 'contracts-postgres'
         run: |
           echo "Runner disk before cleanup (bytes)"
           df -B1 /
@@ -2639,6 +2664,7 @@ jobs:
         if: matrix.shard == 'compatibility'
         uses: ./.github/actions/pool-compatibility-images
       - name: Build the pinned pool image
+        if: matrix.shard != 'contracts-postgres'
         run: |
           echo "Runner disk before compatibility build cache cleanup (bytes)"
           df -B1 /
@@ -2652,8 +2678,10 @@ jobs:
           sudo iptables -I INPUT 1 -i docker0 -p tcp -j ACCEPT
           sudo iptables -I INPUT 1 -i br+ -p tcp -j ACCEPT
       - name: Verify the container-to-host probe's time limit and failures
+        if: matrix.shard != 'contracts-postgres'
         run: node --test scripts/ci/check-docker-host.test.mjs
       - name: Verify containers can reach the host fixture listeners
+        if: matrix.shard != 'contracts-postgres'
         run: node scripts/ci/check-docker-host.mjs basalt-1409-pool:test
       - name: Start the isolated transaction pooler
         if: matrix.shard == 'compatibility'
@@ -2708,13 +2736,20 @@ jobs:
           POOL_TEST_POOLED_URL: postgresql://fixture_root:fixture-only@localhost:6432/postgres
           POOL_TEST_HOME_BUDGET_CLIENT: ${{ runner.temp }}/home-budget-client
       - name: Compile and serve the SQLite upload worker assets
-        if: matrix.shard == 'contracts'
+        if: matrix.shard != 'compatibility'
         run: node scripts/pool-tests/sqlite-compiler-proof.mjs "${{ runner.temp }}/sqlite-upload-compiled"
       - name: Check the pool runtime and database contracts
         run: |
           list=$(node scripts/ci/pool-test-shard.ts "$POOL_TEST_SHARD" "$POOL_TEST_PART")
           mapfile -t files <<< "$list"
-          node --test --test-concurrency=1 "${files[@]}"
+          if [ "$POOL_TEST_SHARD" = contracts-postgres ]; then
+            # No image is built here. A file that still asks for it gets a name no daemon has, at a
+            # socket that does not exist: it fails, naming this rule, instead of skipping or building.
+            export POOL_TEST_IMAGE=no-image-in-postgres-only-pool-tests
+            export DOCKER_HOST=unix:///nonexistent/no-docker-in-postgres-only-pool-tests.sock
+          fi
+          # The progress lines name each test's file; scripts/ci/pool-test-times.ts reads them.
+          node --test --test-concurrency=1 --test-reporter=./scripts/ci/unit-progress.ts "${files[@]}"
         env:
           POOL_TEST_SHARD: ${{ matrix.shard }}
           POOL_TEST_PART: ${{ matrix.part || '1/1' }}

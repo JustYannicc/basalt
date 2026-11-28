@@ -85,7 +85,9 @@ test("successful CI export preserves scope-proof metadata before pruning the ori
       '{"mode":"prepared","readerReady":true}\n{"mode":"active","markers":[21,22]}\n',
     "runtime-preboot.json": JSON.stringify({ binding: "host", launches: 2 }),
     "runtime-launches.ndjson": '{"launch":1}\n{"launch":2}\n',
-    "runtime-switches.ndjson": '{"binding":"host","launches":2}\n',
+    "runtime-switches.ndjson": '{"binding":"host","launches":2,"at":"2026-11-27T16:07:20.231Z"}\n',
+    "cloud-forwarding-errors.ndjson":
+      '{"phase":"request-error","service":"api","reusedSocket":true,"code":"ECONNRESET"}\n',
   };
   for (const [name, contents] of Object.entries(receipts))
     writeFileSync(join(run, "cloud", name), contents);

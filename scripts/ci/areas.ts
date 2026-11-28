@@ -356,7 +356,7 @@ export const areas = [
 /**
  * Reads by computed paths that the import graph cannot follow, declared as edges from the file
  * that reads them: preparation bundles the whole pool app into the e2e product, the pool
- * runtime shards list their test files by directory, the Cloudflare family fixture loads its
+ * runtime shards list their test files by directory and cut them by recorded time, the Cloudflare family fixture loads its
  * catalog sources by name, and the Home peer program bundles the peer modules the pool Worker
  * build checks. Preparation also writes a hash of the pool Worker's sources into the product,
  * but e2e compares it only with the same generated value, so those sources reach no scenario
@@ -364,7 +364,10 @@ export const areas = [
  */
 export const runtimeReads = [
   { reader: "scripts/pool-app-bundle.ts", paths: ["apps/pool/**"] },
-  { reader: "scripts/ci/pool-test-shard.ts", paths: ["scripts/pool-tests/*.test.ts"] },
+  {
+    reader: "scripts/ci/pool-test-shard.ts",
+    paths: ["scripts/pool-tests/*.test.ts", "scripts/ci/pool-test-times.json"],
+  },
   {
     reader: "scripts/upstream-tests/cloudflare-family-fixture.ts",
     paths: ["src/catalog/cloudflare.json", "src/catalog/cloudflare.published.json"],

@@ -4,6 +4,7 @@
 import { emulatedAccount } from "./cloudflare.mjs";
 import { plainReason, profileControlPath } from "./gateway.ts";
 import { refusalPath } from "./mock-start.ts";
+import { sendsPath } from "./sends.ts";
 import { profileCheck, profileFailures, profileSummary } from "./profile-check.mjs";
 import { isCloudflareApiError } from "../stage-cloudflare/api.mjs";
 import { publicMessage, StageError } from "./public-error.mjs";
@@ -40,8 +41,14 @@ export function teardownDeadline(env, at) {
 export const mockWaitPauseMs = 5_000;
 const streamCount = Object.keys(paths).length * 2;
 const wholeCount = Object.keys(paths).length;
-/** Every route the Worker refuses without the right key, profile b's control included. */
-export const keyedRoutes = ["/v1/models", "/a/v1/models", "/b/v1/models", profileControlPath];
+/** Every route the Worker refuses without the right key, profile b's control and the send record included. */
+export const keyedRoutes = [
+  "/v1/models",
+  "/a/v1/models",
+  "/b/v1/models",
+  profileControlPath,
+  sendsPath,
+];
 const refusedCount = keyedRoutes.length * 2;
 
 const counts = (resources) =>
@@ -315,6 +322,16 @@ export function emulatedStage({
       summary(`- nothing named ${prefix}-* is deployed`);
       return "nothing";
     }
+    // Nothing runs, and only the stage's own image repository is left: inert, and the next deploy
+    // pushes to it. A destroy now would only repeat a teardown its record already reports.
+    if (api.inert(found)) {
+      const left = api.repositoryLeft(found);
+      save("expire", { outcome: "repository-only", ...facts });
+      summary(
+        `- nothing named ${prefix}-* runs; only its own image repository is left (${left.entries} entries), which the next deploy pushes to`,
+      );
+      return "repository";
+    }
     const deleteBy = found.scripts.some((row) => row.id === worker)
       ? await api.lease(worker)
       : undefined;
@@ -379,16 +396,29 @@ export function emulatedStage({
 
   async function deploy() {
     const existing = await api.inventory();
-    if (!api.empty(existing))
+    // The stage exists when anything of it runs. Its own image repository alone is inert: the
+    // deploy pushes to that same repository.
+    if (!api.inert(existing))
       throw Object.assign(
         new StageError(
           `The emulated upstream stage already exists (${api.describe(existing)}); run destroy first`,
         ),
         { record: Object.freeze({ found: api.counted(existing), repositories: existing.facts }) },
       );
+    const left = api.repositoryLeft(existing);
+    if (left.repositories)
+      summary(
+        `- the stage's own image repository is left from an earlier run (${left.entries} entries); nothing runs, and the deploy pushes its image there`,
+      );
     const deleteBy = now() + leaseHours * 60 * 60_000;
     // From here on a failed or cancelled run tears down what it may have created.
-    save("deploy-started", { stage, deleteBy: new Date(deleteBy).toISOString() });
+    save("deploy-started", {
+      stage,
+      deleteBy: new Date(deleteBy).toISOString(),
+      ...(left.repositories
+        ? { leftover: { found: api.counted(existing), repositories: existing.facts } }
+        : {}),
+    });
     deployEntry(deleteBy);
     await waitForMock();
     await check();

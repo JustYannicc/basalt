@@ -12,6 +12,9 @@ import {
   RETRY_AFTER_SECONDS,
 } from "./gateway.ts";
 import { refusalPath } from "./mock-start.ts";
+import { sendMarker } from "./prompts.ts";
+import { durableSends, recorded, sendsPage, sendsPath } from "./sends.ts";
+import { memorySendStorage } from "./test/memory-sends.ts";
 import { paths, requestBody, verdict } from "./shapes.mjs";
 import { chaos429Body } from "./test/aimock-shapes.mjs";
 import { fakeAimock, memoryStore } from "./test/fake-aimock.mjs";
@@ -193,6 +196,7 @@ test("the key gate refuses every route without the right key before anything ans
     `/a${paths.chat}`,
     profileControlPath,
     refusalPath,
+    sendsPath,
   ];
   const wrong = [
     {},
@@ -226,4 +230,312 @@ test("the key gate refuses every route without the right key before anything ans
       200,
     );
   assert.deepEqual(forwarded, [profileControlPath, profileControlPath]);
+});
+
+const run = "0123456789abcdef";
+const marker = sendMarker(run, "ab".repeat(16), 1);
+const markedCall = (path, { shape = "messages", long = false } = {}) =>
+  new Request(`${origin}${path}`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+    body: JSON.stringify(requestBody(shape, long, { marker })),
+  });
+/** The mock's Durable Object as the stage runs it, with its send record in memory. */
+function recordingMock(aimock) {
+  const storage = memorySendStorage();
+  const answer = mockCalls({
+    key,
+    store: memoryStore(),
+    start: async () => aimock.port,
+    sends: durableSends(storage, () => aimock.clock.ms),
+    now: () => aimock.clock.ms,
+  });
+  return { storage, answer };
+}
+
+test("a marked call is answered as before and recorded as the mock passed it on; an unmarked one is not", async () => {
+  const aimock = fakeAimock({ key, clock: { ms: 1_000 }, longMs: 60_000 });
+  const { storage, answer } = recordingMock(aimock);
+  for (const shape of Object.keys(paths)) {
+    const marked = await answer(markedCall(`/a${paths[shape]}`, { shape }));
+    assert.equal(verdict(shape, false, await marked.text()).pass, true, shape);
+  }
+  await (await answer(modelCall(`/a${paths.chat}`, { shape: "chat" }))).text();
+  const long = await answer(markedCall(`/b${paths.chat}`, { shape: "chat", long: true }));
+  assert.equal(verdict("chat", true, await long.text()).pass, true);
+  const rows = [...storage.rows.values()];
+  assert.equal(rows.length, 4, "every marked call and no unmarked one");
+  for (const row of rows) {
+    assert.equal(row.marker, marker);
+    assert.equal(row.status, 200);
+    assert.equal(row.end, "complete");
+    assert.ok(row.firstContentAt !== undefined && row.firstContentAt <= row.endedAt);
+  }
+  assert.deepEqual(
+    rows.map((row) => row.path),
+    [paths.chat, paths.responses, paths.messages, paths.chat],
+  );
+  // The fake's long stream moves the clock before it answers, so the record shows the wait.
+  assert.equal(rows[3].firstContentAt - rows[3].receivedAt, 60_000);
+  assert.ok([...storage.rows.keys()].every((name) => name.startsWith(`send:${run}:`)));
+});
+
+test("a marked answer whose reader stops is recorded as cut", async () => {
+  const aimock = fakeAimock({ key });
+  const { storage, answer } = recordingMock(aimock);
+  const marked = await answer(markedCall(`/a${paths.messages}`));
+  await marked.body.cancel();
+  const [row] = storage.rows.values();
+  assert.equal(row.end, "cut");
+});
+
+test("a run's records are read back in pages, and only with a run and cursor the route gave", async () => {
+  const storage = memorySendStorage();
+  let ms = 0;
+  const sends = durableSends(storage, () => ++ms);
+  const send = (index) => ({
+    marker: sendMarker(run, "cd".repeat(16), (index % 900) + 1),
+    path: paths.chat,
+    status: 200,
+    receivedAt: index,
+    headersAt: index,
+    firstContentAt: index,
+    endedAt: index,
+    end: "complete",
+  });
+  for (let index = 0; index < sendsPage + 1; index++) await sends.save(run, send(index));
+  await sends.save("fedcba9876543210", send(0));
+  const answer = mockCalls({
+    key,
+    store: memoryStore(),
+    start: async () => assert.fail("reading the record starts no mock"),
+    sends,
+  });
+  const read = (query, init) =>
+    answer(
+      new Request(`${origin}${sendsPath}${query}`, {
+        headers: { authorization: `Bearer ${key}` },
+        ...init,
+      }),
+    );
+  const first = await (await read(`?run=${run}`)).json();
+  assert.equal(first.sends.length, sendsPage);
+  assert.equal(typeof first.next, "string");
+  const second = await (await read(`?run=${run}&after=${first.next}`)).json();
+  assert.deepEqual(second.sends, [send(sendsPage)]);
+  assert.equal(second.next, undefined);
+  for (const query of ["", "?run=XYZ", `?run=${run}&after=../x`, `?run=${run}0`])
+    assert.equal((await read(query)).status, 400, query);
+  assert.equal((await read(`?run=${run}`, { method: "PUT" })).status, 405);
+});
+
+/** One recorded stream read by a client that cancels once `stopAfter` has reached it. */
+async function readAndStop(path, lines, stopAfter) {
+  const encoder = new TextEncoder();
+  let clock = 1_000;
+  const answer = new Response(
+    new ReadableStream({
+      pull(controller) {
+        const next = lines.shift();
+        if (next === undefined) return controller.close();
+        clock += 100;
+        controller.enqueue(encoder.encode(next));
+      },
+    }),
+    { headers: { "content-type": "text/event-stream" } },
+  );
+  const saved = [];
+  const response = recorded(answer, {
+    marker: "m",
+    path,
+    receivedAt: 1_000,
+    now: () => clock,
+    save: (send) => saved.push(send),
+  });
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let seen = "";
+  for (;;) {
+    const part = await reader.read();
+    if (part.done) break;
+    seen += decoder.decode(part.value, { stream: true });
+    if (stopAfter && seen.includes(stopAfter)) {
+      // The pool stops at the terminal event; time passes before its cancel reaches the mock.
+      clock += 5_000;
+      await reader.cancel();
+      break;
+    }
+  }
+  return saved[0];
+}
+
+test("a reader that stops at the stream's terminal event had the whole answer; one that stops before it did not", async () => {
+  const streams = {
+    "/v1/chat/completions": [
+      'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+      "data: [DONE]\n\n",
+      ": trailing\n\n",
+    ],
+    "/v1/responses": [
+      'data: {"type":"response.output_text.delta","delta":"hi"}\n\n',
+      'data: {"type":"response.completed","response":{}}\n\n',
+      ": trailing\n\n",
+    ],
+    "/v1/messages": [
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}\n\n',
+      'data: {"type":"message_stop"}\n\n',
+      ": trailing\n\n",
+    ],
+  };
+  const terminalOf = {
+    "/v1/chat/completions": "[DONE]",
+    "/v1/responses": "response.completed",
+    "/v1/messages": "message_stop",
+  };
+  for (const [path, lines] of Object.entries(streams)) {
+    const atTerminal = await readAndStop(path, [...lines], terminalOf[path]);
+    assert.equal(atTerminal.end, "complete", path);
+    // It ended when the terminal event passed, not when the cancel arrived.
+    assert.ok(atTerminal.endedAt < 2_000, `${path} ${atTerminal.endedAt}`);
+    assert.ok(atTerminal.firstContentAt !== undefined, path);
+    const before = await readAndStop(path, [...lines], "hi");
+    assert.equal(before.end, "cut", path);
+    const whole = await readAndStop(path, [...lines], undefined);
+    assert.equal(whole.end, "complete", path);
+  }
+  // A terminal event on a last line with no line ending still counts once the body is flushed.
+  const unterminated = await readAndStop(
+    "/v1/chat/completions",
+    ['data: {"choices":[{"delta":{"content":"hi"}}]}\n\n', "data: [DONE]"],
+    "[DONE]",
+  );
+  assert.equal(unterminated.end, "complete");
+});
+
+/**
+ * One recorded stream sent as `chunks`, read by a client that cancels once it has read
+ * `stopAfter` chunks; "ERROR" makes the upstream body fail at that point instead.
+ */
+async function readChunks(path, chunks, stopAfter) {
+  const encoder = new TextEncoder();
+  let clock = 1_000;
+  const arrived = [];
+  const answer = new Response(
+    new ReadableStream(
+      {
+        pull(controller) {
+          const next = chunks.shift();
+          if (next === undefined) return controller.close();
+          clock += 100;
+          if (next === "ERROR") return controller.error(new Error("upstream broke off"));
+          arrived.push(clock);
+          controller.enqueue(encoder.encode(next));
+        },
+      },
+      { highWaterMark: 0 },
+    ),
+    { headers: { "content-type": "text/event-stream" } },
+  );
+  const saved = [];
+  const response = recorded(answer, {
+    marker: "m",
+    path,
+    receivedAt: 1_000,
+    now: () => clock,
+    save: (send) => saved.push(send),
+  });
+  const reader = response.body.getReader();
+  for (let read = 0; ;) {
+    let part;
+    try {
+      part = await reader.read();
+    } catch {
+      break;
+    }
+    if (part.done) break;
+    if (++read === stopAfter) {
+      clock += 5_000;
+      await reader.cancel();
+      break;
+    }
+  }
+  return { send: saved[0], arrived };
+}
+
+test("the terminal event is read from whole lines, however the stream is cut into chunks", async () => {
+  const chat = "/v1/chat/completions";
+  const content = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n';
+  // Split inside the terminal: complete once its line is whole, at that line's time.
+  const split = await readChunks(chat, [content, "data: [DO", "NE]\n\n", ": more\n\n"], 3);
+  assert.equal(split.send.end, "complete");
+  assert.equal(split.send.endedAt, split.arrived[2]);
+  // Stopped on the terminal's first half: it never reached the reader whole.
+  const half = await readChunks(chat, [content, "data: [DO", "NE]\n\n"], 2);
+  assert.equal(half.send.end, "cut");
+  // A chunk that looks like the terminal on its own is not one while its line goes on.
+  const goesOn = await readChunks(chat, [content, "data: [DONE]", "x\n\n", ": more\n\n"], 3);
+  assert.equal(goesOn.send.end, "cut");
+  // A JSON frame split mid-key.
+  const messages = await readChunks(
+    "/v1/messages",
+    [
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}\n\n',
+      'data: {"ty',
+      'pe":"message_stop"}\n\n',
+      ": more\n\n",
+    ],
+    3,
+  );
+  assert.equal(messages.send.end, "complete");
+  // CRLF, cut between the CR and the LF, and read whole.
+  const crlf = [content.replace(/\n/gu, "\r\n"), "data: [DONE]\r", "\n\r\n", ": more\r\n"];
+  assert.equal((await readChunks(chat, [...crlf], 2)).send.end, "complete");
+  assert.equal((await readChunks(chat, [...crlf], 3)).send.end, "complete");
+  // The terminal's last byte alone, and an unterminated terminal line: ended when it arrived.
+  const lastByte = await readChunks(chat, [content, "data: [DONE", "]", "\n\n", ": more\n\n"], 4);
+  assert.equal(lastByte.send.end, "complete");
+  const unterminated = await readChunks(chat, [content, "data: [DONE", "]", ": more\n\n"], 3);
+  assert.equal(unterminated.send.end, "complete");
+  assert.equal(unterminated.send.endedAt, unterminated.arrived[2]);
+  // No space after `data:` is the same frame.
+  const tight = await readChunks(
+    "/v1/messages",
+    [
+      'data:{"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}\n\n',
+      'data:{"type":"message_stop"}\n\n',
+      ": more\n\n",
+    ],
+    2,
+  );
+  assert.equal(tight.send.end, "complete");
+  // An upstream that breaks off after the terminal had sent the whole answer.
+  const broke = await readChunks(chat, [content, "data: [DONE]\n\n", "ERROR"], 0);
+  assert.equal(broke.send.end, "complete");
+});
+
+test("the terminal's words inside content are content, never the end", async () => {
+  const inChat = await readChunks(
+    "/v1/chat/completions",
+    ['data: {"choices":[{"delta":{"content":"data: [DONE]"}}]}\n\n', ": more\n\n"],
+    1,
+  );
+  assert.equal(inChat.send.end, "cut");
+  const inMessages = await readChunks(
+    "/v1/messages",
+    [
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"{\\"type\\":\\"message_stop\\"}"}}\n\n',
+      ": more\n\n",
+    ],
+    1,
+  );
+  assert.equal(inMessages.send.end, "cut");
+});
+
+test("every page of the record names its recorder", async () => {
+  const store = durableSends(memorySendStorage(), () => 1);
+  const answer = await (
+    await import("./sends.ts")
+  ).sendsControl(new Request(`https://x${sendsPath}?run=${"a".repeat(16)}`), store);
+  assert.equal((await answer.json()).recorder, "terminal-v1");
 });

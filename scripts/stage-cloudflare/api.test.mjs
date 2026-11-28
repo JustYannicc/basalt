@@ -214,7 +214,7 @@ test("a stage's own rows are read back, changed and deleted by id", async () => 
   assert.deepEqual(new Set(await api.imageReferences()).size, 1);
 });
 
-test("a stage's images are deleted index first and leave every other repository", async () => {
+test("a stage's images are deleted by tag first, then by digest, and leave every other repository", async () => {
   const fake = account();
   const api = stage(fake.fetcher);
   const [image] = await api.images();
@@ -224,7 +224,7 @@ test("a stage's images are deleted index first and leave every other repository"
   );
   assert.deepEqual(
     deleted.map((call) => call.path.split("/").at(-1)),
-    [`sha256:${"a".repeat(64)}`, `sha256:${"b".repeat(64)}`],
+    ["h1", `sha256:${"a".repeat(64)}`, `sha256:${"b".repeat(64)}`],
   );
   assert.ok(deleted.every((call) => call.path.startsWith(`/v2/acct/${prefix}-mock/`)));
   assert.deepEqual(await api.images(), [{ name: `${prefix}-mock`, tags: [] }]);
