@@ -28,7 +28,13 @@ import { assignEnvironment } from "./process-env.ts";
 import { failureReport, progressTracker } from "./public-report.ts";
 import { isRehearsalStage } from "./rehearsal-stage.ts";
 import { safeJson } from "./safe-json.ts";
-import { assertStateStage, isTestStage, stackConfig, stateStoreRefusal } from "./stack-config.ts";
+import {
+  assertStateStage,
+  isTestStage,
+  stackConfig,
+  stackRunsOn,
+  stateStoreRefusal,
+} from "./stack-config.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const cloud = resolve(root, ".upstream/apps/hosted/cloud");
@@ -74,6 +80,9 @@ const { config, scaleStack, state: stackState } = stackConfig(values.config, roo
 
 if (command !== "compare") {
   assertStateStage(stackState, stage);
+  // Before the stage checks below, the environment and any read: a stack runs only on its own stages.
+  if (!scaleStack && !stackRunsOn(config, stage))
+    throw new Error(`The stack ${config} does not run on stage ${stage || "(none)"}`);
   if (stage === "production") {
     if (
       process.env.GITHUB_ACTIONS !== "true" ||

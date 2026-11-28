@@ -349,7 +349,6 @@ for (const prefix of STAGE_PREFIXES)
           "..",
           `sha256:${"A".repeat(64)}`,
           `sha256:${"c".repeat(64)}`,
-          ...(operation === "deleteManifest" ? ["h1"] : []),
           `https://registry.cloudflare.com/v2/${accountId}/basalt-poolcontainer-production/manifests/p1`,
           ...hostileValues,
         ])
@@ -365,6 +364,20 @@ for (const prefix of STAGE_PREFIXES)
       );
       assert.ok(ctx.fake.calls.length > before, label("the legitimate request was sent"));
       assert.deepEqual(outsideCalls(ctx.fake, prefix, ctx.reach), [], label("reach"));
+      // A delete also takes a tag this run's own list named, and that goes only where it may too.
+      if (operation === "deleteManifest") {
+        const sent = ctx.fake.calls.length;
+        await send(fields({ reference: "h1" })).catch((error) =>
+          assert.doesNotMatch(error.message, /^Refused/u, label("legit tag")),
+        );
+        const tagCall = ctx.fake.calls.slice(sent).find((call) => call.method === "DELETE");
+        assert.equal(
+          tagCall?.path,
+          `/v2/${accountId}/${image.name}/manifests/h1`,
+          label("tag delete"),
+        );
+        assert.deepEqual(outsideCalls(ctx.fake, prefix, ctx.reach), [], label("tag reach"));
+      }
       assert.ok(ctx.fake.live.applications.some((row) => row.id === "prod-app"));
       assert.deepEqual(ctx.fake.live.tags[`${accountId}/basalt-poolcontainer-production`], ["p1"]);
     }

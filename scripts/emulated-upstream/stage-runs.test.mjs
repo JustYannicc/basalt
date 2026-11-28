@@ -50,6 +50,11 @@ function fakeApi({ resources = none(), lease } = {}) {
       return "acctsub";
     },
     empty: (found) => Object.values(found).every((rows) => rows.length === 0),
+    inert: (found) =>
+      found.applications.length === 0 &&
+      found.scripts.length === 0 &&
+      found.namespaces.length === 0,
+    repositoryLeft: (found) => ({ repositories: found.images.length, entries: 0 }),
     counted: (found) =>
       Object.fromEntries(Object.entries(found).map(([kind, rows]) => [kind, rows.length])),
     describe: (found) => found.scripts.map((row) => `Worker ${row.id}`).join(", "),
@@ -214,7 +219,7 @@ test("a check passes only when every part does, and names each part that failed"
       profiles: { control: [{ step: "read", status: 200 }], calls: [], failure: "it stopped" },
     }),
     [
-      "7 of 8 calls without the right key ran",
+      "9 of 10 calls without the right key ran",
       "the mock itself did not refuse a call without the right key",
       "5 of 6 streams ran",
       "0 of 3 non-streamed calls ran",
@@ -447,12 +452,14 @@ test("a destroy the registry refuses keeps its record of closed facts before it 
   assert.equal(code, 1);
   const [deletes] = saved["stopped-destroy"].teardown;
   assert.deepEqual(deletes.registryDeletes, {
-    // The list held the tag and the two manifests of its image; the tag's read reached both, the
-    // index's delete was accepted and the platform's refused.
+    // The list held the tag and the two manifests of its image. The tag was read first, reaching
+    // both; its own delete was accepted and took the index with it, so the index's delete answered
+    // absent, and the platform manifest the tag reached was refused.
     tags: 1,
     digests: 2,
+    byTag: { sent: 1, accepted: 1, absent: 0, refused: 0 },
     tagRead: { ok: 1, absent: 0 },
-    delete: { accepted: 1, absent: 0, refused: 1 },
+    delete: { accepted: 0, absent: 1, refused: 1 },
     kept: [],
     refused: [
       {
@@ -502,10 +509,10 @@ test("a teardown spends at most its budget on stage requests, and stops between 
 });
 
 test("a teardown out of time during its deletes keeps everything it gathered", async () => {
-  // Forty seconds a request: every delete is sent, then the read back runs out. Fifty: the
+  // Thirty-five seconds a request: every delete is sent, then the read back runs out. Fifty: the
   // repository's own delete runs out too, and the line names it.
   for (const [step, failedDeletes] of [
-    [40_000, 0],
+    [35_000, 0],
     [50_000, 1],
   ]) {
     const fake = fakeAccount({
@@ -689,6 +696,17 @@ test("every exit of a destroy or an expiry leaves its file", async () => {
       1,
       "stopped-expire",
     ],
+    // Nothing runs and only the stage's own repository is left: green, and it says so.
+    [
+      "expire, only its repository left",
+      expire,
+      fakeAccount({
+        tags: { [`acct/${prefix}-mock`]: ["h1"] },
+        cloudflare: { pageSize: 5, emptyEnd: true, collectAfter: 1_000 },
+      }),
+      0,
+      "expire",
+    ],
     // An expiry whose token may mint pull but not push: its deletes fail, and it says so.
     [
       "expire, push refused",
@@ -700,6 +718,16 @@ test("every exit of a destroy or an expiry leaves its file", async () => {
   ];
   for (const [name, env, fake, code, file] of cases) {
     const run = await runOf(env, fake.fetcher);
+    if (name === "expire, only its repository left") {
+      assert.equal(run.saved.expire.outcome, "repository-only");
+      assert.ok(
+        run.printed.includes(
+          `- nothing named ${prefix}-* runs; only its own image repository is left (3 entries), which the next deploy pushes to`,
+        ),
+        run.printed.join("\n"),
+      );
+      assert.equal(fake.calls.filter((call) => call.method === "DELETE").length, 0);
+    }
     if (name === "expire, push refused") {
       assert.match(
         run.printed.join("\n"),

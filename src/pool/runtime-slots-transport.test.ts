@@ -2,8 +2,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BoundSlotDriver } from "./runtime-slots/transport.ts";
 import { slotIdentity } from "../../scripts/pool-tests/runtime-slots-fixture.ts";
-import { runtimeFailureDiagnostic } from "./runtime-route-diagnostic.ts";
+import {
+  knownRuntimeFailureCode,
+  runtimeFailureDiagnostic,
+  runtimeRouteDiagnostic,
+} from "./runtime-route-diagnostic.ts";
 import { SlotRefused, type SlotIdentity } from "./runtime-slots/contract.ts";
+import { RemoteRuntimeDefect } from "./runtime-slots/request-error.ts";
+import { readFailureRead } from "./runtime-fleet/failure-record.ts";
 
 test("a private endpoint transport refusal throws with its closed cause while provider HTTP conflicts pass through", async () => {
   const identity = slotIdentity("candidate");
@@ -184,4 +190,36 @@ test("an older endpoint's answer without its grant is counted from its remaining
     answering(identity, 600, { leaseMs: 400 }).health(identity, AbortSignal.timeout(5_000)),
     SlotRefused,
   );
+});
+
+test("a refusal whose reason this code doesn't know, as code before controller_code meets it, is an uncertain refusal with no diagnostic, never a defect, and a failure read carrying it is dropped", async () => {
+  const identity = slotIdentity("candidate");
+  // A reason from later code: closed values this code lacks, as slot_controller_code to older code.
+  const later = "slot_later_reason";
+  const driver = new BoundSlotDriver(() => ({
+    fetch: async () =>
+      Response.json(
+        { error: "runtime-refused", reason: `runtime_endpoint_route_${later}` },
+        {
+          status: 409,
+          headers: {
+            "X-Signalbox-Runtime-Failure-Step": "endpoint_route",
+            "X-Signalbox-Runtime-Failure-Reason": later,
+          },
+        },
+      ),
+  }));
+  const envelope = "signed-by-other-code";
+  await assert.rejects(driver.attest(identity, envelope), (error) => {
+    assert.ok(error instanceof SlotRefused, "a refusal, not a defect");
+    assert.ok(!(error instanceof RemoteRuntimeDefect));
+    assert.equal(error.reason, "uncertain");
+    assert.equal(runtimeRouteDiagnostic(error), undefined, "no diagnostic it can't read");
+    return true;
+  });
+  // A row's failure record that carries it is dropped by this reader, never a failed decode.
+  assert.equal(readFailureRead({ at: 0, step: "endpoint_route", cause: later }), undefined);
+  assert.equal(knownRuntimeFailureCode(`runtime_endpoint_route_${later}`), false);
+  // The new reason itself is in this code's vocabulary.
+  assert.equal(knownRuntimeFailureCode("runtime_endpoint_route_slot_controller_code"), true);
 });

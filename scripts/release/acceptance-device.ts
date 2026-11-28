@@ -37,11 +37,16 @@ export class AcceptanceDeviceRefused extends Data.TaggedError("AcceptanceDeviceR
   readonly why: string;
   readonly fix: string;
 }> {}
-const misnamed = (why: string) =>
+/**
+ * The secrets a device is named by: the release's own, and the test pool's. Each is read by its own
+ * name only, so a run never falls back from one to the other.
+ */
+export type DeviceSecret = "POOL_ACCEPTANCE_DEVICE" | "POOL_ACCEPTANCE_TEST_DEVICE";
+const misnamed = (why: string, secret: DeviceSecret) =>
   new AcceptanceDeviceRefused({
-    field: "POOL_ACCEPTANCE_DEVICE",
+    field: secret,
     why,
-    fix: "set the POOL_ACCEPTANCE_DEVICE secret to the device's JSON: computer, grant, user and pool",
+    fix: `set the ${secret} secret to the device's JSON: computer, grant, user and pool`,
   });
 
 /**
@@ -93,13 +98,16 @@ export function acceptanceSigningKey(env: NodeJS.ProcessEnv) {
   return key;
 }
 
-/** The registered acceptance device `POOL_ACCEPTANCE_DEVICE` names. */
-export function acceptanceDevice(env: NodeJS.ProcessEnv): AcceptanceDevice {
-  const raw = env.POOL_ACCEPTANCE_DEVICE?.trim();
-  if (!raw) throw misnamed("unset");
+/** The registered device `secret` names, by default the release's `POOL_ACCEPTANCE_DEVICE`. */
+export function acceptanceDevice(
+  env: NodeJS.ProcessEnv,
+  secret: DeviceSecret = "POOL_ACCEPTANCE_DEVICE",
+): AcceptanceDevice {
+  const raw = env[secret]?.trim();
+  if (!raw) throw misnamed("unset", secret);
   // The decode error quotes the value, so only the verdict leaves here.
   const decoded = decodeDevice(raw);
-  if (Exit.isFailure(decoded)) throw misnamed("malformed");
+  if (Exit.isFailure(decoded)) throw misnamed("malformed", secret);
   return decoded.value;
 }
 
@@ -110,8 +118,9 @@ export function acceptanceDevice(env: NodeJS.ProcessEnv): AcceptanceDevice {
 export function acceptanceCredential(
   env: NodeJS.ProcessEnv,
   now: () => number = Date.now,
+  secret: DeviceSecret = "POOL_ACCEPTANCE_DEVICE",
 ): ModelAuth {
-  const { computer, grant, user, pool } = acceptanceDevice(env);
+  const { computer, grant, user, pool } = acceptanceDevice(env, secret);
   const key = acceptanceSigningKey(env);
   return async (method, path) => ({
     [nativeModelHeader]: await signEnvelope(key, nativeModelPrefix, {

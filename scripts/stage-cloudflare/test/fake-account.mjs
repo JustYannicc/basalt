@@ -58,6 +58,10 @@ export function fakeAccount({
    * maps a digest to the refusal its delete answers. `ghosts` are digest entries the list names
    * with no manifest behind them (with `own: false`, the tags are too). `collectAfter: n` keeps an
    * accepted delete's manifest listed and readable until n more first pages of the list are read.
+   * `keepsTagged` accepts a digest delete of a manifest a tag still names and does nothing, as the
+   * registry did on 28-11-2026; a tag's own delete removes the tag. `refuseTag` maps a tag to the
+   * refusal its delete answers. `keepsIndexed` also keeps a manifest an index it holds names, and
+   * `childFirst` lists the digest entries in reverse, a platform before its index.
    */
   cloudflare,
 } = {}) {
@@ -193,6 +197,8 @@ export function fakeAccount({
         }
       }
       const digests = [...live.manifests[name].keys(), ...(cloudflare.ghosts ?? [])].sort();
+      // A real registry lists its entries in no order of its own: a platform before its index.
+      if (cloudflare.childFirst) digests.reverse();
       const named = [...live.tags[name]].sort();
       const entries =
         cloudflare.order === "lexical" ? [...digests, ...named].sort() : [...digests, ...named];
@@ -277,7 +283,30 @@ export function fakeAccount({
     const found = manifests.get(digest);
     if (!found) return json({}, { status: 404 });
     if (method === "DELETE") {
-      const refusal = found.refuse ?? cloudflare.refuse?.[digest];
+      const byTag = digest !== reference;
+      const refusal =
+        (byTag ? cloudflare.refuseTag?.[reference] : undefined) ??
+        found.refuse ??
+        cloudflare.refuse?.[digest];
+      // As destroy 46081919333 saw it: a digest delete of a manifest a tag still names is accepted
+      // and changes nothing; a tag's own delete removes that tag.
+      if (cloudflare.keepsTagged && !refusal) {
+        if (byTag) {
+          live.tags[name] = live.tags[name].filter((tag) => tag !== reference);
+          return new Response(null, init({ status: 202 }));
+        }
+        const named = live.tags[name].some(
+          (tag) => (cloudflare.tagged?.[tag] ?? DIGEST) === digest,
+        );
+        if (named) return new Response(null, init({ status: 202 }));
+        // And one that keeps a manifest an index it still holds names.
+        const indexed =
+          cloudflare.keepsIndexed &&
+          [...manifests.values()].some((other) =>
+            other.body?.manifests?.some((entry) => entry.digest === digest),
+          );
+        if (indexed) return new Response(null, init({ status: 202 }));
+      }
       // A delete the transport itself fails, as a dropped connection does.
       if (refusal?.throws) throw new TypeError("fetch failed");
       // Accepted, yet still listed after: the registry kept it without saying so.
