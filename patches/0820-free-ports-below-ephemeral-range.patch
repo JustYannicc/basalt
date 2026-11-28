@@ -1,0 +1,121 @@
+diff --git a/e2e/support/ports.ts b/e2e/support/ports.ts
+--- a/e2e/support/ports.ts
++++ b/e2e/support/ports.ts
+@@ -1,6 +1,8 @@
+ /** Scoped loopback listeners for isolated ports and real bind-conflict fixtures. */
+ import { connect, createServer, type Socket } from "node:net";
+-import { Effect } from "effect";
++import * as NodeServices from "@effect/platform-node/NodeServices";
++import { Effect, FileSystem, Random } from "effect";
++import { ChildProcess, ChildProcessSpawner } from "effect/process";
+ import { driver } from "./platform.ts";
+ 
+ /**
+@@ -28,8 +30,105 @@ export const holdPort = (port: number, onConnection?: (socket: Socket) => void)
+     );
+   });
+ 
+-/** Ask the OS for an available port and release it before returning. */
+-export const freePort = Effect.scoped(holdPort(0));
++const readEphemeralPorts = Effect.gen(function* () {
++  const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++  const numbers = (text: string) => (text.match(/\d+/gu) ?? []).map(Number);
++  const output = (command: string, args: readonly string[], count: number) =>
++    processes.string(ChildProcess.make(command, args)).pipe(
++      Effect.map(numbers),
++      // The exit code is not read, so a missing setting shows as a short answer.
++      Effect.map((ports) => (ports.length === count ? ports : [])),
++    );
++  const range =
++    process.platform === "linux"
++      ? numbers(
++          yield* (yield* FileSystem.FileSystem).readFileString(
++            "/proc/sys/net/ipv4/ip_local_port_range",
++          ),
++        )
++      : process.platform === "darwin"
++        ? yield* output(
++            "/usr/sbin/sysctl",
++            [
++              "-n",
++              "net.inet.ip.portrange.first",
++              "net.inet.ip.portrange.last",
++              "net.inet.ip.portrange.hifirst",
++              "net.inet.ip.portrange.hilast",
++            ],
++            4,
++          ).pipe(
++            Effect.map((ports) =>
++              ports.length === 0
++                ? []
++                : [Math.min(ports[0]!, ports[2]!), Math.max(ports[1]!, ports[3]!)],
++            ),
++          )
++        : process.platform === "win32"
++          ? yield* output(
++              `${process.env["SystemRoot"] ?? "C:\\Windows"}\\System32\\netsh.exe`,
++              ["int", "ipv4", "show", "dynamicport", "tcp"],
++              2,
++            ).pipe(
++              Effect.map((ports) =>
++                ports.length === 0 ? [] : [ports[0]!, ports[0]! + ports[1]! - 1],
++              ),
++            )
++          : [];
++  const [first, last] = range;
++  if (first === undefined || last === undefined || Number.isNaN(first + last) || first > last)
++    return yield* Effect.die(`No ephemeral port range readable on ${process.platform}`);
++  return { first, last };
++}).pipe(Effect.provide(NodeServices.layer));
++
++let ephemeral: { readonly first: number; readonly last: number } | undefined;
++
++/** The range the OS hands to every port-0 bind and outgoing connection, read once from its settings. */
++export const ephemeralPorts = Effect.suspend(() =>
++  ephemeral === undefined
++    ? readEphemeralPorts.pipe(Effect.tap((range) => Effect.sync(() => void (ephemeral = range))))
++    : Effect.succeed(ephemeral),
++);
++
++/**
++ * The ports a picker may use: up to 16384 just below the ephemeral range, and everything above
++ * it. Some hosts widen the range to start at 1024, which leaves only the ports above it.
++ */
++export const pickablePorts = (range: { readonly first: number; readonly last: number }) =>
++  [
++    { from: Math.max(1024, range.first - 16_384), to: range.first },
++    { from: Math.max(1024, range.last + 1), to: 65_536 },
++  ].filter((window) => window.to > window.from);
++
++const handedOut = new Set<number>();
++
++/**
++ * An available loopback port, released before returning, from outside the OS's ephemeral range.
++ * The harness reuses a picked port, for one product across its restarts among others. An
++ * ephemeral one can go to any port-0 bind in between, such as the restarted product's own
++ * telemetry collector; a port outside the range goes only to a bind that names it. No port is
++ * handed out twice, so two picks in one process never collide.
++ */
++export const freePort = Effect.gen(function* () {
++  const windows = pickablePorts(yield* ephemeralPorts);
++  const size = windows.reduce((total, window) => total + window.to - window.from, 0);
++  if (size === 0) return yield* Effect.die("The ephemeral port range leaves no port outside it");
++  for (let attempt = 0; attempt < 100; attempt += 1) {
++    let offset = yield* Random.nextIntBetween(0, size, { halfOpen: true });
++    const window = windows.find((window) => {
++      if (offset < window.to - window.from) return true;
++      offset -= window.to - window.from;
++      return false;
++    })!;
++    const port = window.from + offset;
++    if (handedOut.has(port)) continue;
++    const held = yield* Effect.scoped(holdPort(port)).pipe(Effect.option);
++    if (held._tag === "None") continue;
++    handedOut.add(port);
++    return port;
++  }
++  return yield* Effect.die("No free port outside the ephemeral range after 100 tries");
++});
+ 
+ /**
+  * A loopback port that refuses connections until the owning scope closes. A port released by

@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The pool account view proof counts one read per query request. When the organization's change head moves during a read, the product drops that answer and reads again by design, so the proof asks the same query once more on a new request; it tolerates exactly one such request, and a second in a row still fails, so a product that always reads twice is caught."
+    }
+  }
+}

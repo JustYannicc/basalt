@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "When a production approval proof's approved call does not answer ok, the proof keeps that call's whole answer in its evidence before it fails: the answer's shape, numbers, flags and words as they are, with any link or token-like string cut, since the evidence is public."
+    }
+  }
+}
