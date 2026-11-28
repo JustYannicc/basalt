@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "A port the test harness picks lies outside the range the operating system hands to port-0 binds and outgoing connections, read once from the system's own settings: just below it, or above it when the range starts low, and never one picked before. The harness reuses a picked port, for one product across its restarts, and an ephemeral one could go to any port-0 bind in between, such as the restarted product's telemetry collector."
+    }
+  }
+}
