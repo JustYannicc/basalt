@@ -1090,7 +1090,11 @@ jobs:
             .upstream/.local/e2e/**/report/**
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
-            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud*.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud-forwarding-errors.ndjson
+            ${{ runner.temp }}/basalt-e2e-evidence/**/runtime-preboot.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/runtime-launches.ndjson
+            ${{ runner.temp }}/basalt-e2e-evidence/**/runtime-switches.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   google-account-diagnostics:
@@ -1151,7 +1155,11 @@ jobs:
             .upstream/.local/e2e/**/report/**
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
-            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud*.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud-forwarding-errors.ndjson
+            ${{ runner.temp }}/basalt-e2e-evidence/**/runtime-preboot.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/runtime-launches.ndjson
+            ${{ runner.temp }}/basalt-e2e-evidence/**/runtime-switches.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   oauth-account-regressions:
@@ -1247,6 +1255,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud-forwarding-errors.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   sso-service-binding:
@@ -1336,6 +1345,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud-forwarding-errors.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/autumn-emulator.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/postgres.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
@@ -1383,7 +1393,11 @@ jobs:
           path: |
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
-            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud*.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud-forwarding-errors.ndjson
+            ${{ runner.temp }}/basalt-e2e-evidence/**/runtime-preboot.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/runtime-launches.ndjson
+            ${{ runner.temp }}/basalt-e2e-evidence/**/runtime-switches.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/change-journal.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
@@ -1427,6 +1441,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud-forwarding-errors.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   production-ops-identity:
@@ -1485,7 +1500,11 @@ jobs:
             .upstream/.local/e2e/**/report/**
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
-            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud*.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud-forwarding-errors.ndjson
+            ${{ runner.temp }}/basalt-e2e-evidence/**/runtime-preboot.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/runtime-launches.ndjson
+            ${{ runner.temp }}/basalt-e2e-evidence/**/runtime-switches.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/autumn-emulator.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/change-journal.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/physical-state-digests.ndjson
@@ -2272,6 +2291,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud-forwarding-errors.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
       # The check job counts retries from these alone instead of downloading every shard's evidence.
