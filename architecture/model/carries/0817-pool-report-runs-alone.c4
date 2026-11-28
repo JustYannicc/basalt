@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.poolMembership {
+    metadata {
+      constraint "The pool ownership report runs every hour whatever the inventory's own read did, in its own read-only, repeatable-read transaction with the inventory's bounds (3 s per statement, 500 ms per lock), and still writes exactly one line after the inventory's lines. When the inventory's own read ends without its report, its end line names why from a closed set (row_cap, value_cap, bytes_cap, not_read_only, statement_timeout, lock_timeout, sql_error, connection, unknown) and, where one applies, the fixed key of the section it was reading, never a value or a statement's text."
+    }
+  }
+}
