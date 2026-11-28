@@ -1111,3 +1111,133 @@ test("retire-check says when the cell's current instance holds leases, by kind",
     await lane.close();
   }
 });
+
+// Mode accept with no fleet cell: the root's turns still have their usage read and judged before
+// the run ends without a cell proof. Production's shape: the device alone, no owner token.
+test("accept with no cell reads the root's usage, reports it beside the missing cell proof, and never passes", async () => {
+  const lane = await harness({ deviceOnly: true, boot: () => "primary-boot" });
+  try {
+    const result = await runPoolFleet(dispatch("accept"), lane.deps());
+    assert.equal(result.ok, false);
+    const cause = String("cause" in result && result.cause);
+    assert.match(cause, /^cell-served-proof-missing: /u);
+    assert.match(
+      cause,
+      /The 18 served turns kept the usage rule: 18 rows, on \d+ of the pool's accounts\./u,
+    );
+    // Three bursts and no final turn: nothing is added to a run that had no cell.
+    assert.equal(lane.turns(), 18);
+    assert.equal(
+      lane.usageReads.reduce((sum, read) => sum + read.sessions, 0),
+      18,
+      "every one of the root's turns is read back",
+    );
+    assert.doesNotMatch(JSON.stringify(result), /pool-account-/u);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("accept with no cell ends with the usage cause when the root's turns break the usage rule", async (t) => {
+  const outside = { inPool: false, account: null };
+  const cases: [string, HarnessOptions, RegExp][] = [
+    [
+      "another pool's account",
+      { usage: (i) => [ownRow(i, i === 3 ? outside : {})] },
+      /usage-outside-pool/u,
+    ],
+    ["another key", { usage: (i) => [ownRow(i, i === 2 ? { key: 99 } : {})] }, /usage-other-key/u],
+    [
+      "two success rows",
+      { usage: (i) => (i === 4 ? [ownRow(i), ownRow(100 + i)] : [ownRow(i)]) },
+      /usage-duplicate/u,
+    ],
+    ["no success row", { usage: (i) => (i === 1 ? [] : [ownRow(i)]) }, /usage-missing/u],
+    ["a read the route refuses", { usageStatus: 503 }, /usage-read-refused/u],
+    [
+      "a response from an unknown runtime",
+      { boot: (index) => (index === 2 ? "stranger-boot" : "primary-boot") },
+      /unknown-boot/u,
+    ],
+  ];
+  for (const [name, options, cause] of cases)
+    await t.test(name, async () => {
+      const lane = await harness({ deviceOnly: true, boot: () => "primary-boot", ...options });
+      try {
+        const result = await runPoolFleet(dispatch("accept"), lane.deps());
+        assert.equal(result.ok, false);
+        const text = String("cause" in result && result.cause);
+        assert.match(text, cause);
+        assert.doesNotMatch(
+          text,
+          /cell-served-proof-missing/u,
+          "the missing cell proof never hides it",
+        );
+        assert.doesNotMatch(JSON.stringify(result), /pool-account-|stranger-boot/u);
+      } finally {
+        await lane.close();
+      }
+    });
+});
+
+test("configure-and-accept still requires a cell before it reads usage, and reads none without one", async () => {
+  const lane = await harness({ deviceOnly: true, boot: () => "primary-boot" });
+  try {
+    const result = await runPoolFleet(dispatch("configure-and-accept"), lane.deps());
+    assert.equal(result.ok, false);
+    const cause = String("cause" in result && result.cause);
+    assert.match(cause, /cell-served-proof-missing/u);
+    assert.doesNotMatch(cause, /turns the root served/u);
+    assert.deepEqual(lane.usageReads, []);
+    assert.equal((await lane.configuration.inspect())?.enabled, false);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("accept with no cell keeps its own ending when the usage read only fails", async () => {
+  const lane = await harness({ deviceOnly: true, boot: () => "primary-boot", usageStatus: 500 });
+  try {
+    const result = await runPoolFleet(dispatch("accept"), lane.deps());
+    assert.equal(result.ok, false);
+    const cause = String("cause" in result && result.cause);
+    assert.match(cause, /^cell-served-proof-missing: /u);
+    assert.match(cause, /The usage read of the 18 served turns did not complete: .*HTTP 500/u);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("accept judges the turns served before every model was refused for quota", async (t) => {
+  for (const [name, usage, cause] of [
+    ["clean", undefined, /^acceptance-quota-refused: .*The 6 served turns kept the usage rule/u],
+    [
+      "a breach",
+      (i: number) => [ownRow(i, i === 3 ? { inPool: false, account: null } : {})],
+      /^usage-outside-pool: /u,
+    ],
+  ] as const)
+    await t.test(name, async () => {
+      // The first model's first burst is served by the root; every later turn is refused for funding.
+      let turns = 0;
+      const lane = await harness({
+        deviceOnly: true,
+        models: ["claude-opus-5-5", "gpt-6.1-sol"],
+        quota: () => (++turns > 6 ? "usage_credit_policy_denied" : undefined),
+        boot: () => "primary-boot",
+        ...(usage ? { usage } : {}),
+      });
+      try {
+        const deps = lane.deps();
+        if (deps.acceptance instanceof FleetLaneRefused) assert.fail(deps.acceptance.message);
+        const result = await runPoolFleet(dispatch("accept"), {
+          ...deps,
+          acceptance: { ...deps.acceptance, model: "claude-opus-5-5" },
+        });
+        assert.equal(result.ok, false);
+        assert.match(String("cause" in result && result.cause), cause);
+      } finally {
+        await lane.close();
+      }
+    });
+});
