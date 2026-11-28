@@ -18,11 +18,13 @@ import providers from "./providers.json" with { type: "json" };
 import {
   callerHeader,
   controlBasePath as base,
+  type Account,
   type PoolView,
   type SignInFlow,
   type UsageRecord,
   type UsageResponse,
 } from "../../apps/pool/contract.ts";
+import type { PoolRouteReading } from "./route-reading.ts";
 import { openEnvelope, verifyPoolToken } from "./token.ts";
 import { isPoolAcquisitionPath, refusePoolAcquisition } from "./connection-policy.ts";
 import { exportLoginFile } from "./login-export.ts";
@@ -74,6 +76,12 @@ export interface HomeDependencies {
   defer?: (work: Promise<void>) => void;
   /** Current pool audience projected by the host's existing access adapter. */
   audience?: (pool: string) => Promise<readonly string[]>;
+  /** Routed sign-ins; absent where routing isn't wired. */
+  signInRoutes?: import("./account-acquisition.ts").SignInRoutes;
+  /** Credentials the pool keeps disabled because their plugin can't use the owner's route. */
+  routeRefusals?: import("./account-actions.ts").RouteRefusals;
+  /** The reading of `owner`'s first routed credential among `accounts`, or null. */
+  route?: (owner: string, accounts: readonly Account[]) => Promise<PoolRouteReading | null>;
 }
 /** Only the operations the routes need. Read-only requests pass null explicitly. */
 export interface ControlAttribution {
@@ -130,7 +138,7 @@ interface UsageQuery {
 function sessionTrim(value: string): string {
   return value.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
 }
-async function usageSession(raw: string): Promise<string> {
+export async function usageSession(raw: string): Promise<string> {
   const encoder = new TextEncoder();
   const session = sessionTrim(raw);
   // Node NormalizeExplicitID checks controls before trimming.
@@ -771,7 +779,8 @@ const routes: Record<string, Route> = {
     if (!object(payload)) return fail(400, "invalid_query", "Choose an account selection policy.");
     return json(await setPoolSelectionPolicy(client, pool, payload.accountSelectionPolicy));
   },
-  "GET /credit-policy": async ({ client, pool }) => json(await poolCreditRouting(client, pool)),
+  "GET /credit-policy": async ({ client, pool, deps }) =>
+    json(await poolCreditRouting(client, pool, await deps.routeRefusals?.refusedReferences())),
   "PATCH /credit-policy": async ({ client, pool, request }) => {
     const payload: unknown = await request.json();
     if (!object(payload)) return fail(400, "invalid_query", "Choose a subscription credit policy.");
@@ -803,7 +812,7 @@ const routes: Record<string, Route> = {
   },
   "GET /accounts/:id/observations": (ctx) => observeAccount(ctx, false),
   "POST /accounts/:id/observations/refresh": (ctx) => observeAccount(ctx, true),
-  "GET /pool": async ({ home, isOwner, deps, pool, organization, url }) => {
+  "GET /pool": async ({ home, isOwner, deps, pool, organization, url, request, accountId }) => {
     const identities = async () =>
       (await deps.nativeIdentities?.(pool).catch(() => undefined)) ??
       (await deps.nativeMembership?.(pool, organization).catch(() => undefined));
@@ -812,9 +821,19 @@ const routes: Record<string, Route> = {
       identities(),
     ]);
     const presented = deps.nativeMembership ? nativeAccountView(view, membership) : view;
-    return json(
-      isOwner && deps.removals ? { ...presented, removals: await deps.removals(pool) } : presented,
-    );
+    const caller = text(request.headers.get(callerHeader)) ?? (isOwner ? accountId : undefined);
+    // A route reading never fails the pool view; without one the row is simply absent.
+    const route =
+      caller && deps.route
+        ? await deps
+            .route(`org/${organization}/user/${caller}`, presented.accounts)
+            .catch(() => undefined)
+        : undefined;
+    return json({
+      ...presented,
+      ...(route === undefined ? {} : { route }),
+      ...(isOwner && deps.removals ? { removals: await deps.removals(pool) } : {}),
+    });
   },
   "GET /usage": async ({ home, url }) => json(await home.usage(await usageQuery(url))),
   "GET /accounts/:id/export": async ({ url, client, home }) => exportLoginFile(url, client, home),

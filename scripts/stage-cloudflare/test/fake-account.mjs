@@ -52,9 +52,16 @@ export function fakeAccount({
    * A registry that answers as Cloudflare's did on 27-11-2026: its list names a `sha256:` entry for
    * every manifest besides the tags, `pageSize` entries a page whatever `n` asks, a next link of
    * `n=1000&last=<the page's last entry>`, digest entries first (`order: "lexical"` sorts all), and,
-   * with `emptyEnd`, a last page that is empty and still links on. `artifacts` are manifests the
+   * with `emptyEnd`, a last page that is empty and still links on; `linkForm` picks how the link is
+   * written (see below). `artifacts` are manifests the
    * registry made itself: `{ digest, type, refuse?: { status, code? }, read?: status }`. `refuse`
-   * maps a digest to the refusal its delete answers.
+   * maps a digest to the refusal its delete answers. `ghosts` are digest entries the list names
+   * with no manifest behind them (with `own: false`, the tags are too). `collectAfter: n` keeps an
+   * accepted delete's manifest listed and readable until n more first pages of the list are read.
+   * `keepsTagged` accepts a digest delete of a manifest a tag still names and does nothing, as the
+   * registry did on 28-11-2026; a tag's own delete removes the tag. `refuseTag` maps a tag to the
+   * refusal its delete answers. `keepsIndexed` also keeps a manifest an index it holds names, and
+   * `childFirst` lists the digest entries in reverse, a platform before its index.
    */
   cloudflare,
 } = {}) {
@@ -109,11 +116,15 @@ export function fakeAccount({
     ),
   };
   const calls = [];
+  // Accepted deletes the registry has not collected yet, and how many first pages it has served.
+  const pending = [];
+  let firstPages = 0;
   const fetcher = async (url, options = {}) => {
     const { hostname, pathname, searchParams } = new URL(url);
     const method = options.method ?? "GET";
     const mode = options.redirect ?? "follow";
     const call = { method, host: hostname, path: pathname, url: String(url), redirect: mode };
+    if (options.headers?.Authorization) call.authorization = options.headers.Authorization;
     if (typeof options.body === "string") call.body = options.body;
     calls.push(call);
     const redirect = redirects[`${method} ${url}`];
@@ -135,8 +146,14 @@ export function fakeAccount({
     if (!pathname.startsWith(prefix)) return json({}, { status: 404 });
     const rest = pathname.slice(prefix.length);
     if (rest === "workers/subdomain") return json(subdomain(workersSubdomain));
-    if (rest === "containers/registries/registry.cloudflare.com/credentials")
-      return json(registryCredentials());
+    if (rest === "containers/registries/registry.cloudflare.com/credentials") {
+      // A credential names what it was minted for, so a test can tell which one a request carried.
+      const asked = typeof options.body === "string" ? JSON.parse(options.body).permissions : [];
+      return json({
+        ...registryCredentials(),
+        result: { username: `<${asked.join("+")}>`, password: "<secret>" },
+      });
+    }
     const settingsOf = /^workers\/scripts\/([^/]+)\/settings$/u.exec(rest);
     if (settingsOf) {
       const name = decodeURIComponent(settingsOf[1]);
@@ -170,18 +187,38 @@ export function fakeAccount({
     if (listing && cloudflare) {
       const name = decodeURIComponent(listing[1]);
       if (!(name in live.tags)) return json({}, { status: 404 });
-      const digests = [...live.manifests[name].keys()].sort();
+      const last = searchParams.get("last");
+      if (last === null || last === "") {
+        firstPages += 1;
+        for (const due of pending.filter((row) => row.name === name && row.at <= firstPages)) {
+          pending.splice(pending.indexOf(due), 1);
+          live.manifests[name].delete(due.digest);
+          untag(name, due.digest);
+        }
+      }
+      const digests = [...live.manifests[name].keys(), ...(cloudflare.ghosts ?? [])].sort();
+      // A real registry lists its entries in no order of its own: a platform before its index.
+      if (cloudflare.childFirst) digests.reverse();
       const named = [...live.tags[name]].sort();
       const entries =
         cloudflare.order === "lexical" ? [...digests, ...named].sort() : [...digests, ...named];
-      const last = searchParams.get("last");
       const after =
         last === null || last === "" ? entries : entries.slice(entries.indexOf(last) + 1);
       const page = after.slice(0, cloudflare.pageSize ?? 5);
       const more = after.length > page.length;
+      const cursor = encodeURIComponent(page.at(-1) ?? "");
+      // `linkForm`: "bracketed" (RFC 8288, relative); "recorded", the form recorded for this
+      // registry: the full request URL with no brackets, a second query appended, `rel` unquoted;
+      // "unknown", a header that offers a next page in a form no reader can take apart.
+      const forms = {
+        bracketed: () => `</v2/${listing[1]}/tags/list?n=1000&last=${cursor}>; rel="next"`,
+        recorded: () =>
+          `https://registry.cloudflare.com/v2/${listing[1]}/tags/list?${searchParams}?n=1000&last=${cursor}; rel=next`,
+        unknown: () => `{next: ${cursor}}; rel=next ~`,
+      };
       const link =
         more || (cloudflare.emptyEnd && last !== "")
-          ? `</v2/${listing[1]}/tags/list?n=1000&last=${encodeURIComponent(page.at(-1) ?? "")}>; rel="next"`
+          ? forms[cloudflare.linkForm ?? "bracketed"]()
           : undefined;
       return json(tagList(name, page), { headers: link ? { link } : {} });
     }
@@ -228,6 +265,13 @@ export function fakeAccount({
     });
   }
 
+  /** Removes the tags of a Cloudflare-mode repository that name `digest`, as its delete does. */
+  function untag(name, digest) {
+    live.tags[name] = live.tags[name].filter(
+      (tag) => (cloudflare.tagged?.[tag] ?? DIGEST) !== digest,
+    );
+  }
+
   /** A manifest of the Cloudflare-mode registry: deleting a digest removes the tags naming it. */
   function cloudflareManifest(method, name, reference, accept) {
     const manifests = live.manifests[name];
@@ -239,7 +283,30 @@ export function fakeAccount({
     const found = manifests.get(digest);
     if (!found) return json({}, { status: 404 });
     if (method === "DELETE") {
-      const refusal = found.refuse ?? cloudflare.refuse?.[digest];
+      const byTag = digest !== reference;
+      const refusal =
+        (byTag ? cloudflare.refuseTag?.[reference] : undefined) ??
+        found.refuse ??
+        cloudflare.refuse?.[digest];
+      // As destroy 46081919333 saw it: a digest delete of a manifest a tag still names is accepted
+      // and changes nothing; a tag's own delete removes that tag.
+      if (cloudflare.keepsTagged && !refusal) {
+        if (byTag) {
+          live.tags[name] = live.tags[name].filter((tag) => tag !== reference);
+          return new Response(null, init({ status: 202 }));
+        }
+        const named = live.tags[name].some(
+          (tag) => (cloudflare.tagged?.[tag] ?? DIGEST) === digest,
+        );
+        if (named) return new Response(null, init({ status: 202 }));
+        // And one that keeps a manifest an index it still holds names.
+        const indexed =
+          cloudflare.keepsIndexed &&
+          [...manifests.values()].some((other) =>
+            other.body?.manifests?.some((entry) => entry.digest === digest),
+          );
+        if (indexed) return new Response(null, init({ status: 202 }));
+      }
       // A delete the transport itself fails, as a dropped connection does.
       if (refusal?.throws) throw new TypeError("fetch failed");
       // Accepted, yet still listed after: the registry kept it without saying so.
@@ -251,13 +318,19 @@ export function fakeAccount({
           { errors: refusal.code ? [{ code: refusal.code, message: "refused" }] : [] },
           { status: refusal.status },
         );
+      if (cloudflare.collectAfter !== undefined) {
+        if (!pending.some((row) => row.name === name && row.digest === digest))
+          pending.push({ name, digest, at: firstPages + cloudflare.collectAfter });
+        return new Response(null, init({ status: 202 }));
+      }
       manifests.delete(digest);
-      if (digest === DIGEST) live.tags[name] = [];
+      untag(name, digest);
       return new Response(null, init({ status: 202 }));
     }
     if (found.read) return json({}, { status: found.read });
     // A registry that serves an artifact only to a read that accepts its own type.
-    if (found.acceptOnly && !accept.split(/,\s*/u).includes(found.acceptOnly))
+    const accepted = accept.split(/,\s*/u);
+    if (found.acceptOnly && !accepted.includes("*/*") && !accepted.includes(found.acceptOnly))
       return json({}, { status: 406 });
     return json(found.body, { headers: { "docker-content-digest": digest } });
   }

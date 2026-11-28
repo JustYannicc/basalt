@@ -76,8 +76,11 @@ export async function readHistoryGap(db: HistoryDatabase): Promise<HistoryGap | 
 }
 
 /**
- * One line a pass, counts only. After an import of a gap in history, it is complete once
- * `uncaptured7d` and `uncountedHours7d` are both 0 and `behind` stays below a page.
+ * One line a pass, counts only. The counts cover Home's own rows: once `uncaptured7d` and
+ * `uncountedHours7d` are both 0 and `behind` stays below a page, history holds them, a self-import
+ * of Home rows included. Rows of another source, such as another system's imported records, are
+ * neither counted nor marked here; such an import shows it is complete through its own completion
+ * record.
  */
 export async function logHistoryGap(db: HistoryDatabase) {
   const gap = await readHistoryGap(db);

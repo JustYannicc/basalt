@@ -5,11 +5,14 @@ import { acquisitionAssertion } from "./account-acquisition-assertion.ts";
 import { readCredentialAccount } from "./account-check.ts";
 import type { HomeClient } from "./control.ts";
 import { homeReferences } from "./home-references.ts";
-import { json, rows, text } from "./json.ts";
+import { json, rows, text, type Json } from "./json.ts";
+import type { Account } from "../../apps/pool/contract.ts";
 import providers from "./providers.json" with { type: "json" };
 import { hasUsageLimits, type QuotaCollection } from "./quota-collection.ts";
 import { publicQuotaObservation } from "./quota-observation-public.ts";
 import { quotaObservation } from "./quota-observation.ts";
+import { accountsView } from "./accounts-view.ts";
+import type { RouteRefusals } from "./account-actions.ts";
 
 /** Health reads share the collection cap, but never hold the sign-in/attribution queue. */
 export async function nativeAccountHealth(
@@ -20,6 +23,8 @@ export async function nativeAccountHealth(
     signingKey: string;
     previousSigningKey?: string;
     now?: () => number;
+    /** The route refusals: a credential they refuse is never read for its health. */
+    refusals?: Pick<RouteRefusals, "refusesUse">;
   },
 ): Promise<Response | undefined> {
   if (request.method !== "POST") return undefined;
@@ -45,6 +50,21 @@ export async function nativeAccountHealth(
       reference = text(value.reference);
     if (!provider || !reference) throw new Error("Missing account binding");
     const ids = homeReferences(reference);
+    // A credential its owner's route refuses (its plugin can't use the route) is not a failed
+    // service: nothing is read for it, from Home or the provider, for any backend. It answers as a
+    // provider with no usage reading does.
+    if (
+      value.action !== "verify-retirement-reference" &&
+      input.refusals &&
+      (await Promise.all(ids.map((id) => input.refusals!.refusesUse(id, provider)))).some(Boolean)
+    ) {
+      if (value.action === "observe") return json({ result: null });
+      const files = ids.map((id) => ({ id, provider }));
+      return checkAnswer(
+        ids.map((id) => ({ account: accountsView(files, [], new Set([id]))[0]!, quota: null })),
+        input.now,
+      );
+    }
     const signal = AbortSignal.any([request.signal, AbortSignal.timeout(12_000)]);
     const files = rows((await input.client.data("/credentials", { signal })).files);
     if (value.action === "verify-retirement-reference") {
@@ -101,36 +121,42 @@ export async function nativeAccountHealth(
     const checked = await Promise.all(
       ids.map((id) => readCredentialAccount(input.client, input.collection, id, signal, files)),
     );
-    const failure = checked
-      .map(({ account }) => subscriptionFailure(account, input.now?.()))
-      .find((reason) => reason !== null);
-    if (failure) {
-      const failed = checked.find(
-        ({ account }) => subscriptionFailure(account, input.now?.()) !== null,
-      );
-      if (failed?.account.credentialFailure) return json({ failure });
-      return json({
-        failure,
-        diagnostic:
-          failed?.quota && quotaObservation(failed.quota).collection.errorCode
-            ? accountCollectionFailure(failed.quota, input.now?.() ?? Date.now())
-            : accountReadFailure(undefined, input.now?.() ?? Date.now()),
-      });
-    }
-    const first = checked[0]!;
-    const identity =
-      first.account.label === first.account.id ? {} : identityOf(first.account, providers);
-    const observation =
-      checked.length === 1 && first.quota !== null
-        ? publicQuotaObservation(quotaObservation(first.quota))
-        : null;
-    return json({
-      result: { accountInfo: identity, ...(observation === null ? {} : { observation }) },
-    });
+    return checkAnswer(checked, input.now);
   } catch (error) {
     return json({
       failure: "unavailable",
       diagnostic: accountReadFailure(error, input.now?.() ?? Date.now()),
     });
   }
+}
+
+/** A check's answer from its credentials' accounts and readings. */
+function checkAnswer(
+  checked: readonly { account: Account; quota: Json | null }[],
+  now: (() => number) | undefined,
+) {
+  const failure = checked
+    .map(({ account }) => subscriptionFailure(account, now?.()))
+    .find((reason) => reason !== null);
+  if (failure) {
+    const failed = checked.find(({ account }) => subscriptionFailure(account, now?.()) !== null);
+    if (failed?.account.credentialFailure) return json({ failure });
+    return json({
+      failure,
+      diagnostic:
+        failed?.quota && quotaObservation(failed.quota).collection.errorCode
+          ? accountCollectionFailure(failed.quota, now?.() ?? Date.now())
+          : accountReadFailure(undefined, now?.() ?? Date.now()),
+    });
+  }
+  const first = checked[0]!;
+  const identity =
+    first.account.label === first.account.id ? {} : identityOf(first.account, providers);
+  const observation =
+    checked.length === 1 && first.quota !== null
+      ? publicQuotaObservation(quotaObservation(first.quota))
+      : null;
+  return json({
+    result: { accountInfo: identity, ...(observation === null ? {} : { observation }) },
+  });
 }

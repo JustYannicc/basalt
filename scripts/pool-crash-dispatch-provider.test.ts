@@ -214,7 +214,9 @@ test("(a) every outcome publishes one closed line and nothing else from the read
       "provider_fetch_failed",
       answering(() => refusal(new ProviderObservationRefused({ reason: "fetch_failed" }))),
     ],
-    // The handoff refuses other controller code, or a command it cannot decode, as identity.
+    // The handoff refuses other controller code, or a command it cannot decode, as identity; it
+    // names other code as such, which code before that reason also called identity.
+    ["controller_identity", answering(() => refusal(new SlotRefused("controller_code")))],
     ["controller_identity", answering(() => refusal(new SlotRefused("identity")))],
     ["controller_refused", answering(() => refusal(new SlotRefused("selection")))],
     // A 409 that claims a provider cause in its body but lacks the header is not the Worker's cause.

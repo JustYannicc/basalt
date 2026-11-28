@@ -4,20 +4,22 @@ import { onLightRunners, queuedMinutes } from "./light-lane.ts";
 import { say } from "./workflow-run.ts";
 
 // light-rescue.yml, every 5 minutes. A Check job queued for the light runners can't move to hosted
-// runners. Only the first attempt of a push to main uses them (scripts/ci/light-lane.ts): a few
-// seconds-long jobs a few times an hour on two runners, which never queue behind each other for
-// minutes. So a light job of main's Check that has waited 3 minutes means the lane isn't taking
-// jobs (its runners are down, or the variable names a label none carries), and that Check is
-// force-cancelled whatever the box's heartbeat says. Its end starts box-rerun.yml like any Check's,
-// which finds the light job cancelled before a runner took it and re-runs the run's failed and
-// cancelled jobs as attempt 2, which runs them hosted; GitHub's completion event carries the run
-// from here to there, so a rescue stopped after its cancel strands nothing. A rescue that freed a
-// Check ends red, so a stopped lane shows. GitHub answering badly never cancels. Light jobs are
-// matched by their label's suffix, not the variable, so emptying it still frees what it held.
+// runners. Only the first attempt of a push to main or a batch uses them
+// (scripts/ci/light-lane.ts): a few seconds-long jobs a few times an hour on two runners, which
+// never queue behind each other for minutes. So a light job of a push Check that has waited 3
+// minutes means the lane isn't taking jobs (its runners are down, or the variable names a label
+// none carries), and that Check is force-cancelled whatever the box's heartbeat says. Its end
+// starts box-rerun.yml like any Check's, which finds the light job cancelled before a runner took
+// it and re-runs the run's failed and cancelled jobs as attempt 2, which runs them hosted; GitHub's
+// completion event carries the run from here to there, so a rescue stopped after its cancel
+// strands nothing. A rescue that freed a Check ends red, so a stopped lane shows. GitHub answering
+// badly never cancels. Light jobs are matched by their label's suffix, not the variable, so
+// emptying it still frees what it held.
 
 /**
  * The most REST calls one rescue spends. Every Check shares the workflow token's hourly limit; a
- * rescue costs 2 (main's active Checks), one or two per active first attempt and one per cancel.
+ * rescue costs 2 (the active push Checks), one per 50 jobs of each active first attempt (two for
+ * a full Check, whose light job is the aggregate, listed last) and one per cancel.
  */
 export const maxCalls = 100;
 const minute = 60_000;
@@ -92,13 +94,18 @@ function client(env: RescueEnv, fetcher: Fetch, clock: Clock) {
 }
 type Client = ReturnType<typeof client>;
 
-/** Main's own active first-attempt push Checks old enough to hold a light job, newest first. */
+/** The light lane's branches: main, with four light jobs, and a batch, whose is its aggregate. */
+const lightBranch = (branch: unknown) =>
+  typeof branch === "string" && (branch === "main" || branch.startsWith("batch/"));
+
+/** This repository's active first-attempt push Checks old enough to hold a light job. */
 async function activeChecks(env: RescueEnv, api: Client, at: number) {
   const listed = new Map<number, Json>();
   for (const status of ["in_progress", "queued"])
     for (let page = 1; ; page++) {
+      // Every push Check, main's and the batches', in one listing: a branch filter takes one name.
       const { workflow_runs: runs } = await api.json(
-        `/actions/workflows/ci.yml/runs?branch=main&event=push&status=${status}&per_page=100&page=${page}`,
+        `/actions/workflows/ci.yml/runs?event=push&status=${status}&per_page=100&page=${page}`,
       );
       if (!Array.isArray(runs)) throw new Error("GitHub listed no Check runs");
       for (const run of runs.map(record)) listed.set(Number(run.id), run);
@@ -109,7 +116,7 @@ async function activeChecks(env: RescueEnv, api: Client, at: number) {
     (run) =>
       String(run.path).split("@")[0] === checkPath &&
       run.event === "push" &&
-      run.head_branch === "main" &&
+      lightBranch(run.head_branch) &&
       Number(run.run_attempt) === 1 &&
       record(run.head_repository).full_name === env.repository &&
       at - Date.parse(String(run.created_at)) >= queuedMinutes * minute,
@@ -135,8 +142,8 @@ async function heldJob(api: Client, id: number, at: number) {
 }
 
 /**
- * Cancels main's Checks the light lane holds. `freed` counts the cancels; `refused` the held ones a
- * cancel GitHub refused left held. Either makes the run red.
+ * Cancels the push Checks the light lane holds. `freed` counts the cancels; `refused` the held ones
+ * a cancel GitHub refused left held. Either makes the run red.
  */
 export async function rescue(
   env: RescueEnv,
@@ -152,7 +159,7 @@ export async function rescue(
   try {
     checks = await activeChecks(env, api, at);
   } catch (error) {
-    line(`main's Checks could not be read (${(error as Error).message}); nothing is cancelled.`);
+    line(`the push Checks could not be read (${(error as Error).message}); nothing is cancelled.`);
     return result;
   }
   // Each held run is cancelled as soon as it is found, so a rescue that runs out of calls still
@@ -191,11 +198,11 @@ export async function rescue(
     );
   }
   line(
-    `${held} of ${checks.length} first attempts of main's Check have a light job queued ${queuedMinutes} minutes or more.`,
+    `${held} of ${checks.length} first attempts of main's and the batches' push Checks have a light job queued ${queuedMinutes} minutes or more.`,
   );
   if (held)
     line(
-      "the light lane is not taking main's jobs: its runners are down, or BASALT_CI_LIGHT_LABEL names a label none carries. Delete the variable to run main's Check hosted until it is fixed.",
+      "the light lane is not taking jobs: its runners are down, or BASALT_CI_LIGHT_LABEL names a label none carries. Delete the variable to run every Check hosted until it is fixed.",
     );
   return result;
 }

@@ -3,6 +3,7 @@ import { HomeClient, PoolHome, poolGroupPrefix } from "./control.ts";
 import { BackendFailure, object, post, rows, unavailable, type Json } from "./json.ts";
 import { emitProductEvent, type ProductEventCallback } from "../setup/product-events.ts";
 import { backendUserName, personPrefix } from "./backend-users.ts";
+import { readNativeUsage } from "./native-usage.ts";
 
 const id = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value > 0;
@@ -216,5 +217,9 @@ export class ComputerHome {
 
   async observed(pool: string, keyId: number, since: string): Promise<string | null> {
     return new PoolHome(this.client, pool).firstSuccessfulUsage(keyId, since);
+  }
+  /** A device's own rows for named sessions; see readNativeUsage. */
+  async deviceUsage(pool: string, keyId: number, sessions: readonly string[]) {
+    return readNativeUsage(this.client, { pool, keyId }, sessions);
   }
 }

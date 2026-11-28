@@ -4,9 +4,10 @@ import { signInFailure, submitAccountCallback } from "./account-acquisition-call
 import { callbackOrigin } from "./account-acquisition-urls.ts";
 import { availableProviderCapabilities } from "./provider-accounts/capabilities.ts";
 import type { HomeClient } from "./control.ts";
-import { object, rows, text, unavailable } from "./json.ts";
+import { BackendFailure, fail, object, rows, text, unavailable } from "./json.ts";
 import { acquisitionAssertion } from "./account-acquisition-assertion.ts";
 import { homeReference, homeReferences } from "./home-references.ts";
+import { routeProxyUrl, signInRoute } from "./route-assignments.ts";
 
 const storageKey = "pool-account-acquisitions-v1";
 const ttl = 20 * 60_000;
@@ -30,6 +31,22 @@ interface Attempt {
     paste?: { label: string };
   };
   result?: { state: "connected"; ref: string } | { state: "failed"; message: string };
+  /** A routed sign-in: Home's exchange and the saved credential go through this route. */
+  route?: { routeId: string; owner: string };
+  session?: string;
+  /** The image the start proved carries the session proxy. */
+  image?: string;
+}
+/** The route side of a sign-in; absent where routing isn't wired. */
+export interface SignInRoutes {
+  beginSignIn(session: string, route: { routeId: string; owner: string }): Promise<void>;
+  settleSignIn(session: string, references: readonly string[]): Promise<void>;
+  /**
+   * The one image every runtime that can take a sign-in call runs, or null when they disagree.
+   * Any of them may receive the callback, so one Home's word for the session proxy speaks for all
+   * only while that image stays the one it was proven on.
+   */
+  servingImage(): Promise<string | null>;
 }
 interface Storage {
   get<T>(key: string): Promise<T | undefined>;
@@ -47,6 +64,7 @@ interface Attribution {
 export class HomeAccountAcquisitions {
   private storage: Storage;
   private home: HomeClient;
+  private routes?: SignInRoutes;
   private signingKey: string;
   private attribution: Attribution;
   private previousSigningKey: string | undefined;
@@ -59,6 +77,7 @@ export class HomeAccountAcquisitions {
     attribution: Attribution,
     previousSigningKey?: string,
     now = Date.now,
+    routes?: SignInRoutes,
   ) {
     this.storage = storage;
     this.home = home;
@@ -66,6 +85,7 @@ export class HomeAccountAcquisitions {
     this.attribution = attribution;
     this.previousSigningKey = previousSigningKey;
     this.now = now;
+    this.routes = routes;
   }
 
   async handle(request: Request): Promise<Response> {
@@ -109,6 +129,23 @@ export class HomeAccountAcquisitions {
           )
         )
           return unavailable();
+        // A sign-in the owner's rules route goes through that route, the code exchange included;
+        // one that should be routed but can't be is refused before anything reaches Home.
+        const route = signInRoute(value);
+        if (route === "refuse" || (route && !this.routes))
+          return Response.json({ error: "route_unavailable" }, { status: 409 });
+        // A Home without the session proxy (carry 0758) would ignore proxy_url and exchange the
+        // code directly, so a routed start needs Home's own word that it routes the session.
+        // The image proven here is pinned: the sign-in proceeds only while it stays the one image.
+        let image: string | null = null;
+        if (route) {
+          image = await this.routes!.servingImage();
+          const proven =
+            image !== null &&
+            (await this.routesSessions(request.signal)) &&
+            (await this.routes!.servingImage()) === image;
+          if (!proven) return Response.json({ error: "route_unsupported" }, { status: 409 });
+        }
         const prior = Object.values(attempts).find(
           (entry) => entry.owner === owner && entry.operation === value.operation,
         );
@@ -135,20 +172,63 @@ export class HomeAccountAcquisitions {
           marker: await acquisitionStep("attribution", () => this.attribution.begin()),
           before,
           ...(text(value.reconnect) ? { reconnect: String(value.reconnect) } : {}),
+          ...(route && image ? { route, session, image } : {}),
         };
         attempts[session] = attempt;
         // An uncertain start is retained and refused; repeating it could create another credential.
         await acquisitionStep("state", () => this.storage.put(storageKey, attempts));
         await this.arm();
-        const started = await acquisitionStep("oauth_start", async () => {
-          const started = await this.home.data(
-            `/oauth/auth-url?provider=${encodeURIComponent(provider)}`,
-            { signal: request.signal },
-          );
-          if (!text(started.state) || !text(started.url)) return unavailable();
-          return started;
+        // The owner check knows this route before the exchange can open its tunnel.
+        if (route) await acquisitionStep("state", () => this.routes!.beginSignIn(session, route));
+        const proxy = route ? `&proxy_url=${encodeURIComponent(routeProxyUrl(route.routeId))}` : "";
+        const path = `/oauth/auth-url?provider=${encodeURIComponent(provider)}${proxy}`;
+        const start = await acquisitionStep("oauth_start", async () => {
+          // The steps above yield; the image is checked again right before Home sees the start.
+          if (route && !(await this.onProvenImage(attempt, request.signal)))
+            return { kind: "refused", refused: "route_unsupported", status: 409 } as const;
+          const start = route
+            ? await this.routedStart(path, request.signal)
+            : {
+                kind: "started" as const,
+                started: await this.home.data(path, { signal: request.signal }),
+              };
+          if (start.kind === "started" && (!text(start.started.state) || !text(start.started.url)))
+            return unavailable();
+          return start;
         });
+        if (start.kind === "refused") {
+          // Home created no session: release the route and settle the attempt now. A failed
+          // settle is retried by the alarm; the refusal itself still stands.
+          attempt.result = { state: "failed", message: start.refused };
+          // Retained before settling, so the alarm can finish what a failed settle left.
+          await acquisitionStep("state", () => this.storage.put(storageKey, attempts));
+          try {
+            await this.finish(attempt, attempts, request.signal);
+          } catch {}
+          if (start.status === 500) console.error("POOL_ROUTE_SIGN_IN_INVALID_PROXY");
+          return Response.json(
+            { error: start.status === 500 ? "internal" : start.refused },
+            { status: start.status },
+          );
+        }
+        const started = start.started;
         attempt.state = String(started.state);
+        if (route && !(await this.onProvenImage(attempt, request.signal))) {
+          // The image changed while Home started the session: it may not route it. End the
+          // session where it can be ended; the sign-in fails closed either way.
+          attempt.result = { state: "failed", message: "route_unavailable" };
+          await acquisitionStep("state", () => this.storage.put(storageKey, attempts));
+          try {
+            await this.home.data(`/oauth/session?state=${encodeURIComponent(attempt.state)}`, {
+              method: "DELETE",
+              signal: request.signal,
+            });
+          } catch {}
+          try {
+            await this.finish(attempt, attempts, request.signal);
+          } catch {}
+          return Response.json({ error: "route_unavailable" }, { status: 409 });
+        }
         const expiresIn = started.expires_in;
         if (typeof expiresIn === "number" && Number.isFinite(expiresIn) && expiresIn > 0)
           attempt.expires = Math.min(attempt.expires, this.now() + expiresIn * 1_000);
@@ -221,6 +301,16 @@ export class HomeAccountAcquisitions {
       }
       if (value.action === "submit") {
         if (!attempt.started?.paste || typeof value.value !== "string") return unavailable();
+        // The callback runs the code exchange on whichever runtime takes it.
+        if (
+          attempt.route &&
+          !attempt.result &&
+          !(await this.onProvenImage(attempt, request.signal))
+        ) {
+          attempt.result = { state: "failed", message: "route_unavailable" };
+          await this.finish(attempt, attempts, request.signal);
+          return this.reply(attempt.result);
+        }
         const failed = await submitAccountCallback(this.home, {
           provider: attempt.provider,
           state,
@@ -274,6 +364,51 @@ export class HomeAccountAcquisitions {
     return acquisitionStep("oauth_status", () => this.advance(attempt, attempts, signal));
   }
 
+  /**
+   * A routed start, read once. Home 0758 refuses one it can't route before creating any session:
+   * an unreachable route, a provider whose sign-in can't use one, or a proxy URL it rejects (a
+   * pool bug). Any other failure is the ordinary uncertain start.
+   */
+  private async routedStart(path: string, signal: AbortSignal) {
+    const response = await this.home.response(path, { signal });
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      body = undefined;
+    }
+    if (response.ok)
+      return object(body) ? { kind: "started" as const, started: body } : unavailable();
+    const error = object(body) ? body.error : undefined;
+    if (response.status === 502 && error === "proxy_unavailable")
+      return { kind: "refused", refused: "route_unavailable", status: 409 } as const;
+    if (response.status === 400 && error === "proxy_unsupported")
+      return { kind: "refused", refused: "route_unsupported", status: 409 } as const;
+    if (response.status === 400 && error === "invalid_proxy_url")
+      return { kind: "refused", refused: "route_unavailable", status: 500 } as const;
+    // Anything else is classified exactly as an ordinary start's answer would be.
+    if (response.status === 404) fail(404, "not_found", "The backend resource no longer exists.");
+    throw new BackendFailure(response.status);
+  }
+
+  /**
+   * The image is the configured one, which a container still rolling can disagree with; Home's own
+   * word that it routes sessions covers the running one, so both are read each time.
+   */
+  private async onProvenImage(attempt: Attempt, signal?: AbortSignal) {
+    const image = await this.routes!.servingImage();
+    return image !== null && image === attempt.image && (await this.routesSessions(signal));
+  }
+
+  private async routesSessions(signal?: AbortSignal) {
+    const capabilities = await acquisitionStep("oauth_start", () =>
+      this.home.data("/capabilities", { signal }),
+    );
+    return (
+      object(capabilities.capabilities) && capabilities.capabilities.oauth_session_proxy_v1 === true
+    );
+  }
+
   private async advance(
     attempt: Attempt,
     attempts: Record<string, Attempt>,
@@ -288,13 +423,20 @@ export class HomeAccountAcquisitions {
         state: "failed",
         message: "Sign-in expired before its account could be confirmed. Start again.",
       };
+    } else if (attempt.route && !(await this.onProvenImage(attempt, signal))) {
+      // A device flow's poll can complete the exchange too; nothing more is sent.
+      attempt.result = { state: "failed", message: "route_unavailable" };
     } else if (state) {
       const status = await acquisitionStep("oauth_status", () =>
         this.home.data(`/oauth/status?state=${encodeURIComponent(state)}`, { signal }),
       );
       if (status.status === "wait") return;
       if (status.status === "error") {
-        attempt.result = { state: "failed", message: signInFailure(attempt.provider, status) };
+        // Home's routed session failed closed on its route: nothing was sent directly.
+        attempt.result =
+          attempt.route && status.error === "proxy_unavailable"
+            ? { state: "failed", message: "route_unavailable" }
+            : { state: "failed", message: signInFailure(attempt.provider, status) };
       } else if (status.status === "ok") {
         const ids = [
           ...new Set([
@@ -353,6 +495,14 @@ export class HomeAccountAcquisitions {
     // Retain the exact outcome before releasing the legacy attribution exclusion.
     await acquisitionStep("state", () => this.storage.put(storageKey, attempts));
     if (attempt.settled) return;
+    // Every routed attempt releases its route when it settles: refused, failed, expired or saved.
+    if (attempt.route && attempt.session)
+      await acquisitionStep("state", () =>
+        this.routes!.settleSignIn(
+          attempt.session!,
+          attempt.result?.state === "connected" ? homeReferences(attempt.result.ref) : [],
+        ),
+      );
     await acquisitionStep("attribution", () =>
       this.attribution.settle(attempt.marker, attempt.observed ?? []),
     );

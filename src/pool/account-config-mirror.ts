@@ -65,86 +65,168 @@ async function read(home: HomeClient, path: string, signal: AbortSignal): Promis
 }
 
 /** Home replaces a whole family. Serialize through the one client owned by the pool DO. */
+function serialized(home: HomeClient, work: () => Promise<void>): Promise<void> {
+  const previous = pending.get(home) ?? Promise.resolve();
+  const run = previous.catch(() => {}).then(work);
+  pending.set(home, run);
+  return run.finally(() => {
+    if (pending.get(home) === run) pending.delete(home);
+  });
+}
+
+/** Write a family whose only intended change is `reference`, then prove that from a fresh read. */
+async function replaceFamily(
+  home: HomeClient,
+  family: string,
+  reference: string,
+  next: (before: Json[]) => Json[],
+  signal: AbortSignal,
+): Promise<void> {
+  signal.throwIfAborted();
+  const path = `/config/api-keys/${family}`;
+  const before = await read(home, path, signal);
+  const retained = effective(before, family);
+  const groups = next(before);
+  const expected = effective(groups, family);
+  for (const [id, value] of retained) {
+    if (id !== reference && expected.get(id) !== value) return unavailable();
+  }
+  if (
+    retained.size !== expected.size ||
+    [...expected].some(([id, value]) => retained.get(id) !== value)
+  ) {
+    try {
+      const response = await home.response(path, {
+        method: "PUT",
+        signal,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(groups),
+      });
+      await response.body?.cancel();
+    } catch {
+      signal.throwIfAborted();
+      // A lost write reply is resolved by the authoritative read below.
+    }
+  }
+  const actual = effective(await read(home, path, signal), family);
+  if (
+    actual.size !== expected.size ||
+    [...expected].some(([id, value]) => actual.get(id) !== value)
+  )
+    return unavailable();
+}
+
+function without(groups: Json[], reference: string): Json[] {
+  return groups.flatMap((group) => {
+    const existing = keys(group);
+    if (!existing.some((key) => key.id === reference)) return [group];
+    const remaining = existing.filter((key) => key.id !== reference);
+    return remaining.length ? [{ ...group, keys: remaining }] : [];
+  });
+}
+
+/**
+ * `proxy` is the credential's route setting from RouteAssignments; undefined keeps the host's.
+ * It is written on the key so a re-mirror never drops a routed credential back to direct.
+ */
 export async function mirrorHomeConfig(
   home: HomeClient,
   reference: string,
   action: string,
   credential: Json,
   signal: AbortSignal,
+  proxy?: string,
 ): Promise<void> {
-  const previous = pending.get(home) ?? Promise.resolve();
-  const run = previous
-    .catch(() => {})
-    .then(async () => {
-      signal.throwIfAborted();
-      const family = credential.family;
-      if (typeof family !== "string" || !families.has(family)) return unavailable();
-      const path = `/config/api-keys/${family}`;
-      const compatible = family === "openai-compatibility";
-      const before = await read(home, path, signal);
-      const retained = effective(before, family);
-      const next = before.flatMap((group) => {
-        const existing = keys(group);
-        if (!existing.some((key) => key.id === reference)) return [group];
-        const remaining = existing.filter((key) => key.id !== reference);
-        return remaining.length ? [{ ...group, keys: remaining }] : [];
-      });
-      if (action === "upsert") {
-        if (typeof credential.token !== "string" || !credential.token || !object(credential.group))
-          return unavailable();
-        const group = credential.group;
-        // The node serves its built-in Claude model list for a claude key without models, so a
-        // custom address with none would answer real model names from someone else's gateway.
-        const unnamedGateway =
-          family === "claude" &&
-          typeof group["base-url"] === "string" &&
-          group["base-url"] !== "" &&
-          (!Array.isArray(group.models) || !group.models.length);
-        if (
-          "keys" in group ||
-          unnamedGateway ||
-          (compatible &&
-            (typeof group.name !== "string" ||
-              !group.name ||
-              typeof group["base-url"] !== "string" ||
-              !Array.isArray(group.models) ||
-              !group.models.length))
-        )
-          return unavailable();
-        next.push({ ...group, keys: [{ id: reference, "api-key": credential.token }] });
-      }
-      const expected = effective(next, family);
-      for (const [id, value] of retained) {
-        if (id !== reference && expected.get(id) !== value) return unavailable();
-      }
-      if (
-        retained.size !== expected.size ||
-        [...expected].some(([id, value]) => retained.get(id) !== value)
-      ) {
-        try {
-          const response = await home.response(path, {
-            method: "PUT",
-            signal,
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(next),
-          });
-          await response.body?.cancel();
-        } catch {
-          signal.throwIfAborted();
-          // A lost write reply is resolved by the authoritative read below.
-        }
-      }
-      const actual = effective(await read(home, path, signal), family);
-      if (
-        actual.size !== expected.size ||
-        [...expected].some(([id, value]) => actual.get(id) !== value)
-      )
-        return unavailable();
-    });
-  pending.set(home, run);
-  try {
-    await run;
-  } finally {
-    if (pending.get(home) === run) pending.delete(home);
+  const family = credential.family;
+  if (typeof family !== "string" || !families.has(family)) return unavailable();
+  const compatible = family === "openai-compatibility";
+  if (action === "upsert") {
+    if (typeof credential.token !== "string" || !credential.token || !object(credential.group))
+      return unavailable();
+    const group = credential.group;
+    // The node serves its built-in Claude model list for a claude key without models, so a
+    // custom address with none would answer real model names from someone else's gateway.
+    const unnamedGateway =
+      family === "claude" &&
+      typeof group["base-url"] === "string" &&
+      group["base-url"] !== "" &&
+      (!Array.isArray(group.models) || !group.models.length);
+    if (
+      "keys" in group ||
+      unnamedGateway ||
+      (compatible &&
+        (typeof group.name !== "string" ||
+          !group.name ||
+          typeof group["base-url"] !== "string" ||
+          !Array.isArray(group.models) ||
+          !group.models.length))
+    )
+      return unavailable();
   }
+  await serialized(home, () =>
+    replaceFamily(
+      home,
+      family,
+      reference,
+      (before) => {
+        const next = without(before, reference);
+        if (action === "upsert") {
+          const key: Json = { id: reference, "api-key": credential.token as string };
+          if (proxy !== undefined) key["proxy-url"] = proxy;
+          next.push({ ...(credential.group as Json), keys: [key] });
+        }
+        return next;
+      },
+      signal,
+    ),
+  );
+}
+
+/** Every mirrored API key's current route setting, by reference. */
+export async function readHomeConfigProxies(
+  home: HomeClient,
+  signal: AbortSignal,
+): Promise<Map<string, { family: string; proxy: string }>> {
+  const result = new Map<string, { family: string; proxy: string }>();
+  for (const family of families) {
+    const groups = await read(home, `/config/api-keys/${family}`, signal);
+    for (const [id, value] of effective(groups, family)) {
+      const proxy: unknown = (JSON.parse(value) as Json)["proxy-url"];
+      result.set(id, { family, proxy: typeof proxy === "string" ? proxy : "" });
+    }
+  }
+  return result;
+}
+
+/** Change one key's route setting and nothing else, proven by the same family read-back. */
+export function setHomeConfigProxy(
+  home: HomeClient,
+  family: string,
+  reference: string,
+  proxy: string,
+  signal: AbortSignal,
+): Promise<void> {
+  if (!families.has(family)) return unavailable();
+  return serialized(home, () =>
+    replaceFamily(
+      home,
+      family,
+      reference,
+      (before) => {
+        if (!before.some((group) => keys(group).some((key) => key.id === reference)))
+          return unavailable();
+        return before.map((group) =>
+          keys(group).some((key) => key.id === reference)
+            ? {
+                ...group,
+                keys: keys(group).map((key) =>
+                  key.id === reference ? { ...key, "proxy-url": proxy } : key,
+                ),
+              }
+            : group,
+        );
+      },
+      signal,
+    ),
+  );
 }

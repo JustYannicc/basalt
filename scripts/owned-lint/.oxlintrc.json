@@ -140,7 +140,6 @@
           "src/pool/operations-rpc.workerd.test.ts": 1,
           "src/pool/resume-admission.workerd.test.ts": 6,
           "src/pool/runtime-alarm.workerd.test.ts": 1,
-          "src/pool/runtime-automatic-recovery.worker.test.ts": 10,
           "src/pool/runtime-crash-cell.worker.test.ts": 10,
           "src/pool/runtime-crash-remote.worker.test.ts": 1,
           "src/pool/runtime-crash-safety.worker.test.ts": 8,

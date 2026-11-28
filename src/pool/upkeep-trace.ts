@@ -16,6 +16,7 @@ type Phase =
   | "primary_retirement"
   | "app_models"
   | "memberships"
+  | "routes"
   | "home_database_pool"
   | "computers"
   | "warm"

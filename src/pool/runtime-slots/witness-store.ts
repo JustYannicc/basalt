@@ -31,7 +31,10 @@ export type WitnessRecord = typeof WitnessRecord.Type;
 /** A fleet start its controller abandoned: no admission or start reaches its slot again. */
 const abandonedStartKey = (slot: string) => `runtime-slots-v1:start-abandoned:${slot}`;
 const alarmTargetKey = "runtime-alarm-v1:target";
-/** When a retirement sent its SIGTERM, so a stop under way can be told from one never sent. */
+/**
+ * When a retirement, or the stop of an abandoned first start, sent its SIGTERM, so a stop under way
+ * can be told from one never sent.
+ */
 const stopSentKey = (slot: string) => `runtime-slots-v1:stop-sent:${slot}`;
 
 /** Private configuration and launch provenance share the allocated per-slot witness record. */

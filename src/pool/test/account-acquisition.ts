@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { HomeAccountAcquisitions } from "../account-acquisition.ts";
+import { HomeAccountAcquisitions, type SignInRoutes } from "../account-acquisition.ts";
 import {
   accountAcquisitionPath,
   accountAcquisitionPrefix,
@@ -15,6 +15,7 @@ export function fixture(
   existing: readonly string[] = [],
   provider = "gemini-cli",
   startFields: Record<string, unknown> = {},
+  routes?: SignInRoutes,
 ) {
   const retained = new Map<string, unknown>();
   let alarm: number | null = null;
@@ -43,14 +44,19 @@ export function fixture(
   const members = new Set<string>();
   let status: Record<string, unknown> = { status: "wait" };
   let failStart = false;
+  let startReply: (() => Response) | undefined;
+  let sessionProxy = true;
   let statusError: Error | undefined;
   let callbackStatus: number | undefined;
   const home = new HomeClient(async (path, init) => {
     const method = init?.method ?? "GET";
     calls.push({ path, method, body: init?.body ? JSON.parse(String(init.body)) : undefined });
     const url = new URL(path, "https://fixture.invalid");
+    if (url.pathname.endsWith("/capabilities"))
+      return Response.json({ capabilities: { oauth_session_proxy_v1: sessionProxy } });
     if (url.pathname.endsWith("/oauth/auth-url")) {
       if (failStart) throw new Error("Lost response after send");
+      if (startReply) return startReply();
       return Response.json({
         state: "home-state",
         url:
@@ -114,7 +120,16 @@ export function fixture(
       for (const ref of ids) excluded.add(ref);
     },
   };
-  const make = () => new HomeAccountAcquisitions(storage, home, key, attribution);
+  const make = () =>
+    new HomeAccountAcquisitions(
+      storage,
+      home,
+      key,
+      attribution,
+      undefined,
+      () => Date.now(),
+      routes,
+    );
   let controller = make();
   return {
     calls,
@@ -131,6 +146,18 @@ export function fixture(
     },
     restart() {
       controller = make();
+    },
+    tick() {
+      return controller.tick();
+    },
+    withoutSessionProxy() {
+      sessionProxy = false;
+    },
+    startAnswers(reply: () => Response) {
+      startReply = reply;
+    },
+    statusIs(value: Record<string, unknown>) {
+      status = value;
     },
     complete(ids: readonly string[]) {
       for (const id of ids) credentials.add(id);
