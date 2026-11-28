@@ -15,7 +15,11 @@ import {
   nativeUsagePath,
   type NativeUsageRecord,
 } from "../../../src/pool/native-usage-contract.ts";
-import { runtimeHandoffCommandPrefix } from "../../../src/pool/runtime-slots/handoff-command.ts";
+import {
+  runtimeHandoffCommandPrefix,
+  runtimeHandoffPath,
+} from "../../../src/pool/runtime-slots/handoff-command.ts";
+import { throughController } from "../../../src/pool/operations-call.ts";
 import { SlotMemory } from "../../pool-tests/runtime-slot-storage.ts";
 import { StorageBookmarks } from "../../../src/pool/storage-bookmark.ts";
 import { PoolAcceptanceClient } from "../../pool-acceptance/client.ts";
@@ -104,7 +108,11 @@ export interface HarnessOptions {
    * an HTTP 503, `none` an empty list. By default it was days before any run.
    */
   deployedAt?: number | "unanswered" | "none";
-  /** A handoff command the bridge fails: a thrown error, or an answer the Worker never made. */
+  /**
+   * A handoff command the bridge fails: a thrown error, or an answer returned as it is. A bare
+   * answer carries no pool mark, so it is one the Worker never made; one built through
+   * `throughController` is the pool's own.
+   */
   handoffFailure?: (action: string) => Error | Response | undefined;
   /** As production's upkeep does, a disabled fleet's rows drain and retire (at once, here). */
   drainOnDisable?: boolean;
@@ -433,34 +441,45 @@ export async function harness(options: HarnessOptions = {}) {
     lastRecovery: async () => options.lastRecovery ?? null,
     resetRecovery: async () => ({ restarts: [] }),
   } as unknown as Parameters<typeof handleRuntimeHandoff>[1];
-  const connect: PoolOperationsTarget["connect"] = async () => ({
-    env: {
-      POOL_OPERATIONS: {
-        fetch: async (request: Request) => {
-          const { envelope } = JSON.parse(await request.clone().text()) as { envelope: string };
-          const opened = await openEnvelope(signingKey, runtimeHandoffCommandPrefix, envelope);
-          const action = (opened as { action: string }).action;
-          actions.push(action);
-          const failure = options.handoffFailure?.(action);
-          if (failure instanceof Error) throw failure;
-          if (failure) return failure;
-          return handleRuntimeHandoff(
-            request,
-            slots,
-            code,
-            signingKey,
-            fleet,
-            undefined,
-            bookmarks,
-            undefined,
-            options.usageRollup === undefined ? undefined : async () => options.usageRollup,
-            options.captureHours === undefined ? undefined : async () => options.captureHours,
-          );
+  // Each connect is one session, as each production send opens its own bridge.
+  const opened = { sessions: 0 };
+  const connect: PoolOperationsTarget["connect"] = async () => {
+    opened.sessions++;
+    return {
+      env: {
+        POOL_OPERATIONS: {
+          fetch: async (request: Request) => {
+            const { envelope } = JSON.parse(await request.clone().text()) as { envelope: string };
+            const opened = await openEnvelope(signingKey, runtimeHandoffCommandPrefix, envelope);
+            const action = (opened as { action: string }).action;
+            actions.push(action);
+            const failure = options.handoffFailure?.(action);
+            if (failure instanceof Error) throw failure;
+            if (failure) return failure;
+            // Marked as the pool's PoolOperations entrypoint marks them (src/pool/worker.ts).
+            return throughController(
+              runtimeHandoffPath,
+              () =>
+                handleRuntimeHandoff(
+                  request,
+                  slots,
+                  code,
+                  signingKey,
+                  fleet,
+                  undefined,
+                  bookmarks,
+                  undefined,
+                  options.usageRollup === undefined ? undefined : async () => options.usageRollup,
+                  options.captureHours === undefined ? undefined : async () => options.captureHours,
+                ),
+              () => {},
+            );
+          },
         },
       },
-    },
-    dispose: async () => {},
-  });
+      dispose: async () => {},
+    };
+  };
 
   let turns = 0;
   /** How each model call was authorized: the lane's credential, never a bearer. */
@@ -591,6 +610,7 @@ export async function harness(options: HarnessOptions = {}) {
     usageReads,
     poolReads,
     actions,
+    opened,
     crashes,
     retires,
     checks,

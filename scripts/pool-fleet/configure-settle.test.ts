@@ -6,6 +6,8 @@ import { fakeClock } from "./test/fake-clock.ts";
 import { harness } from "./test/harness.ts";
 import { SlotRefused } from "../../src/pool/runtime-slots/contract.ts";
 import { runtimeErrorResponse } from "../../src/pool/runtime-slots/request-error.ts";
+import { throughController } from "../../src/pool/operations-call.ts";
+import { runtimeHandoffPath } from "../../src/pool/runtime-slots/handoff-command.ts";
 
 const go = "coordinator-2026-11-24-fleet-settle";
 const dispatch = (mode: string): DispatchInput => ({
@@ -198,11 +200,12 @@ test("old code past the handover refuses as controller-code-mismatch, sends noth
 
 test("any other Worker refusal stands at once, with its reason and step", async () => {
   const { clock, deps } = fakeClock();
+  // The Worker's own refusal, as its operations entrypoint answers it: marked, so sent only once.
+  const refusal = await throughController(runtimeHandoffPath, async () =>
+    runtimeErrorResponse(new SlotRefused("selection"), "handoff"),
+  );
   const lane = await harness({
-    handoffFailure: (action) =>
-      action === "fleet-inspect"
-        ? runtimeErrorResponse(new SlotRefused("selection"), "handoff")
-        : undefined,
+    handoffFailure: (action) => (action === "fleet-inspect" ? refusal.clone() : undefined),
   });
   try {
     const result = await runPoolFleet(dispatch("configure-and-accept"), {
@@ -212,6 +215,8 @@ test("any other Worker refusal stands at once, with its reason and step", async 
     assert.equal(result.ok, false);
     assert.match(cause(result), /handoff\.response\.reason=slot_selection .*\) at step inspect$/u);
     assert.deepEqual(clock.sleeps, []);
+    // A marked refusal is the Worker's own answer: never sent on a second session.
+    assert.equal(lane.actions.filter((action) => action === "fleet-inspect").length, 1);
   } finally {
     await lane.close();
   }
