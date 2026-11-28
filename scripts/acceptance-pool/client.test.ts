@@ -251,23 +251,15 @@ test("no file, summary or log line the driver writes holds the key or the origin
 test("the driver refuses any ref but main and any target but production or a rehearsal stage, before sending", () => {
   const offMain = run({ GITHUB_REF: "refs/heads/feature" }, {});
   assert.equal(offMain.result.status, 1);
-  for (const stage of ["https://evil.example.test", "test-pr-1", "staging", ""]) {
+  for (const stage of ["https://evil.example.test", "test-rehearsal-1", "test-pr-1", ""]) {
     const refused = run({ ACCEPTANCE_TARGET: stage }, {});
     assert.equal(refused.result.status, 1, stage);
     assert.match(refused.result.stderr, /target_invalid/u);
   }
 });
 
-test("a rehearsal stage's host comes from the stage rule", async () => {
-  process.env.REHEARSAL_POOL_APP_SIGNING_KEY = "cd".repeat(32);
-  try {
-    const { targetOf } = await import("./target.ts");
-    assert.deepEqual(targetOf("test-rehearsal-3"), {
-      origin: `https://app.rehearsal-3.${brand.zone}`,
-      signingKey: "cd".repeat(32),
-    });
-    assert.equal(targetOf("production").origin, `https://${brand.host}`);
-  } finally {
-    delete process.env.REHEARSAL_POOL_APP_SIGNING_KEY;
-  }
+test("the production target's host comes from the brand", async () => {
+  const { targetOf } = await import("./target.ts");
+  assert.equal(targetOf("production").origin, `https://${brand.host}`);
+  assert.throws(() => targetOf("test-rehearsal-3"), AcceptanceRefusal);
 });

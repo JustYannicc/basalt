@@ -16,7 +16,7 @@ on:
         type: choice
         options: [dry-run, apply, verify]
       target:
-        description: production, or a test-rehearsal-<n> stage
+        description: The target by name; production is the only one so far
         required: true
         default: production
         type: string
@@ -83,7 +83,6 @@ jobs:
         run: node scripts/acceptance-pool/run.ts
         env:
           POOL_APP_SIGNING_KEY: ${{ secrets.POOL_APP_SIGNING_KEY }}
-          REHEARSAL_POOL_APP_SIGNING_KEY: ${{ secrets.REHEARSAL_POOL_APP_SIGNING_KEY }}
           EMULATED_UPSTREAM_ORIGIN: ${{ inputs.kind == 'setup' && secrets.EMULATED_UPSTREAM_ORIGIN || '' }}
           GITHUB_TOKEN: ${{ github.token }}
           ACCEPTANCE_KIND: ${{ inputs.kind }}
@@ -102,7 +101,6 @@ jobs:
         run: node scripts/acceptance-pool/run.ts
         env:
           POOL_APP_SIGNING_KEY: ${{ secrets.POOL_APP_SIGNING_KEY }}
-          REHEARSAL_POOL_APP_SIGNING_KEY: ${{ secrets.REHEARSAL_POOL_APP_SIGNING_KEY }}
           EMULATED_UPSTREAM_ORIGIN: ${{ inputs.kind == 'setup' && secrets.EMULATED_UPSTREAM_ORIGIN || '' }}
           GITHUB_TOKEN: ${{ github.token }}
           ACCEPTANCE_KIND: ${{ inputs.kind }}
