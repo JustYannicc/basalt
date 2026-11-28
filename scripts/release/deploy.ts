@@ -469,7 +469,7 @@ const include: string[] = values.include?.length ? values.include : [...(policy?
 if (stage === "production" && !policy && ["plan", "apply"].includes(command))
   throw new Error("Production plans and applies only under a policy");
 
-const { Effect, Logger } = await import("effect");
+const { Data, Effect, Logger } = await import("effect");
 const { Redacted } = await import("effect");
 const WireGuard = await import("./wire-guard.ts");
 const { checkPlan, decodePlanPolicy, planDigest } = await import("./plan-check.ts");
@@ -490,6 +490,7 @@ const { liveMainModuleSha256 } = await import("./live-module.ts");
 const { servingBindingShapes } = await import("./fixed-bindings.ts");
 const { rootPinMismatch, setRootPin } = await import("./root-pin.ts");
 const { rollbackTo, servingVersion } = await import("./worker-version.ts");
+const { routeGatewayClassFor, routeGatewayRecorded } = await import("./route-gateway-class.ts");
 const liveModules: { fqn: string; digest: string }[] = [];
 const database = await import("./database-safety.ts");
 
@@ -690,22 +691,41 @@ const scriptName = (fqn: string) =>
     return script as string;
   });
 
-/** The container application a State row records, if the row exists yet. */
-const recordedApplication = (fqn: string) =>
+/** A State row the entry needed could not be read; the release stops, naming only the FQN. */
+class StateReadFailed extends Data.TaggedError("StateReadFailed")<{
+  readonly fqn: string;
+  readonly cause: unknown;
+}> {}
+
+interface RecordedRow {
+  attr?: {
+    applicationId?: unknown;
+    applicationName?: unknown;
+    durableObjectNamespaces?: Record<string, unknown>;
+  };
+  old?: RecordedRow;
+}
+/** One resource's State row in this stage, if it exists yet. */
+const recordedRow = (fqn: string) =>
   Effect.gen(function* () {
     const state = yield* Alchemist.State.store({
       backend: "configured",
       ...target,
     } as never) as unknown as Fx.Effect<StateService, unknown, never>;
-    const row = (yield* state.get({ stack: yield* stackName(), stage, fqn })) as
-      | { attr?: { applicationId?: unknown; applicationName?: unknown } }
-      | undefined;
-    const id = row?.attr?.applicationId;
-    const name = row?.attr?.applicationName;
-    return typeof id === "string" && id
-      ? { id, name: typeof name === "string" && name ? name : undefined }
-      : undefined;
-  });
+    return (yield* state.get({ stack: yield* stackName(), stage, fqn })) as RecordedRow | undefined;
+  }).pipe(Effect.mapError((cause) => new StateReadFailed({ fqn, cause })));
+
+/** The container application a State row records, if the row exists yet. */
+const recordedApplication = (fqn: string) =>
+  recordedRow(fqn).pipe(
+    Effect.map((row) => {
+      const id = row?.attr?.applicationId;
+      const name = row?.attr?.applicationName;
+      return typeof id === "string" && id
+        ? { id, name: typeof name === "string" && name ? name : undefined }
+        : undefined;
+    }),
+  );
 
 const planOf = (operation: "deploy" | "destroy") =>
   Alchemist.Stack.plan({
@@ -733,6 +753,26 @@ try {
   // The root pin's full reference carries the account, so it exists only in this process.
   setRootPin(process.env);
   if (command === "plan" || command === "apply" || command === "deploy") {
+    // First session: whether this stage already hosts the route gateway's class, read before the
+    // stack reads its switch. Alchemy's session copies the environment when it opens, so the value
+    // is set between two runs, as scripts/production.ts sets the fleet's. A policy's own value wins
+    // (route-gateway-class.ts), and the entry sets it whatever the job's environment held.
+    const poolWorker = policy?.check?.poolWorker ?? "PoolWorker";
+    const recorded = await run(
+      recordedRow(poolWorker).pipe(
+        Effect.map((pool) =>
+          routeGatewayRecorded(
+            [pool, pool?.old].flatMap((row) =>
+              Object.keys(row?.attr?.durableObjectNamespaces ?? {}),
+            ),
+          ),
+        ),
+      ),
+    );
+    process.env.ROUTE_GATEWAY_CLASS = routeGatewayClassFor(
+      policy?.env.ROUTE_GATEWAY_CLASS,
+      recorded,
+    );
     const result = await run(
       Effect.gen(function* () {
         // The store's contract version is pinned: a different one means a deliberate upgrade first.
