@@ -9,6 +9,7 @@ import type { AddressInfo } from "node:net";
 import { test, type TestContext } from "node:test";
 import { brand } from "../../brand.ts";
 import { openEnvelope } from "../../src/pool/token.ts";
+import { receiptIdSha256 } from "./artifact.ts";
 import { createHash } from "node:crypto";
 import {
   acceptanceOperation,
@@ -233,15 +234,19 @@ const run = (env: Record<string, string>, response: unknown, status = 200) => {
       },
     },
   );
-  const files = (() => {
+  const byName: Record<string, string> = (() => {
     try {
-      return readdirSync(join(directory, "out")).map((name) =>
-        readFileSync(join(directory, "out", name), "utf8"),
+      return Object.fromEntries(
+        readdirSync(join(directory, "out")).map((name) => [
+          name,
+          readFileSync(join(directory, "out", name), "utf8"),
+        ]),
       );
     } catch {
-      return [];
+      return {};
     }
   })();
+  const files = Object.values(byName);
   let summary = "";
   try {
     summary = readFileSync(join(directory, "step-summary"), "utf8");
@@ -254,6 +259,7 @@ const run = (env: Record<string, string>, response: unknown, status = 200) => {
   return {
     result,
     files,
+    byName,
     summary,
     fetched,
     everything: [...files, summary, result.stdout, result.stderr].join("\n"),
@@ -306,31 +312,131 @@ test("the production target's host comes from the brand", async () => {
   assert.throws(() => targetOf("test-rehearsal-3"), AcceptanceRefusal);
 });
 
-test("the public summary says what a receipt records without naming its pool or accounts", () => {
-  const read = run(
-    { ACCEPTANCE_ACTION: "verify", ACCEPTANCE_PLAN_SHA256: planSha256 },
-    {
-      action: "verify",
-      kind: "setup",
-      planSha256,
-      completed: true,
-      receipt: {
-        migration: "acceptance-pool-setup-v1",
-        organization: "acceptance",
-        status: "applied",
-        app: "app_synthetic_pool",
-        accounts: ["acc_synthetic_a", "acc_synthetic_b"],
+test("no file or line a run keeps names the pool app, its accounts, the host or an address, for any action", () => {
+  const app = "app_synthetic_pool";
+  const accounts = ["acc_synthetic_a", "acc_synthetic_b"];
+  const host = "upstream.example.test";
+  const email = "acceptance@basalt.invalid";
+  // Ids in places the driver does not name, too: a run keeps the fields it names, in their shapes.
+  const stray = { pool: app, upstream: host, owner: email };
+  const receipt = {
+    migration: "acceptance-pool-setup-v1",
+    organization: "acceptance",
+    status: "applied",
+    app,
+    accounts,
+    ...stray,
+  };
+  const verification = { ok: true, checks: { onePool: true, [app]: true }, ...stray };
+  const answer = (action: string, kind: string) => ({
+    action,
+    kind,
+    planSha256,
+    completed: true,
+    receipt,
+    verification,
+    ...stray,
+  });
+  const sealed = {
+    version: 1,
+    sha256: planSha256,
+    sealed: "c2VhbGVk",
+    recipient: "a2V5",
+    ...stray,
+  };
+  const sourceRun = {
+    path: ".github/workflows/acceptance-pool.yml",
+    head_branch: "main",
+    event: "workflow_dispatch",
+    conclusion: "success",
+  };
+  /** A dry run, then the apply that runs from the dry run's kept file, as the workflow downloads it. */
+  const planAndApply = (kind: string, request: string) => {
+    const planned = run(
+      { ACCEPTANCE_KIND: kind, ACCEPTANCE_REQUEST: request },
+      {
+        action: "dry-run",
+        kind,
+        planSha256,
+        artifact: sealed,
+        steps: 7,
+        writes: 9,
+        ...(kind === "setup" ? { upstreamConfigured: "yes" } : {}),
+        ...stray,
       },
-      verification: { ok: true, checks: { onePool: true } },
+    );
+    assert.equal(planned.result.status, 0, planned.result.stderr);
+    assert.deepEqual(JSON.parse(planned.byName["operation.json"]!).artifact, {
+      version: 1,
+      sha256: planSha256,
+      sealed: "c2VhbGVk",
+      recipient: "a2V5",
+    });
+    const previous = mkdtempSync(join(tmpdir(), "acceptance-pool-previous-"));
+    writeFileSync(join(previous, "operation.json"), planned.byName["operation.json"]!);
+    const applied = run(
+      {
+        ACCEPTANCE_KIND: kind,
+        ACCEPTANCE_REQUEST: request,
+        ACCEPTANCE_ACTION: "apply",
+        ACCEPTANCE_SOURCE_RUN: "42",
+        ACCEPTANCE_PLAN_SHA256: planSha256,
+        ACCEPTANCE_GO: `GO ${planSha256}`,
+        ACCEPTANCE_PREVIOUS_DIRECTORY: previous,
+        GITHUB_TOKEN: "fixture-token",
+        GITHUB_REPOSITORY: "owner/repository",
+      },
+      // The same answer stands in for the source run's record the driver reads first.
+      { ...answer("apply", kind), ...sourceRun },
+    );
+    rmSync(previous, { recursive: true, force: true });
+    assert.equal(applied.result.status, 0, applied.result.stderr);
+    return [planned, applied];
+  };
+  const [planned, applied] = planAndApply(
+    "setup",
+    JSON.stringify({ pool: "acceptance-run-1", accounts: [] }),
+  );
+  const [unplanned, removed] = planAndApply("teardown", JSON.stringify({ setup: planSha256 }));
+  const verified = run(
+    { ACCEPTANCE_ACTION: "verify", ACCEPTANCE_PLAN_SHA256: planSha256 },
+    answer("verify", "setup"),
+  );
+  const gone = run(
+    {
+      ACCEPTANCE_KIND: "teardown",
+      ACCEPTANCE_ACTION: "verify",
+      ACCEPTANCE_PLAN_SHA256: planSha256,
     },
+    answer("verify", "teardown"),
   );
-  assert.equal(read.result.status, 0, read.result.stderr);
-  assert.match(read.summary, /"status": "applied"/u);
-  assert.match(read.summary, /"accounts": 2/u);
-  assert.ok(!read.summary.includes("app_synthetic_pool"));
-  assert.ok(!read.summary.includes("acc_synthetic_a"));
-  assert.ok(
-    read.files.some((file) => file.includes("app_synthetic_pool")),
-    "operation.json keeps the ids",
+  const refused = run(
+    { ACCEPTANCE_ACTION: "verify", ACCEPTANCE_PLAN_SHA256: planSha256 },
+    { error: "acceptance_pool_refused", reason: "setup_missing", retryable: false, ...stray },
+    409,
   );
+  assert.equal(refused.result.status, 1);
+  assert.ok("failure.json" in refused.byName);
+  for (const outcome of [planned!, applied!, unplanned!, removed!, verified, gone, refused]) {
+    assert.ok(outcome.files.length > 0);
+    // Every kept file, the step summary, and what the run printed.
+    for (const forbidden of ["app_", ...accounts, host, email, "@"])
+      assert.ok(!outcome.everything.includes(forbidden), `${forbidden} in ${outcome.everything}`);
+  }
+  for (const outcome of [applied!, removed!, verified, gone]) {
+    const kept = JSON.parse(outcome.byName["operation.json"]!);
+    assert.deepEqual(kept.receipt, {
+      migration: "acceptance-pool-setup-v1",
+      organization: "acceptance",
+      status: "applied",
+      appSha256: receiptIdSha256("app", app),
+      accountsSha256: accounts.map((id) => receiptIdSha256("account", id)),
+    });
+    assert.deepEqual(kept.verification, { ok: true, checks: { onePool: true } });
+    assert.match(outcome.summary, /"status": "applied"/u);
+    assert.match(outcome.summary, /"accounts": 2/u);
+  }
+  // The digest is domain-separated: no other kind of id or plain sha256 of the id matches it.
+  assert.notEqual(receiptIdSha256("app", app), receiptIdSha256("account", app));
+  assert.notEqual(receiptIdSha256("app", app), createHash("sha256").update(app).digest("hex"));
 });

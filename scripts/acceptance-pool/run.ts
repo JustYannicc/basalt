@@ -1,6 +1,7 @@
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { acceptanceOperation, AcceptanceRefusal, type AcceptanceFailure } from "./client.ts";
+import { keptResult } from "./artifact.ts";
 import { targetOf } from "./target.ts";
 
 const output = resolve(process.env.ACCEPTANCE_OUTPUT_DIRECTORY ?? ".generated/acceptance-pool");
@@ -21,7 +22,7 @@ function receiptSummary(receipt: unknown) {
   return {
     migration: value.migration,
     status: value.status,
-    accounts: Array.isArray(value.accounts) ? value.accounts.length : undefined,
+    accounts: Array.isArray(value.accountsSha256) ? value.accountsSha256.length : undefined,
   };
 }
 
@@ -91,28 +92,30 @@ try {
       : {}),
     ...(previous === undefined ? {} : { previous }),
   });
-  // The server never echoes the key or the origin; the plan is encrypted to the recipient.
-  write("operation.json", result);
+  // The server never echoes the key or the origin; the plan is encrypted to the recipient, and the
+  // receipt's ids leave only as digests. The summary is made from what is kept, never the answer.
+  const kept = keptResult(result);
+  write("operation.json", kept);
   const summary = {
-    action: result.action,
-    kind: result.kind,
-    planSha256: result.planSha256,
-    steps: result.steps,
-    writes: result.writes,
-    upstreamConfigured: result.upstreamConfigured,
-    repeated: result.repeated,
-    resumed: result.resumed,
-    completed: result.completed,
-    // Ids stay in operation.json; the public summary says only what was applied and how much.
-    receipt: receiptSummary(result.receipt),
-    verification: result.verification,
+    action: kept.action,
+    kind: kept.kind,
+    planSha256: kept.planSha256,
+    steps: kept.steps,
+    writes: kept.writes,
+    upstreamConfigured: kept.upstreamConfigured,
+    repeated: kept.repeated,
+    resumed: kept.resumed,
+    completed: kept.completed,
+    // The summary says only what was applied and how much.
+    receipt: receiptSummary(kept.receipt),
+    verification: kept.verification,
   };
   write("summary.json", summary);
   summarize(
-    `\nAcceptance pool ${String(result.kind)} ${String(result.action)} completed.\n\n` +
-      (result.upstreamConfigured === undefined
+    `\nAcceptance pool ${String(kept.kind)} ${String(kept.action)} completed.\n\n` +
+      (kept.upstreamConfigured === undefined
         ? ""
-        : `upstream host configured: ${String(result.upstreamConfigured)}\n\n`) +
+        : `upstream host configured: ${String(kept.upstreamConfigured)}\n\n`) +
       `\`\`\`json\n${JSON.stringify(summary, null, 2)}\n\`\`\`\n`,
   );
   process.stdout.write("Acceptance pool operation completed; summary saved.\n");

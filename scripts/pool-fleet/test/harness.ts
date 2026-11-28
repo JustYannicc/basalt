@@ -15,7 +15,11 @@ import {
   nativeUsagePath,
   type NativeUsageRecord,
 } from "../../../src/pool/native-usage-contract.ts";
-import { runtimeHandoffCommandPrefix } from "../../../src/pool/runtime-slots/handoff-command.ts";
+import {
+  runtimeHandoffCommandPrefix,
+  runtimeHandoffPath,
+} from "../../../src/pool/runtime-slots/handoff-command.ts";
+import { throughController } from "../../../src/pool/operations-call.ts";
 import { SlotMemory } from "../../pool-tests/runtime-slot-storage.ts";
 import { StorageBookmarks } from "../../../src/pool/storage-bookmark.ts";
 import { PoolAcceptanceClient } from "../../pool-acceptance/client.ts";
@@ -91,6 +95,10 @@ export interface HarnessOptions {
   deviceOnly?: boolean;
   /** The account the pool's owner usage records name; a foreign one must fail the usage check. */
   usageAccount?: string;
+  /** How many success rows the pool owner's usage read returns for one session; one by default. */
+  ownerRows?: number;
+  /** Owner usage reads, by their order, that the route answers with HTTP 500 instead of rows. */
+  ownerFailure?: (read: number) => boolean;
   /** What the controller's inspect reports for the pool's own usage rollup backfill. */
   usageRollup?: unknown;
   /** What the controller's inspect reports for the pool's own capture-hour counts. */
@@ -104,7 +112,11 @@ export interface HarnessOptions {
    * an HTTP 503, `none` an empty list. By default it was days before any run.
    */
   deployedAt?: number | "unanswered" | "none";
-  /** A handoff command the bridge fails: a thrown error, or an answer the Worker never made. */
+  /**
+   * A handoff command the bridge fails: a thrown error, or an answer returned as it is. A bare
+   * answer carries no pool mark, so it is one the Worker never made; one built through
+   * `throughController` is the pool's own.
+   */
   handoffFailure?: (action: string) => Error | Response | undefined;
   /** As production's upkeep does, a disabled fleet's rows drain and retire (at once, here). */
   drainOnDisable?: boolean;
@@ -433,34 +445,45 @@ export async function harness(options: HarnessOptions = {}) {
     lastRecovery: async () => options.lastRecovery ?? null,
     resetRecovery: async () => ({ restarts: [] }),
   } as unknown as Parameters<typeof handleRuntimeHandoff>[1];
-  const connect: PoolOperationsTarget["connect"] = async () => ({
-    env: {
-      POOL_OPERATIONS: {
-        fetch: async (request: Request) => {
-          const { envelope } = JSON.parse(await request.clone().text()) as { envelope: string };
-          const opened = await openEnvelope(signingKey, runtimeHandoffCommandPrefix, envelope);
-          const action = (opened as { action: string }).action;
-          actions.push(action);
-          const failure = options.handoffFailure?.(action);
-          if (failure instanceof Error) throw failure;
-          if (failure) return failure;
-          return handleRuntimeHandoff(
-            request,
-            slots,
-            code,
-            signingKey,
-            fleet,
-            undefined,
-            bookmarks,
-            undefined,
-            options.usageRollup === undefined ? undefined : async () => options.usageRollup,
-            options.captureHours === undefined ? undefined : async () => options.captureHours,
-          );
+  // Each connect is one session, as each production send opens its own bridge.
+  const opened = { sessions: 0 };
+  const connect: PoolOperationsTarget["connect"] = async () => {
+    opened.sessions++;
+    return {
+      env: {
+        POOL_OPERATIONS: {
+          fetch: async (request: Request) => {
+            const { envelope } = JSON.parse(await request.clone().text()) as { envelope: string };
+            const opened = await openEnvelope(signingKey, runtimeHandoffCommandPrefix, envelope);
+            const action = (opened as { action: string }).action;
+            actions.push(action);
+            const failure = options.handoffFailure?.(action);
+            if (failure instanceof Error) throw failure;
+            if (failure) return failure;
+            // Marked as the pool's PoolOperations entrypoint marks them (src/pool/worker.ts).
+            return throughController(
+              runtimeHandoffPath,
+              () =>
+                handleRuntimeHandoff(
+                  request,
+                  slots,
+                  code,
+                  signingKey,
+                  fleet,
+                  undefined,
+                  bookmarks,
+                  undefined,
+                  options.usageRollup === undefined ? undefined : async () => options.usageRollup,
+                  options.captureHours === undefined ? undefined : async () => options.captureHours,
+                ),
+              () => {},
+            );
+          },
         },
       },
-    },
-    dispose: async () => {},
-  });
+      dispose: async () => {},
+    };
+  };
 
   let turns = 0;
   /** How each model call was authorized: the lane's credential, never a bearer. */
@@ -473,6 +496,7 @@ export async function harness(options: HarnessOptions = {}) {
     sessions: number;
   }[] = [];
   const sessionOrder = new Map<string, number>();
+  let ownerReads = 0;
   /** Every read of the pool's owner routes, with the authorization it carried. */
   const poolReads: { path: string; session: string | null; authorization: string | null }[] = [];
   const pool = await listen(async (request, body) => {
@@ -517,16 +541,16 @@ export async function harness(options: HarnessOptions = {}) {
     }
     if (path === "/pool/v1/pool")
       return Response.json({ isOwner: true, accounts: [{ id: "test-1" }, { id: "test-2" }] });
+    if (path === "/pool/v1/usage" && options.ownerFailure?.(ownerReads++))
+      return new Response(null, { status: 500 });
     if (path === "/pool/v1/usage")
       return Response.json({
-        records: [
-          {
-            id: crypto.randomUUID(),
-            account: options.usageAccount ?? "test-1",
-            status: "success",
-            at: new Date().toISOString(),
-          },
-        ],
+        records: Array.from({ length: options.ownerRows ?? 1 }, () => ({
+          id: crypto.randomUUID(),
+          account: options.usageAccount ?? "test-1",
+          status: "success",
+          at: new Date().toISOString(),
+        })),
       });
     if (path === "/v1/chat/completions") {
       const index = turns++;
@@ -593,6 +617,7 @@ export async function harness(options: HarnessOptions = {}) {
     usageReads,
     poolReads,
     actions,
+    opened,
     crashes,
     retires,
     checks,

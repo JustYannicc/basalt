@@ -157,6 +157,26 @@ export async function runFleetAcceptance(input: AcceptanceInput) {
       );
 }
 
+/**
+ * The owner read lists a session's success rows and fails when there are more than it expects:
+ * for one turn that is a charge made twice, the lane's own `usage-duplicate` verdict. Any other
+ * failure of the read (no answer, a status, a body it can't read, rows still missing at its
+ * deadline) stays as it is.
+ */
+export function ownerReadVerdict(error: unknown) {
+  const matched =
+    error instanceof AcceptanceFailure
+      ? /^Pool usage records matched (\d+) rows; expected 1$/u.exec(error.message)
+      : null;
+  return matched && Number(matched[1]) > 1
+    ? refuse(
+        "usage-duplicate",
+        `One of the lane's own turns has ${matched[1]} success rows in the pool owner's usage; a turn is charged once.`,
+        "Read the session's rows in Home for a retried or double-recorded request.",
+      )
+    : error;
+}
+
 /** Every turn's boot is known and every turn's usage keeps the isolation rule, or the run fails. */
 async function judgeOwnUsage(
   input: AcceptanceInput,
@@ -174,18 +194,32 @@ async function judgeOwnUsage(
   let ownerUsageRecords: number | "skipped" = "skipped";
   if (access && accounts) {
     // With an owner token, the pool-wide check stays mandatory: every record in the test pool's accounts.
-    const records = await Promise.all(
+    // Every session's read settles first, so a breach is never lost to another read's plain
+    // failure: the lane's own verdicts, a double charge or a foreign account in the reads that
+    // answered, go first, as a burst's do.
+    const settled = await Promise.allSettled(
       traffic.servedSessions.map((id) =>
-        client.waitForUsageRecords(access, { id, expectedRecords: 1 }),
+        client
+          .waitForUsageRecords(access, { id, expectedRecords: 1 })
+          .catch((error: unknown) => Promise.reject(ownerReadVerdict(error))),
       ),
     );
-    if (records.flat().some((record) => !accounts.has(record.account)))
+    const failures = settled.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    );
+    const duplicate = failures.find((reason) => reason instanceof FleetLaneRefused);
+    if (duplicate) throw duplicate;
+    const records = settled.flatMap((result) =>
+      result.status === "fulfilled" ? result.value : [],
+    );
+    if (records.some((record) => !accounts.has(record.account)))
       throw refuse(
         "usage-outside-pool",
         "Usage contained an account outside the dedicated test pool.",
         "Read the PoolWorker routing for the acceptance device's key: its turns must be served only by its own pool's accounts.",
       );
-    ownerUsageRecords = records.flat().length;
+    if (failures.length) throw failures[0];
+    ownerUsageRecords = records.length;
     log(`owner_usage_records status=200 matched=${ownerUsageRecords}`);
   } else
     log("owner_usage_records skipped; the acceptance device is not in a dedicated acceptance pool");
