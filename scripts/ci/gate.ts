@@ -21,24 +21,34 @@ export const laneBase = (lane: string, base: string) => `${lane} ${base}`;
 export const unitLegs = 2;
 
 /**
- * The start jobs that resolved another lane or comparison commit than select: main moving the
- * merge-base while the Check starts, or a drifted copy of select's step. Each ran its own tests.
+ * The jobs that resolved another lane or comparison commit than select, each for its own checks:
+ * fast and the unit legs report both, cpa-pipeline only the commit. Each resolves it from the event
+ * (scripts/ci/comparison-base.ts), so a mismatch is a resolver that broke that rule or a job that
+ * stopped calling it. A job that reported nothing, skipped or failed, never proves it compared
+ * with select's.
  */
-export function startJobErrors(lane: string, base: string, fast: string, legs: unknown) {
-  const expected = laneBase(lane, base);
+export function startJobErrors(
+  lane: string,
+  base: string,
+  fast: string,
+  legs: unknown,
+  cpa: unknown,
+) {
   const outputs =
     legs !== null && typeof legs === "object" ? (legs as Record<string, unknown>) : {};
   const reported = [
-    ["fast", fast],
+    ["fast", fast, laneBase(lane, base)],
     ...Array.from({ length: unitLegs }, (_, index) => [
       `fast-units leg ${index + 1}`,
       outputs[`leg_${index + 1}`],
+      laneBase(lane, base),
     ]),
+    ["cpa-pipeline", cpa, base],
   ];
   return reported
-    .filter(([, value]) => value !== expected)
+    .filter(([, value, expected]) => value !== expected)
     .map(
-      ([job, value]) =>
+      ([job, value, expected]) =>
         `${job}: resolved ${JSON.stringify(value ?? "")}, select ${JSON.stringify(expected)}`,
     );
 }
@@ -177,6 +187,7 @@ export function runGateCli(env = process.env): void {
       env.CI_BASE_SHA ?? "",
       env.CI_FAST_LANE_BASE ?? "",
       JSON.parse(env.CI_UNIT_LANE_BASES || "null"),
+      env.CI_CPA_BASE_SHA ?? "",
     ),
   );
   for (const error of errors) console.error(error);
