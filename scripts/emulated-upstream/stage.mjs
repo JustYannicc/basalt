@@ -2,14 +2,22 @@
 // stage's fetch. Raw provider output never reaches logs: only the release entry's own public lines
 // and this stage's counts and names.
 import { emulatedAccount } from "./cloudflare.mjs";
-import { plainReason, profileControlPath } from "./gateway.ts";
+import { chaosFrom, plainReason, profileControlPath } from "./gateway.ts";
 import { refusalPath } from "./mock-start.ts";
 import { sendsPath } from "./sends.ts";
 import { profileCheck, profileFailures, profileSummary } from "./profile-check.mjs";
 import { isCloudflareApiError } from "../stage-cloudflare/api.mjs";
 import { publicMessage, StageError } from "./public-error.mjs";
 import { paths, requestBody, verdict } from "./shapes.mjs";
-import { isMode, leaseHours, prefix, refusal as guardRefusal, stage, worker } from "./settings.ts";
+import {
+  isMode,
+  leaseHours,
+  prefix,
+  profileTarget,
+  refusal as guardRefusal,
+  stage,
+  worker,
+} from "./settings.ts";
 
 /** A long stream is paced like a model, about 60 s; one that ends within 30 s came as a burst. */
 export const LONG_MIN_MS = 30_000;
@@ -274,6 +282,62 @@ export function emulatedStage({
     if (failed.length) throw new StageError(`Emulated upstream check failed: ${failed.join("; ")}`);
   }
 
+  /**
+   * Sets profile b's two faults to `target` on the deployed stage through its keyed control, reads
+   * them back, and touches nothing else: no model call, no deploy, no lease.
+   */
+  async function profile(target) {
+    const deleteBy = await leased();
+    const base = await origin();
+    const headers = { authorization: `Bearer ${key}`, "content-type": "application/json" };
+    const control = [];
+    const send = async (step, init) => {
+      const answer = await call(
+        base,
+        `profile b ${step}`,
+        profileControlPath,
+        { ...init, headers },
+        (response) => (response.ok ? response.json() : response.body?.cancel()),
+      );
+      control.push({ step, status: answer.status });
+      return {
+        status: answer.status,
+        chaos: answer.ok
+          ? chaosFrom({
+              rateLimitRate: answer.body?.rateLimitRate,
+              latencyMs: answer.body?.latencyMs,
+            })
+          : undefined,
+      };
+    };
+    const faults = (chaos) => `429 share ${chaos.rateLimitRate}, latency ${chaos.latencyMs} ms`;
+    const read = await send("read", { method: "GET" });
+    if (!read.chaos)
+      throw new StageError(`profile b could not be read (HTTP ${read.status}); nothing was set`);
+    const set = await send("set", { method: "PUT", body: JSON.stringify(target) });
+    if (set.status !== 200)
+      throw new StageError(`profile b's setting was refused (HTTP ${set.status})`);
+    const back = await send("read back", { method: "GET" });
+    if (
+      !back.chaos ||
+      back.chaos.rateLimitRate !== target.rateLimitRate ||
+      back.chaos.latencyMs !== target.latencyMs
+    )
+      throw new StageError(
+        `profile b reads back ${back.chaos ? faults(back.chaos) : `HTTP ${back.status}`}, not what was set`,
+      );
+    save("profile", {
+      deleteBy: new Date(deleteBy).toISOString(),
+      profile: "b",
+      before: read.chaos,
+      now: back.chaos,
+      control,
+    });
+    summary(`- profile b before: ${faults(read.chaos)}`);
+    summary(`- profile b now: ${faults(back.chaos)}`);
+    summary(`- lease ends ${new Date(deleteBy).toISOString()}`);
+  }
+
   async function destroy() {
     const { before, failures, kept = [], gone = [], record } = await api.destroy();
     // Closed values only: a kept entry's type is on kept-entries.mjs's list, its class one of two.
@@ -424,7 +488,7 @@ export function emulatedStage({
     await check();
   }
 
-  return { deploy, check, destroy, expire };
+  return { deploy, check, profile, destroy, expire };
 }
 
 /**
@@ -438,7 +502,8 @@ export async function main(
   const refused = guardRefusal(env, { credentialsLoaded: true });
   const mode = env.EMULATED_MODE ?? "";
   if (refused || !isMode(mode)) {
-    const token = refused ?? "emulated_upstream_mode_expected_deploy_check_destroy_or_expire";
+    const token =
+      refused ?? "emulated_upstream_mode_expected_deploy_check_profile_destroy_or_expire";
     error(token);
     io.save?.(`stopped-${isMode(mode) ? mode : "run"}`, { guard: token });
     return 1;
@@ -456,14 +521,16 @@ export async function main(
         : {}),
       ...(wait ? { wait } : {}),
     });
-    await emulatedStage({
+    const run = emulatedStage({
       api,
       key: env.EMULATED_UPSTREAM_KEY,
       fetcher,
       now,
       ...(wait ? { wait } : {}),
       ...io,
-    })[mode]();
+    });
+    // The guard passed, so the profile's settings are in bounds.
+    await (mode === "profile" ? run.profile(profileTarget(env)) : run[mode]());
     return 0;
   } catch (caught) {
     error(publicMessage(caught));

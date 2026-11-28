@@ -8,10 +8,10 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: deploy builds the keyed mock, checks it and starts a 10-hour lease; check calls each shape streamed and whole, and through both account profiles; destroy removes it
+        description: deploy builds the keyed mock, checks it and starts a 10-hour lease; check calls each shape streamed and whole, and through both account profiles; profile sets profile b's 429 share and latency on the deployed stage, and nothing else; destroy removes it
         required: true
         type: choice
-        options: [deploy, check, destroy]
+        options: [deploy, check, profile, destroy]
       stage:
         description: Only test-emulated-upstream is permitted
         required: true
@@ -22,6 +22,22 @@ on:
         description: The coordinator's go for this run, coordinator-YYYY-MM-DD-<text>
         required: true
         type: string
+      profile:
+        description: profile only, the account profile it sets; only b has faults
+        required: false
+        type: choice
+        options: [b]
+        default: b
+      share429:
+        description: profile only, b's 429 share, a plain decimal from 0 to 1; 0 restores
+        required: false
+        type: string
+        default: ""
+      latency:
+        description: profile only, b's first-byte latency in whole milliseconds, 0 to 30000; 0 restores
+        required: false
+        type: string
+        default: ""
   schedule:
     - cron: "23 * * * *"
 
@@ -41,12 +57,16 @@ jobs:
     # the mode at most 45: the teardown after a failed deploy still finds 12 of its own minutes before
     # the job's reserve. scripts/emulated-upstream/stage-runs.test.mjs checks this sum.
     timeout-minutes: 100
-    # The key lives only in this environment, which the coordinator fills; deploy and check read it.
+    # The key lives only in this environment, which the coordinator fills; deploy, check and profile
+    # read it.
     environment: emulated-upstream
     env:
       EMULATED_MODE: ${{ inputs.mode }}
       EMULATED_STAGE: ${{ inputs.stage }}
       EMULATED_GO: ${{ inputs.go }}
+      EMULATED_PROFILE: ${{ inputs.profile }}
+      EMULATED_SHARE_429: ${{ inputs.share429 }}
+      EMULATED_LATENCY_MS: ${{ inputs.latency }}
       EMULATED_OUTPUT: .local/emulated-upstream
       # The job's own limit, as timeout-minutes above: a teardown's requests end before it.
       EMULATED_JOB_LIMIT_MINUTES: 100
@@ -91,7 +111,7 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          EMULATED_UPSTREAM_KEY: ${{ (inputs.mode == 'deploy' || inputs.mode == 'check') && secrets.EMULATED_UPSTREAM_KEY || '' }}
+          EMULATED_UPSTREAM_KEY: ${{ (inputs.mode == 'deploy' || inputs.mode == 'check' || inputs.mode == 'profile') && secrets.EMULATED_UPSTREAM_KEY || '' }}
       # A failed, cancelled or timed-out deploy tears down, but only once it may have created
       # something: a deploy refused because the stage exists leaves that stage alone.
       - name: Tear down after an unsuccessful deploy

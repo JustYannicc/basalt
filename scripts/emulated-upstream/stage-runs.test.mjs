@@ -315,6 +315,114 @@ test("a check names a burst stream, a latency or 429 share the mock never saw, a
   assert.deepEqual(stage.store.value, { rateLimitRate: 0, latencyMs: 0 });
 });
 
+/** A deployed stage's profile run: what it saved, printed and sent. */
+async function profileRun(target, options = {}) {
+  const { store = memoryStore(), fetcher } = options;
+  // An explicit undefined lease is a stage without one.
+  const lease = Object.hasOwn(options, "lease") ? options.lease : NOW + hour;
+  const stage = deployedStage({ store });
+  const saved = {};
+  const lines = [];
+  const sent = [];
+  const run = stageOf(fakeApi({ resources: deployed(), lease }), {
+    key: stage.key,
+    fetcher: (url, init) => {
+      sent.push(`${init?.method ?? "GET"} ${new URL(url).pathname}`);
+      return (fetcher ?? stage.fetcher)(url, init);
+    },
+    now: () => stage.clock.ms,
+    save: (name, value) => (saved[name] = value),
+    summary: (line) => lines.push(line),
+  }).profile(target);
+  return { stage, saved, lines, sent, run };
+}
+
+test("profile sets profile b through its keyed control, reads it back, prints before and now, and changes nothing else", async () => {
+  const { stage, saved, lines, sent, run } = await profileRun(
+    { rateLimitRate: 1, latencyMs: 0 },
+    { store: memoryStore({ rateLimitRate: 0, latencyMs: 250 }) },
+  );
+  await run;
+  assert.deepEqual(stage.store.value, { rateLimitRate: 1, latencyMs: 0 });
+  assert.deepEqual(sent, [
+    "GET /_emulated/profiles/b",
+    "PUT /_emulated/profiles/b",
+    "GET /_emulated/profiles/b",
+  ]);
+  assert.deepEqual(stage.aimock.calls, [], "no model call reached the mock");
+  assert.deepEqual(saved.profile, {
+    deleteBy: new Date(NOW + hour).toISOString(),
+    profile: "b",
+    before: { rateLimitRate: 0, latencyMs: 250 },
+    now: { rateLimitRate: 1, latencyMs: 0 },
+    control: [
+      { step: "read", status: 200 },
+      { step: "set", status: 200 },
+      { step: "read back", status: 200 },
+    ],
+  });
+  assert.deepEqual(lines, [
+    "- profile b before: 429 share 0, latency 250 ms",
+    "- profile b now: 429 share 1, latency 0 ms",
+    `- lease ends ${new Date(NOW + hour).toISOString()}`,
+  ]);
+});
+
+test("the restore is the same mode with zeros", async () => {
+  const { stage, saved, run } = await profileRun(
+    { rateLimitRate: 0, latencyMs: 0 },
+    { store: memoryStore({ rateLimitRate: 1, latencyMs: 0 }) },
+  );
+  await run;
+  assert.deepEqual(stage.store.value, { rateLimitRate: 0, latencyMs: 0 });
+  assert.deepEqual(saved.profile.before, { rateLimitRate: 1, latencyMs: 0 });
+});
+
+test("profile refuses a stage that is not deployed or past its lease, without calling it", async () => {
+  for (const [lease, refused] of [
+    [undefined, /The emulated upstream is not deployed/u],
+    [NOW, /lease ended at 2026-11-25T12:00:00.000Z/u],
+  ]) {
+    const { stage, sent, run } = await profileRun({ rateLimitRate: 1, latencyMs: 0 }, { lease });
+    await assert.rejects(run, refused);
+    assert.deepEqual(sent, []);
+    assert.deepEqual(stage.store.value, { rateLimitRate: 0, latencyMs: 0 });
+  }
+});
+
+test("profile fails when b cannot be read, its setting is refused, or it reads back otherwise", async () => {
+  const answer = (status, body) => Response.json(body, { status });
+  const cases = [
+    [
+      "unreadable",
+      async () => answer(500, {}),
+      /profile b could not be read \(HTTP 500\); nothing was set/u,
+      0,
+    ],
+    [
+      "refused",
+      async (url, init) =>
+        init?.method === "PUT"
+          ? answer(400, {})
+          : answer(200, { profile: "b", rateLimitRate: 0, latencyMs: 0 }),
+      /profile b's setting was refused \(HTTP 400\)/u,
+      1,
+    ],
+    [
+      "kept its old value",
+      async () => answer(200, { profile: "b", rateLimitRate: 0, latencyMs: 0 }),
+      /profile b reads back 429 share 0, latency 0 ms, not what was set/u,
+      1,
+    ],
+  ];
+  for (const [label, fetcher, refused, puts] of cases) {
+    const { saved, run, sent } = await profileRun({ rateLimitRate: 1, latencyMs: 0 }, { fetcher });
+    await assert.rejects(run, refused, label);
+    assert.equal(sent.filter((call) => call.startsWith("PUT")).length, puts, label);
+    assert.equal(saved.profile, undefined, label);
+  }
+});
+
 test("a check refuses past the lease without calling the stage", async () => {
   let called = false;
   const fetcher = async () => {

@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { alchemyPreviewStateReader } from "../preview/inventory.ts";
 import { isRehearsalStage, stageOwnsName } from "../release/rehearsal-stage.ts";
 import { stageRepositories } from "../release/stage-teardown.ts";
-import { container, prefix, refusal, stage, worker } from "./settings.ts";
+import { container, prefix, profileTarget, refusal, stage, worker } from "./settings.ts";
 
 const dispatch = {
   GITHUB_ACTIONS: "true",
@@ -46,7 +46,7 @@ test("a dispatch needs main, the one stage, a known mode and the coordinator's g
   );
   assert.equal(
     refusal({ ...dispatch, EMULATED_MODE: "run" }),
-    "emulated_upstream_mode_expected_deploy_check_destroy_or_expire",
+    "emulated_upstream_mode_expected_deploy_check_profile_destroy_or_expire",
   );
   for (const go of [
     undefined,
@@ -74,7 +74,7 @@ test("only the schedule expires, and it needs no go; a dispatch cannot expire", 
   assert.equal(refusal(scheduled), undefined);
   assert.equal(
     refusal({ ...dispatch, EMULATED_MODE: "expire" }),
-    "emulated_upstream_dispatch_expected_deploy_check_or_destroy",
+    "emulated_upstream_dispatch_expected_deploy_check_profile_or_destroy",
   );
   for (const mode of ["deploy", "check", "destroy"])
     assert.equal(
@@ -84,7 +84,7 @@ test("only the schedule expires, and it needs no go; a dispatch cannot expire", 
     );
   assert.equal(
     refusal({ ...scheduled, EMULATED_MODE: "run" }),
-    "emulated_upstream_mode_expected_deploy_check_destroy_or_expire",
+    "emulated_upstream_mode_expected_deploy_check_profile_destroy_or_expire",
   );
 });
 
@@ -101,6 +101,81 @@ test("the guard runs before credentials; only deploy and check need the key once
     "emulated_upstream_key_missing_or_malformed",
   );
   assert.equal(refusal({ ...dispatch, EMULATED_MODE: "destroy" }, loaded), undefined);
+});
+
+const profiling = {
+  ...dispatch,
+  EMULATED_MODE: "profile",
+  GITHUB_RUN_ATTEMPT: "1",
+  EMULATED_PROFILE: "b",
+  EMULATED_SHARE_429: "0.5",
+  EMULATED_LATENCY_MS: "0",
+};
+
+test("profile takes exactly profile b's two settings within the mock's own bounds, and the key", () => {
+  assert.equal(refusal(profiling), undefined);
+  assert.deepEqual(profileTarget(profiling), { rateLimitRate: 0.5, latencyMs: 0 });
+  // The restore is the same mode with zeros.
+  const zeros = { ...profiling, EMULATED_SHARE_429: "0", EMULATED_LATENCY_MS: "0" };
+  assert.equal(refusal(zeros), undefined);
+  assert.deepEqual(profileTarget(zeros), { rateLimitRate: 0, latencyMs: 0 });
+  assert.deepEqual(
+    profileTarget({ ...profiling, EMULATED_SHARE_429: "1", EMULATED_LATENCY_MS: "30000" }),
+    {
+      rateLimitRate: 1,
+      latencyMs: 30_000,
+    },
+  );
+  for (const share of ["", "1.5", "1e-3", "-0.1", "abc", " 0.5", "0x1", "NaN"])
+    assert.equal(
+      refusal({ ...profiling, EMULATED_SHARE_429: share }),
+      "emulated_upstream_profile_settings_out_of_bounds",
+      share,
+    );
+  for (const latency of ["", "30001", "1.5", "-1", "1e3", "abc", "0100", "01000000"])
+    assert.equal(
+      refusal({ ...profiling, EMULATED_LATENCY_MS: latency }),
+      "emulated_upstream_profile_settings_out_of_bounds",
+      latency,
+    );
+  // Profile a never has faults: the mock has no control for it.
+  for (const name of ["a", "", "B", "c"])
+    assert.equal(
+      refusal({ ...profiling, EMULATED_PROFILE: name }),
+      "emulated_upstream_profile_expected_b",
+      name,
+    );
+  assert.equal(
+    refusal({ ...profiling, EMULATED_GO: "" }),
+    "emulated_upstream_go_missing_or_malformed",
+  );
+  const loaded = { credentialsLoaded: true };
+  assert.equal(refusal(profiling, loaded), "emulated_upstream_key_missing_or_malformed");
+  assert.equal(refusal({ ...profiling, EMULATED_UPSTREAM_KEY: key }, loaded), undefined);
+});
+
+test("every profile setting is a fresh dispatch: a re-run of one is refused", () => {
+  for (const attempt of ["2", "3", "", undefined])
+    assert.equal(
+      refusal({ ...profiling, GITHUB_RUN_ATTEMPT: attempt }),
+      "emulated_upstream_profile_rerun_refused",
+      String(attempt),
+    );
+});
+
+test("no other mode takes profile settings, so none can look as if it set them", () => {
+  for (const mode of ["deploy", "check", "destroy"])
+    for (const [name, value] of [
+      ["EMULATED_SHARE_429", "0.5"],
+      ["EMULATED_LATENCY_MS", "1000"],
+    ])
+      assert.equal(
+        refusal({ ...dispatch, EMULATED_MODE: mode, [name]: value }),
+        "emulated_upstream_profile_settings_without_profile_mode",
+        `${mode} ${name}`,
+      );
+  // The workflow's own default for the profile input is b, so it alone is no setting.
+  assert.equal(refusal({ ...dispatch, EMULATED_PROFILE: "b" }), undefined);
 });
 
 test("no rehearsal or preview tool treats the stage or its names as its own", async () => {
@@ -140,8 +215,25 @@ test("the workflow offers only the stage; the key reaches only the dispatched jo
   assert.equal(dispatched.match(/secrets\.EMULATED_UPSTREAM_KEY/gu)?.length, 1);
   assert.match(
     dispatched,
-    /\(inputs\.mode == 'deploy' \|\| inputs\.mode == 'check'\) && secrets\.EMULATED_UPSTREAM_KEY/u,
+    /\(inputs\.mode == 'deploy' \|\| inputs\.mode == 'check' \|\| inputs\.mode == 'profile'\) && secrets\.EMULATED_UPSTREAM_KEY/u,
   );
+  // Profile's settings are plain inputs; only profile b is offered, and the job reads them as env.
+  assert.match(workflow, /^\s+options: \[deploy, check, profile, destroy\]$/mu);
+  assert.match(workflow, /^\s+options: \[b\]$/mu);
+  for (const [input, name] of [
+    ["profile", "EMULATED_PROFILE"],
+    ["share429", "EMULATED_SHARE_429"],
+    ["latency", "EMULATED_LATENCY_MS"],
+  ]) {
+    assert.match(workflow, new RegExp(`^ {6}${input}:$`, "mu"), input);
+    assert.match(
+      dispatched,
+      new RegExp(`^ {6}${name}: \\$\\{\\{ inputs\\.${input} \\}\\}$`, "mu"),
+      name,
+    );
+  }
+  // The guard reads the attempt GitHub gives every run, so a re-run is refused.
+  assert.doesNotMatch(dispatched, /GITHUB_RUN_ATTEMPT:/u);
   assert.doesNotMatch(scheduled, /EMULATED_UPSTREAM_KEY|environment:/u);
   // Dispatches and the expiry queue in separate groups, so the hourly run never cancels a
   // pending dispatch; only the expiry may read the workflow's runs.
