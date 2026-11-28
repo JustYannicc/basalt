@@ -154,6 +154,14 @@ Deletion and its journal receipt commit together. The command reads the account 
 
 With separate production recovery GO, use the original report, inventory and checkpoint directory and replace `--apply` with `--recover`. Its request may list a subset of the original report IDs so a partial batch can be recovered. Recovery authenticates the checkpoint and restores the same ID, original ciphertext, policy and cached rows in one transaction. It refuses to overwrite an existing account. A repeated successful recovery verifies the restored rows without rewriting them. An account restored from a report cannot be deleted again with that report. Recovery does not require the original report to remain fresh, and never restores or revokes a Home credential or backend key.
 
+## Release guardrails
+
+`scripts/guardrails/release-path.json` lists the files that decide how a production release is made. The Guardrails workflow judges every pull request against it:
+
+- **Ship alone.** A pull request that touches the release path may otherwise touch only `architecture/**`, `docs/releases.md` and `package.json`.
+- **Budget.** `scripts/guardrails/budget.json` holds the release path's source and test lines. Lower it when they fall. Raising it, dropping a path from the list or reopening a tombstone needs a `## Reuse decision` section in the pull request, with links to what Cloudflare, Alchemy and libraries already provide, and the `release-budget-approved` label. Tombstoned paths take no new lines.
+- `node scripts/guardrails/release-health.ts` prints release health from the deployment and pull request records: time since the last good deployment, consecutive failed deployments and how long merged work has waited.
+
 ## Rebuild historical framework hashes
 
 Run the **Historical framework hashes** workflow manually from `main`, once per historical build. Supply its full source commit and logged toolchain. The toolchain selects Ubuntu, Bun and the original candidate or workspace checkout layout; Node stays at 24.18.0. Supply the logged generation UUID and dependency key together. Leave both empty only for sources that installed dependencies directly.
