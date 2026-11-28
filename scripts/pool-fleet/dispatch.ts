@@ -73,7 +73,9 @@ export interface FleetAcceptance {
   client: PoolAcceptanceClient;
   credential: ModelAuth;
   model?: string;
-  /** Present only for a dedicated acceptance pool; absent, the lane never sends an owner token. */
+  /** Which device signs: the release's own, or the test pool's. */
+  device: "release" | "test";
+  /** Present only for the test pool of the acceptance identity; absent, no owner token is sent. */
   access?: PoolAccess;
 }
 export interface DispatchDependencies {
@@ -391,9 +393,7 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
       const acceptance =
         deps.acceptance instanceof FleetLaneRefused
           ? `refused (${deps.acceptance.reason})`
-          : deps.acceptance.access
-            ? "full"
-            : "device-only (no dedicated acceptance pool)";
+          : `${deps.acceptance.device} device, ${deps.acceptance.access ? "full" : "device-only (no owner token)"}`;
       deps.log(`acceptance=${acceptance}`);
       return { ...evidence, acceptance, ...(yield* keepingWait(read())) };
     }

@@ -26,6 +26,12 @@ on:
         required: false
         default: ""
         type: string
+      device:
+        description: The device the model calls sign for. release is the release's own acceptance device; test is the test pool's, from its own secret. Neither falls back to the other
+        required: false
+        default: release
+        type: choice
+        options: [release, test]
       target-active:
         description: configure-and-accept only, the growth target to configure (1 to 100000); empty keeps the configured value
         required: false
@@ -84,10 +90,15 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           POOL_DEPLOYMENT_KEY: ${{ secrets.POOL_DEPLOYMENT_KEY }}
-          # Each model call signs a fresh assertion for this registered device, as release
-          # acceptance does, and the same assertion reads back that device's own usage. Only a
-          # dedicated acceptance-<run> pool also gets an owner token, minted for that pool alone.
-          POOL_ACCEPTANCE_DEVICE: ${{ secrets.POOL_ACCEPTANCE_DEVICE }}
+          # Each model call signs a fresh assertion for the chosen device, as release acceptance
+          # does, and the same assertion reads back that device's own usage. Each run gets only the
+          # device it chose. Only the test device of the acceptance identity also gets an owner
+          # token, minted for the test pool alone.
+          POOL_ACCEPTANCE_DEVICE: ${{ inputs.device != 'test' && secrets.POOL_ACCEPTANCE_DEVICE || '' }}
+          # The test pool's device: an environment secret of production-release, so only this
+          # environment's jobs can read it.
+          POOL_ACCEPTANCE_TEST_DEVICE: ${{ inputs.device == 'test' && secrets.POOL_ACCEPTANCE_TEST_DEVICE || '' }}
+          POOL_FLEET_DEVICE: ${{ inputs.device }}
           POOL_APP_SIGNING_KEY: ${{ secrets.POOL_APP_SIGNING_KEY }}
           POOL_APP_SIGNING_KEY_PREVIOUS: ${{ secrets.POOL_APP_SIGNING_KEY_PREVIOUS }}
           POOL_ACCEPTANCE_MODEL: ${{ vars.POOL_ACCEPTANCE_MODEL }}

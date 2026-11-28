@@ -578,6 +578,8 @@ export async function harness(options: HarnessOptions = {}) {
     acceptance: {
       client: new PoolAcceptanceClient({ origin: pool.origin, delay: async () => {} }),
       credential: async (method, path) => ({ [nativeModelHeader]: `assertion ${method} ${path}` }),
+      // As in production: only the test pool's device ever holds an owner token.
+      device: options.deviceOnly ? ("release" as const) : ("test" as const),
       ...(options.deviceOnly ? {} : { access: { token: "pool-token", owner: "acceptance" } }),
     },
     sleep: async () => {},

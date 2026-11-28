@@ -45,7 +45,7 @@ function rehearsalOnly(stage: string) {
  * app host, `app.rehearsal-<n>.<zone>`. Production's own hosts, and anything else under its zone,
  * are refused.
  */
-function stageOrigin(stage: string, value: string) {
+export function stageOrigin(stage: string, value: string) {
   const origin = URL.parse(value);
   if (origin?.protocol !== "https:") throw new Error("Give the stage's https origin");
   // URL lowercases the host, decodes percent escapes and maps the ideographic and full-width stops
