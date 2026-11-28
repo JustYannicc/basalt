@@ -53,6 +53,11 @@ import { appModelPath } from "./app-model-contract.ts";
 import { appAttributionReady } from "./model-history/schema.ts";
 import type { ModelIdentity } from "./model-membership.ts";
 import { accountMirrorPath, handleAccountKeyMirror } from "./account-key-mirror.ts";
+import { RouteAssignments } from "./route-assignments.ts";
+import { routeResolver } from "./route-resolver.ts";
+import { routeSafeAnswer } from "./route-refusal.ts";
+import { RouteReadings, gatewayReader } from "./route-reading.ts";
+import { installRoutePeer, servingImage } from "./route-peer-intercept.ts";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { captureProduct, type ProductEvent, type TelemetryEnv } from "../telemetry/product.ts";
 import type { ProductEventCallback } from "../setup/product-events.ts";
@@ -195,6 +200,8 @@ export interface PoolEnvironment extends TelemetryEnv, SentryEnv, HandoffEnviron
   POOL_AVAILABILITY_TARGET?: string;
   POOL_AUTOMATIC_RECOVERY_TARGET?: string;
   TOOLS_SERVICE: Fetcher;
+  /** P2's per-route gateway; absent until that class is bound. */
+  RouteGateway?: DurableObjectNamespace;
 }
 
 let controllerConstructions = 0;
@@ -210,6 +217,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   private alarmInFlight = false;
   private control: PoolControl;
   private mirrorHome: HomeClient;
+  private routes: RouteAssignments;
   private homeDatabasePool: HomeDatabasePoolMonitor;
   private computers: Computers;
   private appModels: AppModels;
@@ -361,6 +369,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       },
     });
     ctx.waitUntil(this.peers.restore().catch(() => {}));
+    // The controller's own container reaches its routes too, not only the fleet cells.
+    ctx.waitUntil(installRoutePeer(ctx, ctx.id.toString()));
     this.lifecycle = createPoolLifecycle(ctx, env, undefined, (at) =>
       this.alarms.schedule("home", at),
     );
@@ -433,6 +443,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       });
     };
     this.mirrorHome = new HomeClient(home, Date.now, () => this.control.invalidateViews());
+    this.routes = new RouteAssignments(ctx.storage, routeResolver(env), this.mirrorHome);
     this.homeDatabasePool = new HomeDatabasePoolMonitor((signal) =>
       this.mirrorHome.data("/capabilities", { signal }),
     );
@@ -447,6 +458,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         this.handoff.forwardCandidate(request, identity, pool, beforeDispatch),
     });
     this.overviewPrices = new OverviewPrices(this.mirrorHome, this.changes.storage);
+    const gateway = env.RouteGateway?.jurisdiction("eu");
+    const readings = new RouteReadings(gateway && gatewayReader(gateway));
     this.control = new PoolControl(ctx.storage, {
       nativeMembership: (pool, organization) =>
         readNativeMembership(env.TOOLS_SERVICE, env.POOL_APP_SIGNING_KEY, pool, organization),
@@ -458,6 +471,28 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       defer: (work) => ctx.waitUntil(work),
       home,
       onProductEvent,
+      routeRefusals: {
+        refusesUse: (reference, provider) => this.routes.refusesUse(reference, provider),
+        markRefused: (reference, refused) => this.routes.markRefused(reference, refused),
+        refusedReferences: () => this.routes.refusedReferences(),
+      },
+      signInRoutes: {
+        beginSignIn: (session, route) => this.routes.beginSignIn(session, route),
+        settleSignIn: (session, references) => this.routes.settleSignIn(session, references),
+        servingImage: async () =>
+          servingImage(env.POOL_IMAGE_HASH, await ctx.storage.get(slotSelectionKey)),
+      },
+      // Without a gateway binding there is no reading at all, so the pool view omits `route`.
+      ...(gateway && {
+        route: async (owner: string, accounts: readonly { id: string; label: string }[]) => {
+          const order = [...accounts].sort((a, b) => a.label.localeCompare(b.label));
+          const routeId = await this.routes.ownRoute(
+            owner,
+            order.map((account) => account.id),
+          );
+          return routeId ? readings.read(routeId, owner) : null;
+        },
+      }),
     });
     this.prices = new PriceUpkeep(
       new HomeClient(home, Date.now, () => this.control.invalidateViews()),
@@ -520,15 +555,31 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     const membership = new HomeMembership(
       new HomeClient(home, Date.now, () => this.control.invalidateViews()),
     );
+    const organizations = new Map<string, string>();
     this.memberships = new NativeMemberships({
       storage: ctx.storage,
       signingKey: env.POOL_APP_SIGNING_KEY,
       previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
-      read: (pool, organization) =>
-        readNativeMembership(env.TOOLS_SERVICE, env.POOL_APP_SIGNING_KEY, pool, organization),
+      read: (pool, organization) => {
+        organizations.set(pool, organization);
+        return readNativeMembership(
+          env.TOOLS_SERVICE,
+          env.POOL_APP_SIGNING_KEY,
+          pool,
+          organization,
+        );
+      },
       actual: (pool) => membership.actual(pool),
       invalidateView: (pool) => this.control.invalidateViews(pool),
-      reconcile: (pool, accounts) => membership.reconcile(pool, accounts),
+      // New members are routed before Home's channel membership lets them serve. A repair waits
+      // for routing at most its own capped step plus 2 s in the queue, and when its turn is late,
+      // for the holds of its unplaced new members; policy installs never do.
+      reconcile: async (pool, accounts) => {
+        const organization = organizations.get(pool);
+        if (organization === undefined) throw new Error("Pool organization unknown");
+        await this.routes.prepare({ pool, organization }, accounts);
+        await membership.reconcile(pool, accounts);
+      },
       install: async (policy) => {
         await Promise.all([this.fleet.install(policy), this.installPrimaryMembership(policy)]);
       },
@@ -804,6 +855,11 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     await trace.run("warm", () =>
       this.handoff.warm(() => this.lifecycle.then((lifecycle) => lifecycle.warm())),
     );
+    // After warmth, so routing can never delay it.
+    // RouteAssignments logs its own failure streak, once when it starts and once when it ends.
+    await trace
+      .run("routes", () => this.routes.tick(AbortSignal.timeout(60_000)))
+      .catch(() => undefined);
     await trace.run("first_request", () =>
       reportWhenDue(this.ctx.storage, "first-request", (progress) =>
         this.computers.observeUsage(undefined, true, progress),
@@ -894,6 +950,11 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     };
   }
 
+  /** PoolRoutePeer's owner check: only routes this pool assigned to a credential it holds. */
+  routeOwner(input: { routeId: string }) {
+    // Never queued behind a pass: a queued Home write's own tunnel may be waiting on this answer.
+    return this.routes.routeOwner(input.routeId);
+  }
   async migrationInventory(): Promise<void> {
     await reportPoolStorage(this.ctx.storage);
   }
@@ -987,7 +1048,11 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
           return toLayer(
             routed.request,
             async (request, port) =>
-              containerAnswer(await container.getTcpPort(port).fetch(request)),
+              routeSafeAnswer(
+                request,
+                port,
+                containerAnswer(await container.getTcpPort(port).fetch(request)),
+              ),
             () => container.running,
           );
         });
@@ -1133,6 +1198,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     if (pathname === accountMirrorPath)
       return handleAccountKeyMirror(request, {
         home: this.mirrorHome,
+        routes: this.routes,
         signingKey: this.env.POOL_APP_SIGNING_KEY,
         previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
       });
@@ -1171,6 +1237,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         signingKey: this.env.POOL_APP_SIGNING_KEY,
         previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
         ensure: (pool, organization) => this.memberships.ensure(pool, organization),
+        refused: () => this.routes.refusedReferences(),
       });
     if (
       pathname === poolUsageSeriesPath ||
@@ -1297,7 +1364,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       warm: (legacy) => this.handoff.warm(legacy),
       fetch: async (forwarded, target) => {
         if (!this.ctx.container) throw new Error("Pool container unavailable");
-        return containerAnswer(await this.ctx.container.getTcpPort(target).fetch(forwarded));
+        const answer = containerAnswer(
+          await this.ctx.container.getTcpPort(target).fetch(forwarded),
+        );
+        return routeSafeAnswer(forwarded, target, answer);
       },
       running: () => this.ctx.container?.running === true,
       defer: (work) => this.ctx.waitUntil(work),

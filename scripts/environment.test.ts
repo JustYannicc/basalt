@@ -461,3 +461,12 @@ test("release readiness key is stable across attempts and refuses malformed secr
       message: "POOL_DEPLOYMENT_KEY must be 32 bytes of lowercase hex",
     });
 });
+
+test("a disposable stage's deadline is epoch milliseconds, passed through only when set", async () => {
+  const { stageExpiry } = await import("./environment.ts");
+  assert.equal(stageExpiry("1795030000000"), "1795030000000");
+  assert.equal(stageExpiry(undefined), undefined);
+  assert.equal(stageExpiry(""), undefined);
+  for (const bad of ["1795030000", "17950300000000", "soon", "-1795030000000"])
+    assert.throws(() => stageExpiry(bad), /epoch milliseconds/);
+});

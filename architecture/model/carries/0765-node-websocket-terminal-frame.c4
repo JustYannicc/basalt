@@ -1,7 +1,7 @@
 model {
   extend basalt.poolRuntime {
     metadata {
-      constraint "A Responses websocket's terminal frame (an upstream error such as a usage-limit 429, or the 1012 replay close) reaches the client instead of a bare 1006. A terminal close waits up to 250 ms for a write that is finishing, gives its own write a 1-second deadline, and still cuts off a writer that stays blocked. The session's teardown waits for a terminal close already in progress before it closes the socket."
+      constraint "A Responses websocket's terminal frame (an upstream error such as a usage-limit 429, or the 1012 replay close) reaches the client instead of a bare 1006. A terminal close waits up to 250 ms for a write that is finishing and still cuts off a writer that stays blocked. The session's teardown waits up to 250 ms for a terminal close already in progress, then closes the socket. The terminal frame's own write gives up after 1 second: the handler writes that frame on the goroutine that later tears the connection down, so the teardown's wait never reaches a write stuck on a client that stopped reading, and only the write deadline bounds it. The pool's node runs without streaming keepalive (its configuration sets no keepalive interval), so the keepalive that would also close such a socket runs only during a scheduler continuity wait, and this deadline is the terminal frame's only bound otherwise. Ordinary data-frame writes have no deadline: a client that stays connected and stops reading holds one until the call's model lifetime ends."
     }
   }
 }

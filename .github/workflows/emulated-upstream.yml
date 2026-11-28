@@ -101,6 +101,13 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           EMULATED_MODE: destroy
+      # A job stopped before the mode wrote anything, by its guard or its setup, still leaves a file.
+      - name: Record a stop before the mode ran
+        if: ${{ !success() && hashFiles('.local/emulated-upstream/*.json') == '' }}
+        timeout-minutes: 1
+        run: |
+          mkdir -p .local/emulated-upstream
+          echo '{"stop":"before-the-mode-ran"}' > .local/emulated-upstream/stopped-run.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -151,9 +158,24 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      - name: Record an expiry skipped while a dispatched run is busy
+        if: steps.dispatches.outputs.skip == 'true'
+        run: |
+          mkdir -p .local/emulated-upstream
+          echo '{"outcome":"skipped-busy"}' > .local/emulated-upstream/expire.json
+      # The guard, the busy check or the setup stopped the job before the expiry wrote anything.
+      - name: Record a stop before the expiry ran
+        if: ${{ !success() && hashFiles('.local/emulated-upstream/*.json') == '' }}
+        run: |
+          mkdir -p .local/emulated-upstream
+          echo '{"stop":"before-the-expiry-ran"}' > .local/emulated-upstream/stopped-run.json
       - uses: actions/upload-artifact@v4
-        if: ${{ always() && hashFiles('.local/emulated-upstream/teardown.json', '.local/emulated-upstream/stopped-*.json') != '' }}
+        if: ${{ always() && hashFiles('.local/emulated-upstream/teardown.json', '.local/emulated-upstream/expire.json', '.local/emulated-upstream/stopped-*.json') != '' }}
+        # The record is evidence, never the outcome: an upload that fails, or a re-run whose name
+        # already exists, does not turn the expiry's own result.
+        continue-on-error: true
         with:
           name: emulated-upstream-expiry-${{ github.run_id }}
+          overwrite: true
           path: .local/emulated-upstream
           retention-days: 7

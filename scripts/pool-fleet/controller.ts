@@ -17,7 +17,8 @@ import {
 } from "../../src/pool/runtime-slots/handoff-command.ts";
 import type { PoolOperationsTarget } from "../pool-operations.ts";
 import { runFleetOperator } from "./fleet-operator.ts";
-import { sendRuntimeCommand } from "./runtime-command-rpc.ts";
+import { BarrierRefusal } from "./refusal.ts";
+import { sendRuntimeCommand, unmarkedRefusal } from "./runtime-command-rpc.ts";
 import {
   freezeRuntimeFleetOperation,
   runtimeFleetOperationDigest,
@@ -39,7 +40,27 @@ export interface ControllerAccess {
   now?: () => number;
   /** Private runner directory for operator packets and their submission markers. */
   directory: string;
+  /** Hears each read that took more than one session. */
+  sessions?: (read: ReadSessions) => void;
 }
+
+/**
+ * The commands `read` may send: each only reads the controller, so sending one again changes
+ * nothing. A write is not in this list and cannot reach the retry.
+ */
+type ReadAction =
+  | { action: "inspect" }
+  | { action: "fleet-inspect"; operationId?: string }
+  | { action: "fleet-retire-check"; key: string }
+  | { action: "runtime-crash-inspect"; identity: SlotIdentity; nonce: string };
+/** A read that took more than one session: the sessions tried, and whether it succeeded. */
+export interface ReadSessions {
+  action: ReadAction["action"];
+  sessions: number;
+  ok: boolean;
+}
+/** Sessions in all for one read: an answer without the pool's mark is sent again on a fresh one. */
+export const readSessionLimit = 3;
 
 const Selection = Schema.Struct({
   epoch: Schema.Number,
@@ -191,7 +212,8 @@ const target = (access: ControllerAccess): PoolOperationsTarget => ({
 export const shortHash = (...parts: string[]) =>
   createHash("sha256").update(parts.join("\n")).digest("hex").slice(0, 24);
 
-async function read(access: ControllerAccess, action: Record<string, unknown>) {
+/** One signed command on one session, sent once. */
+function sendOnce(access: ControllerAccess, action: Record<string, unknown>) {
   const at = signedNow(access);
   const command = decodeRuntimeHandoffCommand(
     { ...action, controllerCode: access.code, at, expiresAt: at + 25_000 },
@@ -201,6 +223,42 @@ async function read(access: ControllerAccess, action: Record<string, unknown>) {
     decodeRuntimeHandoffCommand(command, signedNow(access));
   });
 }
+
+/**
+ * A read the pool never answered (no mark: the session's proxy or the edge made the answer) is
+ * signed anew and sent on a fresh session, up to `readSessionLimit` in all. The pool's own answer,
+ * the lane's time limit and a bridge that failed before any answer stand at once.
+ */
+async function read(access: ControllerAccess, action: ReadAction) {
+  for (let sessions = 1; ; sessions++) {
+    try {
+      const answer = await sendOnce(access, action);
+      if (sessions > 1) access.sessions?.({ action: action.action, sessions, ok: true });
+      return answer;
+    } catch (error) {
+      if (unmarkedRefusal(error) && sessions < readSessionLimit) continue;
+      if (sessions === 1) throw error;
+      access.sessions?.({ action: action.action, sessions, ok: false });
+      throw error instanceof BarrierRefusal ? triedOn(error, sessions) : error;
+    }
+  }
+}
+
+/** The refusal of a read that took more than one session, saying how many. */
+const triedOn = (error: BarrierRefusal, sessions: number) =>
+  new BarrierRefusal(
+    error.reason,
+    error.worker,
+    error.delta && {
+      ...error.delta,
+      changed: [
+        ...error.delta.changed,
+        { path: "handoff.command.sessions", old: null, new: sessions },
+      ],
+    },
+    error.refusals,
+    error.stateStore,
+  );
 
 // Lenient: a newer controller may add fields; only the ones decoded here decide anything.
 export const inspectController = async (access: ControllerAccess) =>
@@ -312,8 +370,9 @@ const TakenBookmark = Schema.Struct({
 
 /**
  * The controller storage's current point-in-time bookmark: the restore target if the class change
- * fails. Reading it also arms a restore to it for ten minutes, the window the class change runs in.
+ * fails. Reading it also arms a restore to it for ten minutes, the window the class change runs in,
+ * so it is a write: sent once, never again on another session.
  */
 export const takeBookmark = async (access: ControllerAccess) =>
-  Schema.decodeUnknownSync(TakenBookmark)(await read(access, { action: "storage-bookmark" }))
+  Schema.decodeUnknownSync(TakenBookmark)(await sendOnce(access, { action: "storage-bookmark" }))
     .result;

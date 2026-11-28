@@ -30,6 +30,7 @@ export interface AccountUsageRouting {
     | "usage_unknown"
     | "quota_exhausted"
     | "credential_unavailable"
-    | "continuity_requires_reconnect";
+    | "continuity_requires_reconnect"
+    | "route_unsupported";
   readonly policy: UsageCreditPolicy;
 }

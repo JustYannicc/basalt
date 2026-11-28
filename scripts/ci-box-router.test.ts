@@ -990,7 +990,8 @@ test("select reads only the routing inputs it needs, and the aggregate holds eve
     ["fast-units"],
     // No bench has run the pool runtime legs, so none of them routes.
     ["pool-runtime"],
-    ["pool-runtime:contracts"],
+    ["pool-runtime:contracts-image"],
+    ["pool-runtime:contracts-postgres"],
     ["pool-runtime:compatibility"],
     ["declared-cloud"],
     ["declared-cloud-1", "declared-cloud-1"],
@@ -1111,10 +1112,14 @@ test("pool fixture networking is scoped to self-hosted runners and checked befor
     "sudo iptables -I INPUT 1 -i br+ -p tcp -j ACCEPT",
   ]);
   assert.ok(firewall < probe && probe < contracts);
-  assert.equal(steps[probe].if, undefined);
+  // The Postgres-only contracts legs build no image, so they have nothing to probe.
+  assert.equal(steps[probe].if, "matrix.shard != 'contracts-postgres'");
   assert.equal(steps[probe].run, "node scripts/ci/check-docker-host.mjs basalt-1409-pool:test");
   assert.match(steps[contracts].run, /pool-test-shard\.ts "\$POOL_TEST_SHARD"/);
-  assert.match(steps[contracts].run, /^node --test --test-concurrency=1 "\$\{files\[@\]\}"$/m);
+  assert.match(
+    steps[contracts].run,
+    /^node --test --test-concurrency=1 --test-reporter=\.\/scripts\/ci\/unit-progress\.ts "\$\{files\[@\]\}"$/m,
+  );
 });
 
 test("signed migration proofs stay hosted with both bounded adoption shards", () => {

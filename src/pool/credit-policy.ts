@@ -21,6 +21,7 @@ const reasons = new Set([
   "quota_exhausted",
   "credential_unavailable",
   "continuity_requires_reconnect",
+  "route_unsupported",
 ]);
 function routing(value: unknown): AccountUsageRouting {
   if (
@@ -41,7 +42,15 @@ async function groups(client: HomeClient, pool: string) {
   const name = `${poolGroupPrefix}${pool}`;
   return (await client.allPoolGroups()).filter((group) => group.channel_name === name);
 }
-export async function poolCreditRouting(client: HomeClient, pool: string) {
+/**
+ * `refused`: credentials the pool keeps disabled because their plugin can't use the owner's route;
+ * they read as blocked whatever Home says (change 38).
+ */
+export async function poolCreditRouting(
+  client: HomeClient,
+  pool: string,
+  refused: ReadonlySet<string> = new Set(),
+) {
   const selected = await groups(client, pool);
   let policy: UsageCreditPolicy = "last_resort";
   let selection: import("../../apps/pool/usage-credits-contract.ts").AccountSelectionPolicy =
@@ -70,6 +79,14 @@ export async function poolCreditRouting(client: HomeClient, pool: string) {
           : {}),
       };
     }
+  for (const id of Object.keys(accounts))
+    if (refused.has(id))
+      accounts[id] = {
+        ...accounts[id]!,
+        use: "blocked",
+        eligible: false,
+        reason: "route_unsupported",
+      };
   return { usageCreditPolicy: policy, accountSelectionPolicy: selection, accounts };
 }
 export async function setPoolCreditPolicy(client: HomeClient, pool: string, value: unknown) {

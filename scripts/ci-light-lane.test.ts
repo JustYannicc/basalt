@@ -8,13 +8,17 @@ import { test } from "node:test";
 import {
   cancelledBy,
   heldCanceller,
+  lightHung,
   rerunDecision,
   type RerunJob,
   type Run,
 } from "./ci/box-rerun.ts";
 import { boxSettings } from "./ci/box-router.ts";
 import {
+  checkLabel,
+  checkMinutes,
   checkRunsOn,
+  checkTimeout,
   laterRunsOn,
   lightJobs,
   lightLabel,
@@ -75,6 +79,54 @@ test("the light lane takes only the first attempt of a push to main, and only a 
   for (const other of ["basalt-box", "two words-light", "a,b-light", " " + label, "${{ x }}-light"])
     assert.equal(lightLabel(input(first, other)), "", other);
   assert.equal(lightLabel({ ...input(first), label: undefined }), "");
+});
+
+test("the aggregate's light label takes the first attempt of a push to main or a batch, and only a light label", () => {
+  let routed = 0;
+  for (const combination of combinations)
+    for (const light of [label, ""]) {
+      const { event, ref, attempt } = combination;
+      const takes =
+        light !== "" &&
+        attempt === "1" &&
+        event === "push" &&
+        (ref === "refs/heads/main" || ref === "refs/heads/batch/x");
+      assert.equal(
+        checkLabel(input(combination, light)),
+        takes ? light : "",
+        JSON.stringify(combination),
+      );
+      // Never wider than box routing, nor than the other light jobs' label on main.
+      const box = boxSettings({ ...input(combination, light), slots: "1" });
+      if (takes) assert.equal(typeof box === "string" ? "" : box.label, light);
+      if (lightLabel(input(combination, light)))
+        assert.equal(checkLabel(input(combination, light)), light);
+      if (takes) routed++;
+    }
+  // Main's push and a batch's; pull requests, forks' included, and other branches stay hosted.
+  assert.equal(routed, 4);
+  const push = { event: "push", attempt: "1", repository, label };
+  assert.equal(checkLabel({ ...push, ref: "refs/heads/main" }), label);
+  assert.equal(checkLabel({ ...push, ref: "refs/heads/batch/pool-stop-1" }), label);
+  assert.equal(checkLabel({ ...push, ref: "refs/heads/feature" }), "");
+  assert.equal(checkLabel({ ...push, ref: "refs/heads/batch" }), "");
+  assert.equal(checkLabel({ ...push, ref: "refs/tags/batch/x" }), "");
+  for (const headRepository of [repository, "fork/repo"])
+    assert.equal(
+      checkLabel({ ...push, event: "pull_request", ref: "refs/pull/1/merge", headRepository }),
+      "",
+      headRepository,
+    );
+  for (const refused of [
+    "self-hosted",
+    "basalt-box",
+    "basalt-release",
+    "a,b-light",
+    "x y-light",
+    "",
+  ])
+    assert.equal(checkLabel({ ...push, ref: "refs/heads/batch/x", label: refused }), "", refused);
+  assert.equal(checkLabel({ ...push, ref: "refs/heads/batch/x", label: undefined }), "");
 });
 
 // Evaluates a runs-on expression for the contexts these jobs read. GitHub compares strings without
@@ -150,8 +202,9 @@ test("select's runs-on applies lightLabel's rule to the variable; the later jobs
         (lightLabel(input(combination, label)) && selectLightLabel(light)) || "ubuntu-latest",
         JSON.stringify({ combination, light }),
       );
-  const needs = (light: string, result = "success") => ({
-    select: { result: "success", outputs: { light_label: light } },
+  // A batch push: the aggregate's label without the other light jobs'.
+  const needs = (light: string, result = "success", check = light) => ({
+    select: { result: "success", outputs: { light_label: light, check_label: check } },
     fast: { result },
   });
   for (const attempt of ["1", "2"])
@@ -159,9 +212,15 @@ test("select's runs-on applies lightLabel's rule to the variable; the later jobs
       const expected = attempt === "1" && light ? light : "ubuntu-latest";
       const github = { run_attempt: attempt };
       assert.equal(evaluate(laterRunsOn, { github, needs: needs(light) }), expected);
+      assert.equal(
+        evaluate(laterRunsOn, { github, needs: needs("", "success", light) }),
+        "ubuntu-latest",
+      );
       // A failed need keeps the aggregate on the light runners; a cancelled one sends it hosted.
-      for (const result of ["success", "failure", "skipped"])
+      for (const result of ["success", "failure", "skipped"]) {
         assert.equal(evaluate(checkRunsOn, { github, needs: needs(light, result) }), expected);
+        assert.equal(evaluate(checkRunsOn, { github, needs: needs("", result, light) }), expected);
+      }
       assert.equal(
         evaluate(checkRunsOn, { github, needs: needs(light, "cancelled") }),
         "ubuntu-latest",
@@ -174,17 +233,21 @@ test("only the four light jobs read the light label, and box-watch stays hosted"
   assert.equal(workflow.jobs["long-started"]["runs-on"], laterRunsOn);
   assert.equal(workflow.jobs["cpa-pipeline"]["runs-on"], laterRunsOn);
   assert.equal(workflow.jobs.check["runs-on"], checkRunsOn);
+  assert.equal(workflow.jobs.check["timeout-minutes"], checkTimeout);
   for (const id of lightJobs.filter((id) => id !== "select"))
     assert.ok([workflow.jobs[id].needs].flat().includes("select"), id);
   // box-watch polls for up to 40 minutes and cancels the Check when the box is down.
   assert.equal(workflow.jobs["box-watch"]["runs-on"], "ubuntu-latest");
   for (const [id, job] of Object.entries(workflow.jobs)) {
     if (lightJobs.includes(id)) continue;
-    assert.doesNotMatch(JSON.stringify(job), /light_label|BASALT_CI_LIGHT_LABEL/, id);
+    assert.doesNotMatch(JSON.stringify(job), /light_label|check_label|BASALT_CI_LIGHT_LABEL/, id);
   }
+  // Only the aggregate reads the batches' label.
+  for (const id of lightJobs.filter((id) => id !== "select" && id !== "check"))
+    assert.doesNotMatch(JSON.stringify(workflow.jobs[id]), /check_label/, id);
   assert.doesNotMatch(
     JSON.stringify({ ...workflow, jobs: undefined }),
-    /light_label|BASALT_CI_LIGHT_LABEL/,
+    /light_label|check_label|BASALT_CI_LIGHT_LABEL/,
   );
 });
 
@@ -201,6 +264,10 @@ test("select's light label comes from a token-free step that runs on a reused Ch
     workflow.jobs.select.outputs.light_label,
   );
   assert.ok(output, workflow.jobs.select.outputs.light_label);
+  assert.equal(
+    workflow.jobs.select.outputs.check_label,
+    `\${{ steps.${output[1]}.outputs.check_label }}`,
+  );
   const step = selectSteps.find((candidate) => candidate.id === output[1]);
   assert.ok(step, output[1]);
   assert.ok(runsOnReuse(step), String(step.if));
@@ -215,14 +282,16 @@ test("select's light label comes from a token-free step that runs on a reused Ch
   for (const other of selectSteps.filter((candidate) => candidate !== step))
     assert.doesNotMatch(
       JSON.stringify(other),
-      /light_label|BASALT_CI_LIGHT_LABEL/,
+      /light_label|check_label|BASALT_CI_LIGHT_LABEL/,
       String(other.id),
     );
 });
 
-test("the light step writes the label lightLabel returns, and needs no token", () => {
+test("the light step writes the labels lightLabel and checkLabel return, and needs no token", () => {
   for (const env of [
     { GITHUB_EVENT_NAME: "push", GITHUB_REF: "refs/heads/main" },
+    { GITHUB_EVENT_NAME: "push", GITHUB_REF: "refs/heads/batch/x" },
+    { GITHUB_EVENT_NAME: "push", GITHUB_REF: "refs/heads/batch/x", GITHUB_RUN_ATTEMPT: "2" },
     { GITHUB_EVENT_NAME: "push", GITHUB_REF: "refs/heads/main", GITHUB_RUN_ATTEMPT: "2" },
     { GITHUB_EVENT_NAME: "push", GITHUB_REF: "refs/heads/main", LIGHT_LABEL: "" },
     {
@@ -238,14 +307,14 @@ test("the light step writes the label lightLabel returns, and needs no token", (
       LIGHT_LABEL: label,
       ...env,
     };
-    const expected = lightLabel({
+    const lightInput = {
       event: run.GITHUB_EVENT_NAME,
       ref: run.GITHUB_REF,
       attempt: run.GITHUB_RUN_ATTEMPT,
       repository: run.GITHUB_REPOSITORY,
       headRepository: run.HEAD_REPOSITORY,
       label: run.LIGHT_LABEL,
-    });
+    };
     const scratch = mkdtempSync(join(tmpdir(), "basalt-light-lane-"));
     const output = join(scratch, "output");
     const { GITHUB_TOKEN: _, ...inherited } = process.env;
@@ -256,8 +325,16 @@ test("the light step writes the label lightLabel returns, and needs no token", (
     assert.equal(result.status, 0, result.stderr);
     const text = readFileSync(output, "utf8");
     rmSync(scratch, { recursive: true, force: true });
-    assert.equal(text, `light_label=${expected}\n`, JSON.stringify(env));
+    assert.equal(
+      text,
+      `light_label=${lightLabel(lightInput)}\ncheck_label=${checkLabel(lightInput)}\n`,
+      JSON.stringify(env),
+    );
   }
+  // The batch push writes only the aggregate's label.
+  const batch = { event: "push", ref: "refs/heads/batch/x", attempt: "1", repository, label };
+  assert.equal(checkLabel(batch), label);
+  assert.equal(lightLabel(batch), "");
   // A main push takes the light runners; a fork's pull request never does.
   assert.equal(
     lightLabel({ event: "push", ref: "refs/heads/main", attempt: "1", repository, label }),
@@ -304,7 +381,7 @@ test("the rescue runs hosted every 5 minutes, whether or not the lane's variable
   assert.ok(job!["timeout-minutes"] <= 5);
   const run = job!.steps.at(-1)!;
   assert.equal(run.run, "node scripts/ci/light-rescue.ts");
-  // It reads no variable and no heartbeat: main is the lane's only user.
+  // It reads no variable and no heartbeat: only pushes use the lane.
   assert.deepEqual(run.env, { GITHUB_TOKEN: "${{ github.token }}" });
   assert.doesNotMatch(rescueSource, /BASALT_CI_LIGHT_LABEL|HEARTBEAT/);
   assert.doesNotMatch(rescueSource, /self-hosted|basalt-box|basalt-release|runs-on: \$\{\{/i);
@@ -328,8 +405,8 @@ const lightJob = (name: string, status: string, queued: number, light = label): 
   labels: [light],
   queued,
 });
-const mainRuns = (status: string) =>
-  `GET /actions/workflows/ci.yml/runs?branch=main&event=push&status=${status}&per_page=100&page=1`;
+const pushRuns = (status: string) =>
+  `GET /actions/workflows/ci.yml/runs?event=push&status=${status}&per_page=100&page=1`;
 
 function fakeGitHub(
   runs: FakeRun[],
@@ -348,10 +425,10 @@ function fakeGitHub(
     head_repository: { full_name: run.head ?? repository },
     created_at: ago(run.age ?? 30),
   }));
-  routes.set(mainRuns("in_progress"), () => ({
+  routes.set(pushRuns("in_progress"), () => ({
     workflow_runs: listed.slice(0, Math.ceil(listed.length / 2)),
   }));
-  routes.set(mainRuns("queued"), () => ({
+  routes.set(pushRuns("queued"), () => ({
     workflow_runs: listed.slice(Math.ceil(listed.length / 2)),
   }));
   for (const run of runs) {
@@ -436,7 +513,7 @@ test("a deleted variable still frees what the lane holds: the rescue reads none"
   assert.deepEqual(github.posts(), ["POST /actions/runs/401/force-cancel"]);
 });
 
-test("young, started, re-run, fork, hosted and non-main jobs are left alone, and a quiet rescue ends green", async () => {
+test("young, started, re-run, fork, hosted and other branches' jobs are left alone, and a quiet rescue ends green", async () => {
   const github = fakeGitHub([
     { id: 201, jobs: [lightJob("select", "queued", 2)] },
     { id: 202, jobs: [lightJob("select", "in_progress", 10)] },
@@ -445,18 +522,24 @@ test("young, started, re-run, fork, hosted and non-main jobs are left alone, and
     { id: 205, jobs: [{ ...lightJob("fast", "queued", 10), labels: ["ubuntu-latest"] }] },
     // A Check younger than the wait can't hold a light job yet: its jobs aren't even read.
     { id: 206, age: 2, jobs: [lightJob("select", "queued", 10)] },
-    // Only main's push uses the lane; anything else the listing returns is not read.
-    { id: 207, branch: "batch/x", jobs: [lightJob("select", "queued", 10)] },
+    // Only main's and the batches' pushes use the lane; anything else the listing returns is not
+    // read.
+    { id: 207, branch: "feature", jobs: [lightJob("select", "queued", 10)] },
+    { id: 209, branch: "batched/x", jobs: [lightJob("check", "queued", 10)] },
     { id: 208, event: "workflow_dispatch", jobs: [lightJob("select", "queued", 10)] },
   ]);
   assert.deepEqual(await github.rescue(), { freed: 0, refused: 0 });
   assert.deepEqual(github.posts(), []);
-  for (const id of [203, 204, 206, 207, 208])
+  for (const id of [203, 204, 206, 207, 208, 209])
     assert.ok(
       !github.requests.some((request) => request.includes(`/actions/runs/${id}/`)),
       String(id),
     );
-  assert.ok(github.lines.some((line) => line.includes("0 of 3 first attempts of main's Check")));
+  assert.ok(
+    github.lines.some((line) =>
+      line.includes("0 of 3 first attempts of main's and the batches' push Checks"),
+    ),
+  );
 });
 
 test("GitHub answering badly never cancels, and a refused cancel ends the rescue red", async () => {
@@ -764,12 +847,15 @@ test("box-rerun leaves main's Check red when a job failed off the light runners,
   assert.equal(decision.action, "report");
   assert.deepEqual(decision.action === "report" && decision.failed, ["fast (failure)"]);
   const light = [ran(1, "select", [label], "failure")];
-  // A failed re-run attempt is never re-run again, and no other branch uses the lane.
+  // A failed re-run attempt is never re-run again, and no branch but main and the batches uses
+  // the lane.
   assert.equal(rerunDecision(mainFailed(2), undefined, light, "basalt-box").action, "none");
-  assert.equal(
-    rerunDecision(mainFailed(1, "batch/x"), undefined, light, "basalt-box").action,
-    "none",
-  );
+  for (const branch of ["feature", "batched/x", undefined])
+    assert.equal(
+      rerunDecision({ ...mainFailed(), branch }, undefined, light, "basalt-box").action,
+      "none",
+      String(branch),
+    );
   assert.equal(
     rerunDecision({ ...mainFailed(), event: "pull_request" }, undefined, light, "basalt-box")
       .action,
@@ -793,14 +879,13 @@ test("box-rerun leaves main's Check red when a job failed off the light runners,
   assert.equal(rerunDecision(mainFailed(), undefined, hostedOnly, "basalt-box").action, "none");
 });
 
-test("every light job has a timeout, so a hung light runner can't hold main's Check for hours", () => {
-  // GitHub's default is 360 minutes; the longest light job of 26 Nov took 268 s. The aggregate's
-  // own artifact steps may take 17 minutes, so it gets 25.
-  for (const id of lightJobs) {
+test("every light job has a timeout, so a hung light runner can't hold a Check for hours", () => {
+  // GitHub's default is 360 minutes; the longest light job of 26 Nov took 268 s.
+  for (const id of lightJobs.filter((id) => id !== "check")) {
     const minutes = workflow.jobs[id]["timeout-minutes"];
-    const most = id === "check" ? 25 : 15;
-    assert.ok(Number.isInteger(minutes) && minutes > 0 && minutes <= most, `${id}: ${minutes}`);
+    assert.ok(Number.isInteger(minutes) && minutes > 0 && minutes <= 15, `${id}: ${minutes}`);
   }
+  assert.equal(workflow.jobs.check["timeout-minutes"], checkTimeout);
 });
 
 test("box-rerun re-runs main's Check hosted when a light job timed out", () => {
@@ -834,19 +919,25 @@ test("box-rerun re-runs main's Check hosted when a light job timed out", () => {
   assert.equal(rerunDecision(mainFailed(), undefined, beside, "basalt-box").action, "report");
 });
 
-test("a hung aggregate ends main's Check cancelled, re-run only when it had waited 2 minutes for a runner", () => {
-  // Every need passed, and the aggregate timed out on a light runner: the run ends cancelled, and a
-  // timeout's annotation names nobody, so box-rerun's light path decides by the wait alone.
+test("an aggregate cancelled on a light runner before its bound is re-run only when it had waited 2 minutes for a runner", () => {
+  // Every need passed, and the aggregate ended cancelled on a light runner short of its timeout: no
+  // hang, and a cancel's annotation is read only for a held job, so the wait alone decides.
   const needs = [
     ran(1, "select", [label], "success"),
     ran(2, "fast", ["ubuntu-latest"], "success"),
   ];
-  const hung = (waited: number) => rerunJob(3, "check", [label], "cancelled", waited, "light-1");
-  assert.deepEqual(decideLight([...needs, hung(3)], false, undefined), {
-    action: "rerun",
-    stuck: [3],
-  });
-  assert.equal(decideLight([...needs, hung(0)], false, undefined).action, "none");
+  const stopped = (waited: number) => rerunJob(3, "check", [label], "cancelled", waited, "light-1");
+  for (const branch of ["main", "batch/x"]) {
+    const run: Run = { ...cancelledRun, event: "push", branch };
+    assert.deepEqual(rerunDecision(run, undefined, [...needs, stopped(3)], "basalt-box"), {
+      action: "rerun",
+      stuck: [3],
+    });
+    assert.equal(
+      rerunDecision(run, undefined, [...needs, stopped(0)], "basalt-box").action,
+      "none",
+    );
+  }
 });
 
 test("a second attempt never uses the lane", () => {
@@ -859,8 +950,134 @@ test("a second attempt never uses the lane", () => {
     }),
     "ubuntu-latest",
   );
-  const needs = { select: { result: "success", outputs: { light_label: label } } };
-  const github = { run_attempt: "2" };
-  assert.equal(evaluate(laterRunsOn, { github, needs }), "ubuntu-latest");
-  assert.equal(evaluate(checkRunsOn, { github, needs }), "ubuntu-latest");
+  // A re-run reuses attempt 1's select, whose outputs still carry both labels.
+  const needs = {
+    select: { result: "success", outputs: { light_label: label, check_label: label } },
+  };
+  for (const ref of ["refs/heads/main", "refs/heads/batch/x"]) {
+    const github = { run_attempt: "2", ref };
+    assert.equal(checkLabel(input({ ...main, ref, attempt: "2" })), "", ref);
+    assert.equal(evaluate(laterRunsOn, { github, needs }), "ubuntu-latest", ref);
+    assert.equal(evaluate(checkRunsOn, { github, needs }), "ubuntu-latest", ref);
+    assert.equal(evaluate(checkTimeout, { github, needs }), checkMinutes.main, ref);
+  }
+});
+
+test("the aggregate's bound is 3 minutes only for a batch's first attempt on a light runner", () => {
+  assert.deepEqual(checkMinutes, { main: 25, batch: 3 });
+  const needs = (check: string, result = "success") => ({
+    select: { result: "success", outputs: { light_label: "", check_label: check } },
+    fast: { result },
+  });
+  const batch = "refs/heads/batch/pool-stop-1";
+  const timeout = (ref: string, check: string, attempt = "1", result = "success") =>
+    evaluate(checkTimeout, { github: { run_attempt: attempt, ref }, needs: needs(check, result) });
+  assert.equal(timeout(batch, label), 3);
+  assert.equal(timeout("refs/heads/main", label), 25);
+  assert.equal(timeout(batch, ""), 25);
+  assert.equal(timeout("refs/heads/main", ""), 25);
+  assert.equal(timeout(batch, label, "2"), 25);
+  assert.equal(timeout(batch, label, "1", "cancelled"), 25);
+  // The bound follows the runner: 3 exactly where runs-on takes a batch's aggregate to a light one.
+  for (const ref of ["refs/heads/main", batch, "refs/pull/1/merge"])
+    for (const attempt of ["1", "2"])
+      for (const check of [label, ""])
+        for (const result of ["success", "failure", "skipped", "cancelled"]) {
+          const contexts = { github: { run_attempt: attempt, ref }, needs: needs(check, result) };
+          const light = evaluate(checkRunsOn, contexts) !== "ubuntu-latest";
+          assert.equal(
+            evaluate(checkTimeout, contexts),
+            light && ref === batch ? 3 : 25,
+            JSON.stringify(contexts),
+          );
+        }
+});
+
+test("a batch aggregate the light lane hasn't taken in 3 minutes gets its Check force-cancelled, and box-rerun re-runs it hosted", async () => {
+  // The batch's needs ran hosted and passed; only its aggregate, created last, waits for the light
+  // runners.
+  const branch = "batch/pool-stop-1";
+  const github = fakeGitHub([
+    {
+      id: 601,
+      branch,
+      jobs: [
+        { ...lightJob("fast", "completed", 40), labels: ["ubuntu-latest"] },
+        lightJob("check", "queued", queuedMinutes),
+      ],
+    },
+  ]);
+  assert.deepEqual(await github.rescue(), { freed: 1, refused: 0 });
+  assert.deepEqual(github.posts(), ["POST /actions/runs/601/force-cancel"]);
+  assert.ok(
+    github.lines.some((line) => /cancelled run 601: its check job waited 3 minutes/.test(line)),
+  );
+  // The state the force-cancel leaves, made with the workflow token: box-rerun.yml re-runs it.
+  const run: Run = { id: 601, attempt: 1, conclusion: "cancelled", event: "push", branch };
+  const jobs = [
+    ran(1, "fast", ["ubuntu-latest"], "success", "GitHub Actions 1"),
+    ran(2, "fast-units (1)", ["ubuntu-latest"], "success", "GitHub Actions 2"),
+    rerunJob(3, "check", [label], "cancelled", queuedMinutes),
+  ];
+  assert.deepEqual(rerunDecision(run, undefined, jobs, "basalt-box", false, rescuer), {
+    action: "rerun",
+    stuck: [3],
+  });
+});
+
+test("a light runner that hangs under a batch aggregate ends it at its bound, and box-rerun re-runs it hosted", () => {
+  const branch = "batch/pool-stop-1";
+  const select = { result: "success", outputs: { light_label: "", check_label: label } };
+  const contexts = {
+    github: { run_attempt: "1", ref: "refs/heads/" + branch },
+    needs: { select, fast: { result: "success" } },
+  };
+  assert.equal(evaluate(checkRunsOn, contexts), label);
+  assert.equal(evaluate(checkTimeout, contexts), checkMinutes.batch);
+  const run: Run = { id: 9, attempt: 1, conclusion: "cancelled", event: "push", branch };
+  const passed = [
+    ran(1, "select", ["ubuntu-latest"], "success", "GitHub Actions 1"),
+    ran(2, "fast", ["ubuntu-latest"], "success", "GitHub Actions 2"),
+    rerunJob(4, "client-mobile", ["ubuntu-latest"], "skipped", 0),
+  ];
+  // Taken at once, so it never waited for a runner; it ran `minutes` before it ended.
+  const aggregate = (minutes: number, conclusion = "cancelled", labels = [label]): RerunJob => ({
+    id: 3,
+    name: "check",
+    conclusion,
+    labels,
+    runnerName: labels[0] === label ? "basalt-light-1" : "GitHub Actions 3",
+    createdAt: ago(minutes + 0.1),
+    startedAt: ago(minutes),
+    completedAt: ago(0),
+  });
+  const hung = [...passed, aggregate(checkMinutes.batch)];
+  const rerun = { action: "rerun", stuck: [3] };
+  const decide = (jobs: RerunJob[], at: Partial<Run> = {}) =>
+    rerunDecision({ ...run, ...at }, undefined, jobs, "basalt-box", false, undefined);
+  // GitHub's timeout cancelled it: its annotation names nobody, and the cancel's record isn't read.
+  assert.deepEqual(decide(hung), rerun);
+  assert.deepEqual(lightHung(run, hung), [3]);
+  assert.deepEqual(decide([...passed, aggregate(checkMinutes.batch, "timed_out")]), rerun);
+  // Whatever conclusion GitHub gives the run.
+  assert.deepEqual(decide(hung, { conclusion: "failure" }), rerun);
+  // Short of its bound it is a cancel, not a hang: a person's stands.
+  assert.equal(decide([...passed, aggregate(checkMinutes.batch - 0.1)]).action, "none");
+  // A person who cancels a running batch cancels its running jobs: a need that didn't pass keeps
+  // it cancelled, whatever the aggregate did.
+  for (const conclusion of ["cancelled", "failure"]) {
+    const need = ran(5, "declared-cloud (1)", ["ubuntu-latest"], conclusion, "GitHub Actions 5");
+    assert.equal(decide([need, ...hung]).action, "none", conclusion);
+  }
+  // Hosted, a re-run, or no lane push: not the light runner's hang.
+  const hosted = aggregate(checkMinutes.batch, "cancelled", ["ubuntu-latest"]);
+  assert.equal(decide([...passed, hosted]).action, "none");
+  for (const other of [{ attempt: 2 }, { event: "pull_request" }, { branch: "feature" }])
+    assert.equal(decide(hung, other).action, "none", JSON.stringify(other));
+  // Main's aggregate keeps main's bound.
+  assert.equal(decide(hung, { branch: "main" }).action, "none");
+  assert.deepEqual(decide([...passed, aggregate(checkMinutes.main)], { branch: "main" }), rerun);
+  // A batch aggregate that failed on a light runner with every need passed broke there too.
+  const failed = [...passed, aggregate(0.5, "failure")];
+  assert.deepEqual(decide(failed, { conclusion: "failure" }), rerun);
 });
