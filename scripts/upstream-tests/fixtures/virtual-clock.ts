@@ -7,7 +7,8 @@ import { Clock, Duration, Effect } from "effect";
  */
 export function virtualClock(limit = Number.POSITIVE_INFINITY, start = Date.UTC(2026, 10, 28)) {
   let now = start;
-  const nanos = () => BigInt(now) * 1_000_000n;
+  // A sleep may add fractional milliseconds; the clock still answers whole nanoseconds.
+  const nanos = () => BigInt(Math.round(now * 1_000_000));
   const clock: Clock.Clock = {
     currentTimeMillisUnsafe: () => now,
     currentTimeMillis: Effect.sync(() => now),

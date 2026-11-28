@@ -4,10 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Credentials } from "@distilled.cloud/cloudflare/Credentials";
-import { Clock, Context, Effect, Layer, Redacted } from "effect";
+import { Clock, Context, Effect, Exit, Layer, Redacted } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { envelope, resolvedApplication } from "../../pool-fleet/test/cloudflare-shapes.ts";
-import { listPage, refusalBody, registryCredentials } from "../../stage-cloudflare/test/cloudflare-shapes.mjs";
+import {
+  listPage,
+  refusalBody,
+  registryCredentials,
+} from "../../stage-cloudflare/test/cloudflare-shapes.mjs";
 import { virtualClock } from "./virtual-clock.ts";
 
 // A Worker and a context-built Container in one cycle, as the emulated upstream stage declares
@@ -103,17 +107,24 @@ const digest = `sha256:${"e".repeat(64)}`;
 const NOT_FOUND_READS = 3;
 let live = new Map<string, object>();
 let misses = new Map<string, number>();
+// Ids whose read fails with something other than not found.
+let broken = new Set<string>();
 let reads = { byId: 0, notFound: 0 };
 let creates: { attached: unknown }[] = [];
 let next = 1;
 const reset = () => {
   live = new Map();
   misses = new Map();
+  broken = new Set();
   reads = { byId: 0, notFound: 0 };
   creates = [];
   next = 1;
 };
-const answer = (request: Parameters<typeof HttpClientResponse.fromWeb>[0], status: number, body: unknown) =>
+const answer = (
+  request: Parameters<typeof HttpClientResponse.fromWeb>[0],
+  status: number,
+  body: unknown,
+) =>
   Effect.succeed(HttpClientResponse.fromWeb(request, globalThis.Response.json(body, { status })));
 const http = HttpClient.make((request, url) => {
   // The image is already published under its input hash, so the deploy reuses it.
@@ -121,16 +132,22 @@ const http = HttpClient.make((request, url) => {
     return Effect.succeed(
       HttpClientResponse.fromWeb(
         request,
-        new globalThis.Response(null, { status: 200, headers: { "docker-content-digest": digest } }),
+        new globalThis.Response(null, {
+          status: 200,
+          headers: { "docker-content-digest": digest },
+        }),
       ),
     );
   if (url.pathname.endsWith("/credentials")) return answer(request, 200, registryCredentials());
   const [, id, rest] = /\/containers\/applications(?:\/([^/]+))?(\/.*)?$/u.exec(url.pathname) ?? [];
   const notFound = () =>
     answer(request, 404, refusalBody([{ code: 1609, message: "Container application not found" }]));
-  if (request.method === "GET" && !id && !rest) return answer(request, 200, listPage([...live.values()]));
+  if (request.method === "GET" && !id && !rest)
+    return answer(request, 200, listPage([...live.values()]));
   if (request.method === "GET" && id && !rest) {
     reads.byId++;
+    if (broken.has(id))
+      return answer(request, 500, refusalBody([{ code: 10000, message: "Internal error" }]));
     if ((misses.get(id) ?? 0) > 0) {
       misses.set(id, (misses.get(id) ?? 0) - 1);
       reads.notFound++;
@@ -142,7 +159,9 @@ const http = HttpClient.make((request, url) => {
   if (request.method === "POST" && !id) {
     const call: { attached: unknown } = { attached: undefined };
     if (request.body._tag === "Uint8Array")
-      call.attached = JSON.parse(Buffer.from(request.body.body).toString()).durable_objects?.namespace_id;
+      call.attached = JSON.parse(
+        Buffer.from(request.body.body).toString(),
+      ).durable_objects?.namespace_id;
     creates.push(call);
     // What Cloudflare stores for this declaration, from the recorded read of an application.
     const created = {
@@ -173,7 +192,8 @@ const layers = Layer.mergeAll(
   alchemy.LiveContainerProvider(),
   alchemy.succeed(Worker, {
     stables: ["id"],
-    precreate: ({ id }: { id: string }) => Effect.succeed({ id, durableObjectNamespaces: namespaces }),
+    precreate: ({ id }: { id: string }) =>
+      Effect.succeed({ id, durableObjectNamespaces: namespaces }),
     reconcile: ({ id, news }: { id: string; news: object }) =>
       Effect.succeed({ id, ...news, durableObjectNamespaces: namespaces }),
     delete: () => Effect.void,
@@ -193,7 +213,11 @@ const program = Effect.gen(function* () {
   // What an async Worker's `env: { Mock: mock }` binds: the class's container and its namespace.
   const worker = yield* Worker("Gateway", {
     containers: [
-      { className: "Mock", dev: mock.dev, hash: mock.hash.pipe(alchemy.map((hash) => hash?.image)) },
+      {
+        className: "Mock",
+        dev: mock.dev,
+        hash: mock.hash.pipe(alchemy.map((hash) => hash?.image)),
+      },
     ],
   });
   yield* mock.bind("Gateway", {
@@ -226,15 +250,23 @@ const run = Effect.gen(function* () {
   const created: Store = {};
   yield* deploy(created);
   assert.equal(live.size, 1, "the deploy creates the application");
-  assert.deepEqual(creates, [{ attached: "namespace-mock" }], "one create, attached to the namespace");
+  assert.deepEqual(
+    creates,
+    [{ attached: "namespace-mock" }],
+    "one create, attached to the namespace",
+  );
   assert.equal(created.readback?.test?.Mock?.attr.applicationId, [...live.keys()][0]);
   time.slept = 0;
+  const appId = [...live.keys()][0]!;
+  // The window is still open when the plan starts, so the plan itself must read through it.
+  const pending = misses.get(appId) ?? 0;
+  assert.ok(pending > 0, "the application still reads as not found when the plan starts");
   assert.deepEqual(
     yield* planOf(created),
     { Mock: "noop", Gateway: "noop" },
     "a fresh plan right after the create is all noop while the application still reads as not found",
   );
-  assert.equal(reads.notFound, NOT_FOUND_READS, "the plan read through the not-found window");
+  assert.equal(misses.get(appId), 0, "the plan read through the not-found window");
   const settled = { slept: time.slept, reads: reads.byId };
 
   reset();
@@ -249,12 +281,28 @@ const run = Effect.gen(function* () {
     { Mock: "update", Gateway: "noop" },
     "an application that is really gone still plans an update once the readiness window has passed",
   );
-  assert.ok(reads.byId - before > 1, "a missing application is read again before it is called gone");
+  assert.ok(
+    reads.byId - before > 1,
+    "a missing application is read again before it is called gone",
+  );
   assert.ok(
     time.slept >= 10_000 && time.slept <= 30_000,
     `the readiness window is waited out once (${time.slept} ms)`,
   );
-  return { tree, settled, deleted: { slept: time.slept, reads: reads.byId - before } };
+  const deletedRun = { slept: time.slept, reads: reads.byId - before };
+
+  // Any other failed read is no not-found: the plan fails at once, and nothing waits.
+  reset();
+  const failing: Store = {};
+  yield* deploy(failing);
+  misses.clear();
+  for (const id of live.keys()) broken.add(id);
+  time.slept = 0;
+  const outcome = yield* Effect.exit(planOf(failing));
+  assert.ok(Exit.isFailure(outcome), "a read that fails another way fails the plan");
+  assert.equal(time.slept, 0, "and the plan does not wait for it");
+
+  return { tree, settled, deleted: deletedRun, failing: { slept: time.slept } };
 }).pipe(
   Effect.provide(NodeServices.layer),
   Effect.provideService(Clock.Clock, time.clock),
