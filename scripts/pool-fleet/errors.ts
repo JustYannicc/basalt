@@ -72,11 +72,20 @@ const published = new Set([
   "handoff.response.step",
   "handoff.response.reason",
   "handoff.response.code",
+  "handoff.response.answeredBy",
+  "handoff.response.bytes",
+  "handoff.response.message",
+  "handoff.response.ray",
+  "handoff.command.sessions",
 ]);
+const counts = new Set(["handoff.response.bytes", "handoff.command.sessions"]);
 // A status is a closed number: it says whether the Worker or the bridge in front of it answered.
-const closed = (value: unknown) =>
+// A count (an answer's bytes, a read's sessions) is one too.
+const closed = (path: string, value: unknown) =>
   typeof value === "string" ||
-  (typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 599);
+  (typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    (counts.has(path) ? value >= 0 : value >= 100 && value <= 599));
 
 export function describeError(error: unknown): string {
   // Acceptance messages are written for public CI logs; they never carry bodies or secrets.
@@ -93,7 +102,7 @@ export function describeError(error: unknown): string {
       ? (error.delta as { changed?: { path: string; new: unknown }[] } | undefined)?.changed
       : undefined;
   const response = (changed ?? [])
-    .filter((entry) => published.has(entry.path) && closed(entry.new))
+    .filter((entry) => published.has(entry.path) && closed(entry.path, entry.new))
     .map((entry) => `${entry.path}=${String(entry.new)}`)
     .join(" ");
   const base = typeof reason === "string" ? `${name}: ${reason}` : name;
