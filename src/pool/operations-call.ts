@@ -16,13 +16,17 @@ export const poolOperationsAnswered = (response: Response) =>
  * controller's own refusal line: an argument RPC can't send throws before the controller runs, and
  * a reset or a lost connection mid-call throws after it may have acted. One closed line says which
  * by the error's closed shape, as POOL_CONTROLLER_CALL_FAILED does, with the route and the status
- * it answers, which the lane prints too.
+ * it answers, which the lane prints too. A call the controller answers writes one closed
+ * POOL_OPERATIONS_ANSWERED line instead, with the route, its status and how long it took, so a lane
+ * command refused by a hop before this code tells apart from one this code answered.
  */
 export async function throughController(
   route: string,
   call: () => Promise<Response>,
   log: (marker: string, line: string) => void = console.error,
+  answered: (marker: string, line: string) => void = console.info,
 ) {
+  const started = performance.now();
   let response: Response;
   try {
     response = await call();
@@ -38,5 +42,14 @@ export async function throughController(
   // the status, headers and a streaming body.
   const answer = new Response(response.body, response);
   answer.headers.set(poolOperationsAnswerHeader, ownAnswer);
+  answered(
+    "POOL_OPERATIONS_ANSWERED",
+    JSON.stringify({
+      route,
+      status: answer.status,
+      // workerd's performance.now() is the wall clock (timeOrigin 0), which can step back.
+      elapsedMs: Math.max(0, Math.round(performance.now() - started)),
+    }),
+  );
   return answer;
 }
