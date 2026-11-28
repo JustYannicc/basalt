@@ -86,24 +86,44 @@ function mainAsOf(git: Git, seconds: string) {
 }
 
 /**
+ * The base side of a pull request event's merge commit: GitHub's test merge of the head into the
+ * base branch as the event fired, which every job and re-run checks out. Anything else about that
+ * commit fails; it never falls back to the event's base commit or to main's tip.
+ */
+function mergedInto(git: Git, merged: string, head: string) {
+  if (!/^[0-9a-f]{40}$/.test(merged)) throw new Error("the event names no merge commit");
+  try {
+    git("cat-file", "-e", `${merged}^{commit}`);
+  } catch {
+    throw new Error(`the event's merge commit ${merged} is not in the checkout`);
+  }
+  const parents = git("rev-list", "--parents", "--max-count=1", merged).split(" ").slice(1);
+  if (parents.length !== 2)
+    throw new Error(
+      `the event's merge commit ${merged} has ${parents.length} parent(s), not the base side and the head`,
+    );
+  const [target = "", second] = parents;
+  if (second !== head)
+    throw new Error(
+      `the event's merge commit ${merged} merges ${second}, not the pull request's head ${head}`,
+    );
+  return target;
+}
+
+/**
  * The commit a Check compares its head with, by one rule over the event. Every job of a run reads
- * the same payload, and so does every re-run, so they all resolve the same commit however far main
- * has moved since: a pull request's merge-base with the event's base commit, a batch push's
- * merge-base with main as of the push, and a main push's previous commit (with none, its
- * merge-base with main).
+ * the same payload and commit, and so does every re-run, so they all resolve the same commit however
+ * far main has moved since: a pull request's merge-base with the base side of the event's merge
+ * commit, a batch push's merge-base with main as of the push, and a main push's previous commit
+ * (with none, its merge-base with main).
  */
 export function comparisonBase(event: CheckEvent, git: Git) {
   let found: string, note: string;
   if (event.name === "pull_request") {
     const head = commitAt(event.payload, "pull_request.head.sha");
-    const target = commitAt(event.payload, "pull_request.base.sha");
-    try {
-      git("cat-file", "-e", `${target}^{commit}`);
-    } catch {
-      git("fetch", "--no-tags", "origin", target);
-    }
+    const target = mergedInto(git, event.sha, head);
     found = git("merge-base", head, target);
-    note = `the merge-base of ${head} with the event's base commit ${target}`;
+    note = `the merge-base of ${head} with ${target}, the base side of the event's merge commit ${event.sha}`;
   } else if (event.name === "push" && event.ref.startsWith("refs/heads/batch/")) {
     const seconds = pushedAt(event.payload);
     git("fetch", "--no-tags", "origin", `+refs/heads/main:${main}`);

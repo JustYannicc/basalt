@@ -102,12 +102,22 @@ const batchPush = (sha: string, pushedAt: unknown, ref = "refs/heads/batch/b"): 
   sha,
   payload: { ref, before: "0".repeat(40), after: sha, repository: { pushed_at: pushedAt } },
 });
-const pullRequest = (head: string, base: string): CheckEvent => ({
+// `sha` is GitHub's test merge of the head into the base branch, which the job checks out.
+const pullRequest = (head: string, base: string, sha: string): CheckEvent => ({
   name: "pull_request",
   ref: "refs/pull/1/merge",
-  sha: "f".repeat(40),
+  sha,
   payload: { pull_request: { head: { sha: head }, base: { sha: base } } },
 });
+// GitHub's test merge as it makes one: the base side first, the head second, on a ref the
+// job's checkout fetches.
+const testMerge = (cwd: string, base: string, branch: string, seconds: number) => {
+  git(cwd, "switch", "-q", "--detach", base);
+  const sha = merge(cwd, branch, seconds);
+  git(cwd, "branch", "-f", "pull-1-merge", sha);
+  git(cwd, "switch", "-q", "main");
+  return sha;
+};
 
 test("every comparing job resolves the commit with the one resolver, from the event alone", () => {
   for (const job of comparing) {
@@ -270,33 +280,103 @@ test("main's first-parent dates going back fail a batch push's comparison", () =
     });
 });
 
-test("a pull request compares with its head's merge-base with the event's base, fetched if missing", () =>
+// A stacked pull request: its head carries a1 from batch/a, which merges into main after the event.
+function stackedPullRequest(origin: string) {
+  commit(origin, "p0", day);
+  const p1 = commit(origin, "p1", day + 100);
+  git(origin, "switch", "-qc", "batch/a");
+  const a1 = commit(origin, "a1", day + 150);
+  git(origin, "switch", "-qc", "stacked");
+  const head = commit(origin, "h1", day + 200);
+  git(origin, "switch", "-q", "main");
+  const p2 = commit(origin, "p2", day + 250);
+  return { p1, a1, head, p2, merged: testMerge(origin, p2, "stacked", day + 260) };
+}
+
+test("every job and re-run of a pull request compares with the base side of the event's merge commit", () =>
   fixture((root, origin) => {
-    commit(origin, "p0", day);
-    const p1 = commit(origin, "p1", day + 100);
-    git(origin, "switch", "-qc", "batch/a");
-    const a1 = commit(origin, "a1", day + 150);
-    git(origin, "switch", "-qc", "stacked");
-    const head = commit(origin, "h1", day + 200);
-    git(origin, "switch", "-q", "main");
-    const p2 = commit(origin, "p2", day + 250);
-    // The event fires with main at p2; batch/a merges after it, before the later jobs fetch.
-    const event = pullRequest(head, p2);
-    const early = checkout(root, "early", origin, head);
+    const { p1, a1, head, p2, merged } = stackedPullRequest(origin);
+    const event = pullRequest(head, p2, merged);
+    const early = checkout(root, "early", origin, merged);
     const first = resolved(resolve(early, "select", event));
-    merge(origin, "batch/a", day + 400);
-    const late = checkout(root, "late", origin, head);
+    // batch/a merges, then main moves on: later jobs and re-runs fetch that main.
+    const tip = merge(origin, "batch/a", day + 400);
+    commit(origin, "p3", day + 500);
+    const late = checkout(root, "late", origin, merged);
     assert.equal(git(late, "merge-base", head, "refs/remotes/origin/main"), a1);
-    // A checkout of the head's branch alone lacks the event's base commit until it fetches it.
-    const narrow = checkout(root, "narrow", origin, head, "--single-branch", "--branch=stacked");
-    assert.throws(() => git(narrow, "cat-file", "-e", `${p2}^{commit}`));
     const later = ["fast", "fast-units", "cpa-pipeline"].map((job) =>
-      resolved(resolve(job === "fast" ? late : narrow, job, event)),
+      resolved(resolve(late, job, event)),
     );
     assert.deepEqual([first, ...later], [p1, p1, p1, p1]);
+    // The payload's base commit is not what the job tested: a base.sha naming a later main than the
+    // merge commit's base side changes nothing (with a fallback to it, this reads a1).
+    assert.equal(git(late, "merge-base", head, tip), a1);
+    const laterBase = {
+      ...event,
+      payload: { pull_request: { head: { sha: head }, base: { sha: tip } } },
+    };
+    assert.equal(resolved(resolve(late, "fast", laterBase)), p1);
+    const noBase = { ...event, payload: { pull_request: { head: { sha: head } } } };
+    assert.equal(resolved(resolve(late, "fast", noBase)), p1);
     refused(
-      resolve(late, "fast", { ...event, payload: { pull_request: { head: { sha: head } } } }),
-      /the event carries no commit at pull_request\.base\.sha/,
+      resolve(late, "fast", { ...event, payload: { pull_request: { base: { sha: p2 } } } }),
+      /the event carries no commit at pull_request\.head\.sha/,
+    );
+  }));
+
+test("a pull request whose merge commit isn't in the checkout fails, never on its base commit", () =>
+  fixture((root, origin) => {
+    const { head, p2, merged } = stackedPullRequest(origin);
+    const narrow = checkout(root, "narrow", origin, head, "--single-branch", "--branch=stacked");
+    assert.throws(() => git(narrow, "cat-file", "-e", `${merged}^{commit}`));
+    refused(
+      resolve(narrow, "fast", pullRequest(head, p2, merged)),
+      new RegExp(`the event's merge commit ${merged} is not in the checkout`),
+    );
+    refused(resolve(narrow, "fast", pullRequest(head, p2, "")), /the event names no merge commit/);
+  }));
+
+test("a pull request whose commit is not a two-parent merge fails, never on its base commit", () =>
+  fixture((root, origin) => {
+    const { head, p2, merged } = stackedPullRequest(origin);
+    const job = checkout(root, "job", origin, merged);
+    refused(
+      resolve(job, "fast", pullRequest(head, p2, head)),
+      new RegExp(
+        `the event's merge commit ${head} has 1 parent\\(s\\), not the base side and the head`,
+      ),
+    );
+    git(origin, "switch", "-qc", "third", p2);
+    commit(origin, "t1", day + 270);
+    git(origin, "switch", "-q", "--detach", p2);
+    const octopus = dated(
+      origin,
+      day + 280,
+      "merge",
+      "-q",
+      "--no-ff",
+      "-m",
+      "octopus",
+      "stacked",
+      "third",
+    );
+    git(origin, "branch", "octopus", octopus);
+    const wide = checkout(root, "wide", origin, octopus);
+    refused(
+      resolve(wide, "fast", pullRequest(head, p2, octopus)),
+      /has 3 parent\(s\), not the base side and the head/,
+    );
+  }));
+
+test("a pull request whose merge commit merges another head fails, never on its base commit", () =>
+  fixture((root, origin) => {
+    const { a1, head, p2, merged } = stackedPullRequest(origin);
+    const job = checkout(root, "job", origin, merged);
+    refused(
+      resolve(job, "fast", pullRequest(a1, p2, merged)),
+      new RegExp(
+        `the event's merge commit ${merged} merges ${head}, not the pull request's head ${a1}`,
+      ),
     );
   }));
 
@@ -339,12 +419,15 @@ test("the pipeline guard excludes a merged release bump from an older PR's merge
     writeFileSync(join(root, "client"), "new client");
     git(root, "commit", "-qam", "client change");
     const head = git(root, "rev-parse", "HEAD");
-    git(root, "merge", "--no-ff", "-m", "PR merge ref", "main");
+    // GitHub's test merge of the PR into main after the bump: main's side first, the head second.
+    git(root, "switch", "-q", "--detach", "main");
+    git(root, "merge", "--no-ff", "-m", "PR merge ref", "pr");
+    const merged = git(root, "rev-parse", "HEAD");
     assert.equal(git(root, "merge-base", "HEAD", "main"), current);
     copyFileSync(resolver, join(root, "scripts/ci/comparison-base.ts"));
-    // The event fired before the bump merged; one after it gives the same merge-base.
+    // Whatever base commit the event names, the merge-base is the head's with the merge's main side.
     const [base, fresher] = [stale, current].map((target) =>
-      resolved(resolve(root, "cpa-pipeline", pullRequest(head, target))),
+      resolved(resolve(root, "cpa-pipeline", pullRequest(head, target, merged))),
     );
     assert.equal(base, stale);
     assert.equal(fresher, stale);
