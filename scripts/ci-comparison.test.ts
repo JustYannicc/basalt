@@ -192,7 +192,10 @@ test("every job and re-run of a batch push compares with main as of the push, ho
     git(origin, "switch", "-q", "main");
     merge(origin, "batch/c", day + 5000);
     const rerun = comparing.map((job) => resolved(resolve(early, job, pushed)));
-    assert.deepEqual([...first, ...second, ...rerun], Array(9).fill(m1));
+    // The batch itself then merges: its head is on main now, but not on main as of its push.
+    merge(origin, "batch/b", day + 6000);
+    const merged = comparing.map((job) => resolved(resolve(early, job, pushed)));
+    assert.deepEqual([...first, ...second, ...rerun, ...merged], Array(13).fill(m1));
   }));
 
 test("main as of the push takes a merge dated the push's own second, and none after it", () =>
