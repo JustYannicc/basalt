@@ -1,5 +1,5 @@
 {
-  "about": "Globs for the files that decide how a production release is made: release code, its workflows, the stack declarations it applies and every carry that patches Alchemy. The Guardrails checks warn when a change here does not ship alone or grows the release tooling past its budget. Entries for the Alchemy release path match nothing until it lands. `cuts` are where the release closure check (release-closure.test.ts) stops walking imports; `decided` names files the release reaches but that are not release path, each with its reason; `laneModules` are the decided pool modules a release-path file imports directly, which the guard names in an information line.",
+  "about": "Globs for the files that decide how a production release is made: release code, its workflows, the stack declarations it applies and every carry that patches Alchemy. The Guardrails checks warn when a change here does not ship alone or grows the release tooling past its budget. Entries for the Alchemy release path match nothing until it lands. `cuts` are where the release closure check (release-closure.test.ts) stops walking imports; `decided` names files the release reaches but that are not release path, each with its reason; `laneModules` are the decided pool runtime modules (entries marked `pool`) that a release script imports directly, which the guard names in an information line; `upstreamPaths` are the upstream stack's own files, and a carry that patches one is release path.",
   "paths": [
     "alchemy.run.ts",
     "infrastructure/**",
@@ -92,9 +92,7 @@
     "src/pool/root-image-pin.ts",
     "src/pool/worker-compatibility.ts",
     "src/pool/worker-database.ts",
-    "src/telemetry/bun.lock",
     "src/telemetry/deployment.ts",
-    "src/telemetry/package.json",
     "src/telemetry/sentry-target.ts",
     "upstream.json",
     "patches/0001-optional-cloud-vendors.*",
@@ -110,7 +108,30 @@
     "patches/0372-release-command-attempt.*",
     "patches/0417-mcp-worker-headroom.*",
     "patches/0693-commands-keyed-on-inputs.*",
-    "patches/0712-database-recovery-parameters.*"
+    "patches/0712-database-recovery-parameters.*",
+    "patches/0063-durable-workflow-input.*",
+    "patches/0126-catalog-oauth-availability.*",
+    "patches/0451-app-pages-headroom.*",
+    "scripts/build.ts",
+    "scripts/worker-build.ts",
+    "scripts/pool-worker-build.ts",
+    "scripts/pool-app-bundle.ts",
+    "scripts/pool-peer-program.ts",
+    "scripts/pool-worker-revision.ts",
+    "scripts/app-pages-runtime-bundle.ts",
+    "scripts/dashboard-runtime-bundle.ts",
+    "scripts/mcp-runtime-bundle.ts",
+    "scripts/sso-runtime-bundle.ts",
+    "scripts/worker-startup.ts",
+    "scripts/startup-profiler/profile.ts",
+    "scripts/startup-profiler/bun.lock",
+    "scripts/prepare-upstream.ts",
+    "scripts/upstream-carries.ts",
+    "patches/0009-basalt-framework.*",
+    "scripts/failure/redact.ts",
+    "scripts/upstream-cache.ts",
+    "scripts/upstream-tests/pool-framework.test.ts",
+    "scripts/worker-startup-tests/*.test.ts"
   ],
   "cuts": [
     {
@@ -145,23 +166,28 @@
   "decided": [
     {
       "path": "src/pool/runtime-slots/**",
-      "why": "Shared with the pool Worker: a change shows as the pool Worker's plan row, and the lane's own tests cover what it reads."
+      "why": "Shared with the pool Worker: a change shows as the pool Worker's plan row, and the lane's own tests cover what it reads.",
+      "pool": true
     },
     {
       "path": "src/pool/runtime-fleet/**",
-      "why": "Shared with the pool Worker: a change shows as the pool Worker's plan row, and the lane's own tests cover what it reads."
+      "why": "Shared with the pool Worker: a change shows as the pool Worker's plan row, and the lane's own tests cover what it reads.",
+      "pool": true
     },
     {
       "path": "src/pool/runtime-provider/**",
-      "why": "Shared with the pool Worker: a change shows as the pool Worker's plan row, and the lane's own tests cover what it reads."
+      "why": "Shared with the pool Worker: a change shows as the pool Worker's plan row, and the lane's own tests cover what it reads.",
+      "pool": true
     },
     {
       "path": "src/pool/runtime-*.ts",
-      "why": "Shared with the pool Worker: a change shows as the pool Worker's plan row, and the lane's own tests cover what it reads."
+      "why": "Shared with the pool Worker: a change shows as the pool Worker's plan row, and the lane's own tests cover what it reads.",
+      "pool": true
     },
     {
       "path": "src/pool/{automatic-recovery,dependency-failure,deployment-readiness,error-shape,json,launch-contract,lifecycle,model-lifetime-contract,native-contract,native-policy-diagnostic,native-streams,native-usage-contract,operations-call,pending-failure,recovery-approval,storage-bookmark,token}.ts",
-      "why": "Shared with the pool Worker: a change shows as the pool Worker's plan row, and the lane's own tests cover what it reads."
+      "why": "Shared with the pool Worker: a change shows as the pool Worker's plan row, and the lane's own tests cover what it reads.",
+      "pool": true
     },
     {
       "path": "src/catalog/settings.ts",
@@ -182,13 +208,92 @@
     {
       "path": "src/pool/pool-group.ts",
       "why": "One prefix constant the change schema imports for its names; the pool Worker owns it."
+    },
+    {
+      "path": "scripts/{upstream-cache-gc,upstream-dependencies,upstream-inputs,upstream-installer,upstream-store}.ts",
+      "why": "Shared preparation: every CI lane prepares the upstream tree with it, so a wrong change fails every lane before a release can use it."
+    },
+    {
+      "path": "scripts/releases/{patch-layout,patch-registry,patches,strict-json}.ts",
+      "why": "Shared preparation: every CI lane prepares the upstream tree with it, so a wrong change fails every lane before a release can use it."
+    },
+    {
+      "path": "scripts/{setup-build,shared-step-cache,prepare-drive}.ts",
+      "why": "Shared preparation: every CI lane prepares the upstream tree with it, so a wrong change fails every lane before a release can use it."
+    },
+    {
+      "path": "scripts/{process,process-owner}.ts",
+      "why": "A process and failure helper every script shares; every lane exercises a change to it before a release can."
+    },
+    {
+      "path": "scripts/process-owner-darwin.mjs",
+      "why": "A process and failure helper every script shares; every lane exercises a change to it before a release can."
+    },
+    {
+      "path": "scripts/failure/{child.ts,process-tee.ts,package.json,bun.lock}",
+      "why": "A process and failure helper every script shares; every lane exercises a change to it before a release can."
+    },
+    {
+      "path": "scripts/ci/{setup-bun.ts,setup-node.mjs,verified-download.mjs,bun-assets.json,node-assets.json}",
+      "why": "Tool setup every CI job runs, pinned by version and checksum; the Check runs the same pinned setup before any release does."
+    },
+    {
+      "path": "scripts/ci/{areas.ts,connector-diagnostics.mjs,declarations.ts,deny-release-downloads.cjs,dependency-lifecycles.ts,e2e-groups.json,inherited-tests.json,inputs.ts,prepare-e2e.ts,upstream-files.json}",
+      "why": "CI's own selection and evidence code, which the preparation reads for its inputs; it decides which tests run, not what a release deploys."
+    },
+    {
+      "path": "scripts/{e2e-evidence,e2e-finalize}.ts",
+      "why": "CI's own selection and evidence code, which the preparation reads for its inputs; it decides which tests run, not what a release deploys."
+    },
+    {
+      "path": "scripts/connectors-tests/{guidance-failure.ts,page-error.mjs}",
+      "why": "CI's own selection and evidence code, which the preparation reads for its inputs; it decides which tests run, not what a release deploys."
+    },
+    {
+      "path": "scripts/catalog-compat/build-failure.mjs",
+      "why": "CI's own selection and evidence code, which the preparation reads for its inputs; it decides which tests run, not what a release deploys."
+    },
+    {
+      "path": "scripts/{catalog-oauth-metadata,oauth-client-id-source,oauth-whole-list-issuers-source,obsidian-plugin-version}.ts",
+      "why": "Product source the preparation copies or generates from; a change shows as the Worker plan rows that use it."
+    },
+    {
+      "path": "clients/obsidian/manifest.json",
+      "why": "Product source the preparation copies or generates from; a change shows as the Worker plan rows that use it."
+    },
+    {
+      "path": "src/catalog/oauth-policy.ts",
+      "why": "Product source the preparation copies or generates from; a change shows as the Worker plan rows that use it."
+    },
+    {
+      "path": "src/pool/{access-contract,account-acquisition-contract}.ts",
+      "why": "Shared with the pool Worker: a change shows as the pool Worker's plan row, and the lane's own tests cover what it reads.",
+      "pool": true
+    },
+    {
+      "path": "src/pool/provider-accounts/**",
+      "why": "Shared with the pool Worker: a change shows as the pool Worker's plan row, and the lane's own tests cover what it reads.",
+      "pool": true
+    },
+    {
+      "path": "src/telemetry/{package.json,bun.lock}",
+      "why": "The telemetry package's manifest: the release reaches it only as the manifest of sentry-target.ts, and neither the smoke nor the deployment record reads it."
+    },
+    {
+      "path": "patches/{0019-preview-auth,0051-mcp-apps,0300-mcp-runtime-storage,0448-storage-index-prelude}.*",
+      "why": "A product carry that also extends the storage-version check the build runs; that check fails every Check build before a release can use it."
     }
   ],
   "laneModules": [
+    "src/pool/access-contract.ts",
+    "src/pool/account-acquisition-contract.ts",
     "src/pool/deployment-readiness.ts",
     "src/pool/native-contract.ts",
     "src/pool/native-usage-contract.ts",
     "src/pool/operations-call.ts",
+    "src/pool/provider-accounts/capabilities.ts",
+    "src/pool/provider-accounts/cloudflare-scopes.ts",
+    "src/pool/provider-accounts/definitions.ts",
     "src/pool/recovery-approval.ts",
     "src/pool/runtime-crash-contract.ts",
     "src/pool/runtime-fleet/configuration.ts",
@@ -213,5 +318,21 @@
     "src/pool/runtime-slots/storage.ts",
     "src/pool/storage-bookmark.ts",
     "src/pool/token.ts"
+  ],
+  "upstreamPaths": [
+    "apps/hosted/cloud/alchemy.run.ts",
+    "apps/hosted/cloud/src/infrastructure/worker-build.ts",
+    "scripts/build-basalt-framework.ts",
+    "packages/sdk/scripts/check-storage-versions.ts"
+  ],
+  "companions": [
+    "architecture/**",
+    "docs/releases.md",
+    "package.json",
+    "tsconfig*.json",
+    "**/*.test.{ts,mts,mjs,js}",
+    "scripts/**/test/**",
+    "scripts/upstream-tests/fixtures/**",
+    "scripts/releases/dependency-carries.json"
   ]
 }

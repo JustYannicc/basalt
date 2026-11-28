@@ -1,18 +1,22 @@
 import { execFileSync } from "node:child_process";
 import { matchesGlob } from "node:path";
 import {
+  companionsAt,
   laneModules,
   onReleasePath,
+  releaseCompanions,
   releasePaths,
   releasePathsAt,
+  sharedOf,
   unionOfPaths,
 } from "./release-path.ts";
 
 // A change to how releases are made ships alone, so a failed release can be traced to it and
 // reverted without taking product work with it. Release-path files may travel only with the
-// architecture model, the release docs, package.json (where the test globs live) and the
-// TypeScript project files that register new files for typechecking.
-export const companions = ["architecture/**", "docs/releases.md", "package.json", "tsconfig*.json"];
+// companions release-path.json names: the architecture model, the release docs, package.json
+// (where the test globs live), the TypeScript project files, test files and their fixtures, and
+// the dependency-carries record.
+export const companions = releaseCompanions;
 
 export type ShipAlone = { pass: boolean; releasePath: string[]; other: string[] };
 
@@ -20,13 +24,17 @@ export type ShipAlone = { pass: boolean; releasePath: string[]; other: string[] 
 const testOf = (file: string, paths: readonly string[]) =>
   /\.test\./u.test(file) && onReleasePath(file.replace(".test.", "."), paths);
 
-export function shipAlone(files: string[], paths: readonly string[] = releasePaths): ShipAlone {
+export function shipAlone(
+  files: string[],
+  paths: readonly string[] = releasePaths,
+  travel: readonly string[] = companions,
+): ShipAlone {
   const releasePath = files.filter((file) => onReleasePath(file, paths));
   const other = files.filter(
     (file) =>
       !onReleasePath(file, paths) &&
       !testOf(file, paths) &&
-      !companions.some((pattern) => matchesGlob(file, pattern)),
+      !travel.some((pattern) => matchesGlob(file, pattern)),
   );
   return { pass: releasePath.length === 0 || other.length === 0, releasePath, other };
 }
@@ -37,6 +45,14 @@ export function shipAlone(files: string[], paths: readonly string[] = releasePat
  */
 export const laneTouches = (files: readonly string[], modules: readonly string[] = laneModules) =>
   files.filter((file) => modules.includes(file));
+
+/** The information line for a change that touches them, or none. Never a failure by itself. */
+export function laneLine(files: readonly string[], modules: readonly string[] = laneModules) {
+  const touched = laneTouches(files, modules);
+  if (!touched.length) return undefined;
+  const names = touched.slice(0, 20).join(", ") + (touched.length > 20 ? ", …" : "");
+  return `Touches ${touched.length} ${touched.length === 1 ? "module" : "modules"} the fleet lane imports: ${names}.`;
+}
 
 export function changedFiles(base: string, head: string, cwd = "."): string[] {
   return execFileSync("git", ["diff", "--name-only", "--no-renames", "-z", `${base}...${head}`], {
@@ -98,11 +114,15 @@ if (import.meta.main) {
     releasePathsAt(".", head),
   );
   const files = batchFiles(main, base, head);
-  const result = shipAlone(files, paths.length ? paths : releasePaths);
+  const travel = sharedOf(
+    companionsAt(".", main),
+    companionsAt(".", base),
+    companionsAt(".", head),
+  );
+  const result = shipAlone(files, paths.length ? paths : releasePaths, travel);
   // Information only: never fails the check by itself.
-  const lane = laneTouches(files);
-  if (lane.length)
-    console.log(`Touches ${lane.length} modules the fleet lane imports: ${lane.join(", ")}.`);
+  const lane = laneLine(files);
+  if (lane) console.log(lane);
   if (result.pass) {
     console.log(
       result.releasePath.length

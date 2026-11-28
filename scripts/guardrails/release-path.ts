@@ -3,13 +3,18 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { matchesGlob } from "node:path";
 
-type Reasoned = { readonly path: string; readonly why: string };
+type Reasoned = { readonly path: string; readonly why: string; readonly pool?: boolean };
 const list = JSON.parse(readFileSync(new URL("./release-path.json", import.meta.url), "utf8")) as {
   paths: string[];
   cuts?: Reasoned[];
   decided?: Reasoned[];
   laneModules?: string[];
+  upstreamPaths?: string[];
+  companions?: string[];
 };
+
+// What release-path files may travel with before release-path.json named it.
+const defaultCompanions = ["architecture/**", "docs/releases.md", "package.json", "tsconfig*.json"];
 
 // One list decides what "the release path" is; every guardrail reads it from here.
 export const releasePaths: readonly string[] = list.paths;
@@ -19,6 +24,10 @@ export const releaseCuts: readonly Reasoned[] = list.cuts ?? [];
 export const releaseDecided: readonly Reasoned[] = list.decided ?? [];
 /** Decided pool modules a release-path file imports directly: the guard names a change to one. */
 export const laneModules: readonly string[] = list.laneModules ?? [];
+/** The upstream stack's own files, relative to the prepared tree: a carry patching one is release path. */
+export const upstreamReleasePaths: readonly string[] = list.upstreamPaths ?? [];
+/** Files that may travel with a release-path change without making it a mix. */
+export const releaseCompanions: readonly string[] = list.companions ?? defaultCompanions;
 
 // The list as a given commit had it. Gates judge with the union of the lists on both sides of a
 // change, so narrowing the list cannot take a change off the release path.
@@ -40,6 +49,32 @@ export function releasePathsAt(root: string, commit: string): string[] {
     throw error;
   }
 }
+
+/**
+ * The companions as a given commit had them. A change is judged by the companions every side
+ * shares, so a pull request cannot widen what may travel with its own release-path files.
+ */
+export function companionsAt(root: string, commit: string): string[] {
+  try {
+    const text = execFileSync("git", ["show", `${commit}:scripts/guardrails/release-path.json`], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return JSON.parse(text).companions ?? defaultCompanions;
+  } catch (error) {
+    if (
+      /does not exist|exists on disk, but not in/u.test(
+        String((error as { stderr?: string }).stderr),
+      )
+    )
+      return defaultCompanions;
+    throw error;
+  }
+}
+
+export const sharedOf = (...lists: readonly (readonly string[])[]) =>
+  lists.reduce((shared, next) => shared.filter((entry) => next.includes(entry)));
 
 export const unionOfPaths = (...lists: readonly (readonly string[])[]) => [
   ...new Set(lists.flat()),
