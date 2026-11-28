@@ -414,3 +414,46 @@ test("a link that appears on the provider app while the teardown runs stops it b
       );
     }),
   ));
+
+test("a teardown stopped before its last step leaves the organization closed to a new setup until it finishes", () =>
+  run(
+    Effect.gen(function* () {
+      yield* operationSchema;
+      const fixture = fixtureProduct();
+      const steps = makeAcceptancePoolSteps(fixture.product);
+      const planned = yield* setupDry(steps);
+      yield* setupApply(steps, planned);
+      let stopped = false;
+      const stopping: AcceptancePoolSteps = {
+        ...steps,
+        run: (step, context) => {
+          if (step === "disconnect-token" && !stopped) {
+            stopped = true;
+            return Effect.fail(new Error("stopped before the token"));
+          }
+          return steps.run(step, context);
+        },
+      };
+      const teardown = yield* teardownDry(steps, planned.planSha256);
+      assert.equal(
+        refusal(yield* Effect.flip(teardownApply(stopping, planned.planSha256, teardown))),
+        "step_failed",
+      );
+      assert.deepEqual(fixture.state.apps, []);
+      assert.equal(fixture.state.accounts.length, 1, "only the pool's token account is left");
+      const unfinished = yield* verify(steps, "teardown", teardown.planSha256);
+      assert.equal(
+        unfinished.action === "verify" && unfinished.verification.checks.organizationEmpty,
+        false,
+      );
+      // No new pool can start beside the leftover.
+      assert.equal(refusal(yield* Effect.flip(setupDry(steps))), "unrecorded_account");
+      const finished = yield* teardownApply(stopping, planned.planSha256, teardown);
+      assert.equal(
+        "verification" in finished && finished.verification?.checks.organizationEmpty,
+        true,
+      );
+      gone(fixture);
+      yield* setupDry(steps);
+    }),
+  ));

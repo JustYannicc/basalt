@@ -10,6 +10,8 @@ import {
   acceptanceIdentity,
 } from "../../.upstream/apps/hosted/server/src/contracts/acceptance-pool.ts";
 import { queuePoolAppUpgrades } from "../../.upstream/apps/hosted/server/src/implementation/pool-app-upgrades.ts";
+import { queueCatalogAppUpdates } from "../../.upstream/apps/hosted/server/src/implementation/catalog-app-upgrades.ts";
+import { catalogAppJobPrefix } from "../../.upstream/apps/hosted/server/src/contracts/catalog-app-updates.ts";
 import { seatReconcileCandidates } from "../../.upstream/apps/hosted/cloud/src/implementation/billing-seats.ts";
 import {
   ensureIdentity,
@@ -165,6 +167,51 @@ test("release rollouts queue no member job for the identity, and still queue one
         from hosted_provisioning order by id`;
       assert.ok(jobs.length >= 2, "the person's pool gets its rotation and bundle jobs");
       assert.ok(jobs.every((job) => job.user_id === "person" && job.organization_id === "team"));
+    }),
+  ));
+
+test("release catalog sweeps and their requeues pass the identity's provider app by, and still reach a person's", () =>
+  pglite(
+    Effect.gen(function* () {
+      const sql = yield* schema;
+      yield* ensureIdentity;
+      yield* sql`create table executor_apps (id text primary key, owner text, name text, copied_from jsonb)`;
+      yield* sql`insert into "user" (id, name, email, "emailVerified") values ('person', 'P', 'p@example.invalid', true)`;
+      yield* sql`insert into organization (id, name, slug) values ('team', 'Team', 'team')`;
+      yield* sql`insert into member (id, "organizationId", "userId", role, "createdAt") values ('m1', 'team', 'person', 'owner', now())`;
+      const feed = "https://catalog.example.test/";
+      const copied = JSON.stringify({ reference: `${feed}apps/provider-custom.json` });
+      yield* sql`insert into executor_apps values
+        ('app_custom_identity', 'organization:acceptance', 'Custom endpoint', ${copied}::jsonb),
+        ('app_custom_team', 'organization:team', 'Custom endpoint', ${copied}::jsonb)`;
+      yield* sql`delete from hosted_provisioning`;
+      const release = "release-sweep";
+      yield* queueCatalogAppUpdates(feed, release);
+      const queued = yield* sql<{
+        organization_id: string;
+      }>`select organization_id from hosted_provisioning`;
+      assert.deepEqual(
+        queued.map((row) => row.organization_id),
+        ["team"],
+      );
+      // Both sweeps ended failed long ago: only the person's organization is queued again.
+      yield* sql`delete from hosted_provisioning`;
+      for (const [organization, user] of [
+        ["team", "person"],
+        ["acceptance", "acceptance"],
+      ])
+        yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id, status, updated_at)
+          values (${`${catalogAppJobPrefix}${release}:${organization}`}, 'member', ${organization}, ${user},
+            'failed', now() - interval '30 days')`;
+      yield* queueCatalogAppUpdates(feed, release);
+      const requeued = yield* sql<{
+        organization_id: string;
+      }>`select organization_id from hosted_provisioning
+        where status = 'queued'`;
+      assert.deepEqual(
+        requeued.map((row) => row.organization_id),
+        ["team"],
+      );
     }),
   ));
 

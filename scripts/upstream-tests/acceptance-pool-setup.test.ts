@@ -331,6 +331,9 @@ test("a resumed setup re-checks, at each step, that nothing it did not create ha
       before.state.pools.pop();
       before.state.apps.push({ id: "app_stray", name: "Something" });
       assert.equal(refusal(yield* Effect.flip(apply(beforeSteps, planned))), "unrecorded_app");
+      before.state.apps.pop();
+      before.state.accounts.push("acc_stray");
+      assert.equal(refusal(yield* Effect.flip(apply(beforeSteps, planned))), "unrecorded_account");
       assert.ok(!before.calls.includes("createPool"));
       // Stopped before the provider; a stray app appears; the resumed install refuses.
       const middle = fixtureProduct();

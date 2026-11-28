@@ -780,7 +780,7 @@ index 0000000..cf3b18f
 +export const digest = (value: unknown) => sha256(`${canonical(value)}\n`);
 diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/receipt.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/receipt.ts
 new file mode 100644
-index 0000000..1baa37f
+index 0000000..d1deb39
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/receipt.ts
 @@ -0,0 +1,225 @@
@@ -967,7 +967,7 @@ index 0000000..1baa37f
 +          yield* bounded;
 +          const rows = yield* sql`select organization_id, migration, revision, release,
 +            backup_sha256, verification from private_production_ops_receipts
-+            where plan_sha256 = ${input.planSha256} for update nowait`;
++            where plan_sha256 = ${input.planSha256} for update`;
 +          if (rows.length !== 1) return yield* refuse("receipt_mismatch");
 +          const state = yield* decodeRow(rows[0], input.kind, input.release, input.observedSha256);
 +          if (
@@ -1068,10 +1068,10 @@ index 0000000..7040eab
 +  kind === "setup" ? Effect.asVoid(setupRequest(request)) : Effect.asVoid(teardownRequest(request));
 diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/runner.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/runner.ts
 new file mode 100644
-index 0000000..c870efa
+index 0000000..17f96c7
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/runner.ts
-@@ -0,0 +1,314 @@
+@@ -0,0 +1,322 @@
 +import {
 +  acceptanceIdentity,
 +  AcceptancePoolRefused,
@@ -1174,10 +1174,18 @@ index 0000000..c870efa
 +  (step: string) =>
 +  (cause: Cause.Cause<unknown>): Effect.Effect<never, AcceptancePoolRefused> => {
 +    const error = Option.getOrUndefined(Cause.findErrorOption(cause));
-+    return Effect.fail(
-+      error instanceof AcceptancePoolRefused
-+        ? error
-+        : new AcceptancePoolRefused({ reason: "step_failed", step }),
++    if (error instanceof AcceptancePoolRefused) return Effect.fail(error);
++    // The error's class tag, a name from code, is the one diagnostic that leaves: never a message.
++    const named =
++      typeof error === "object" && error !== null && "_tag" in error ? error._tag : undefined;
++    const tag =
++      typeof named === "string" && /^[A-Za-z][A-Za-z0-9]{0,63}$/u.test(named)
++        ? named
++        : Cause.hasDies(cause)
++          ? "defect"
++          : "unknown";
++    return Effect.logWarning("acceptance_pool.step_failed", { step, tag }).pipe(
++      Effect.andThen(Effect.fail(new AcceptancePoolRefused({ reason: "step_failed", step }))),
 +    );
 +  };
 +
@@ -1388,10 +1396,10 @@ index 0000000..c870efa
 +  });
 diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/setup.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/setup.ts
 new file mode 100644
-index 0000000..0ede1c6
+index 0000000..9aab4a4
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/setup.ts
-@@ -0,0 +1,212 @@
+@@ -0,0 +1,218 @@
 +import {
 +  refuse,
 +  type Json,
@@ -1444,9 +1452,12 @@ index 0000000..0ede1c6
 +      const parsed = yield* setupRequest(request);
 +      const identity = yield* inspectIdentity;
 +      const state = yield* product.state;
-+      // Exactly one pool: a setup starts only when the identity holds none and owns no app.
++      // Exactly one pool: a setup starts only when the identity holds nothing at all, so a
++      // teardown that stopped early is finished before another pool can exist beside its leftovers.
 +      if (state.pools.some((pool) => pool.live)) return yield* refuse("identity_holds_pool");
 +      if (state.apps.length > 0) return yield* refuse("unrecorded_app");
++      // Links are read only on the organization's own apps, so none can exist without an app.
++      if (state.accounts.length > 0) return yield* refuse("unrecorded_account");
 +      const accounts = [];
 +      for (const account of parsed.accounts) accounts.push({ ...account, creation: yield* uuid });
 +      const data = { pool: parsed.pool, requestId: yield* uuid, accounts };
@@ -1495,6 +1506,9 @@ index 0000000..0ede1c6
 +          return yield* refuse("identity_holds_pool");
 +        const mine = ourPool(state, data);
 +        if (state.apps.some((app) => app.id !== mine)) return yield* refuse("unrecorded_app");
++        const token = state.pools.find((pool) => pool.app === mine)?.account;
++        if (state.accounts.some((account) => account !== token))
++          return yield* refuse("unrecorded_account");
 +        return { app: yield* product.createPool(data.pool, data.requestId) };
 +      }
 +      const pool = recorded(context.progress, "create");
@@ -1640,10 +1654,10 @@ index 0000000..36d19d8
 +};
 diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/teardown.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/teardown.ts
 new file mode 100644
-index 0000000..b40540f
+index 0000000..e69cf63
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/teardown.ts
-@@ -0,0 +1,273 @@
+@@ -0,0 +1,276 @@
 +import {
 +  acceptanceIdentity,
 +  acceptancePoolName,
@@ -1904,6 +1918,9 @@ index 0000000..b40540f
 +          !state.pools.some((pool) => pool.request === data.requestId && pool.live),
 +        accountsGone: !state.accounts.some((id) => gone.has(id)),
 +        linksGone: !state.links.some((link) => gone.has(link.app) || gone.has(link.account)),
++        // Nothing at all is left in the organization, which is what the next setup requires.
++        organizationEmpty:
++          state.apps.length === 0 && state.accounts.length === 0 && state.links.length === 0,
 +        membershipGone: membership !== undefined && !membership.native,
 +      };
 +    });
@@ -2362,6 +2379,42 @@ index 188c8d3..842dcc2 100644
    params: { readonly app: AppId; readonly requirement: string; readonly account: AccountId },
    source?: AppAccountSource,
  ) =>
+diff --git a/apps/hosted/server/src/implementation/catalog-app-upgrades.ts b/apps/hosted/server/src/implementation/catalog-app-upgrades.ts
+index 8d24299..2b4def1 100644
+--- a/apps/hosted/server/src/implementation/catalog-app-upgrades.ts
++++ b/apps/hosted/server/src/implementation/catalog-app-upgrades.ts
+@@ -2,6 +2,7 @@ import { Clock, Effect } from "effect";
+ import { SqlClient } from "effect/sql";
+ import { catalogAppJobPrefix } from "../contracts/catalog-app-updates.ts";
+ import { catalogAppRelease } from "./catalog-app-release.ts";
++import { acceptanceIdentity } from "../contracts/acceptance-pool.ts";
+ 
+ /** Whether a release's catalog app sweep for the organization is queued or still running. */
+ export const catalogAppSweepPending = (organization: string) =>
+@@ -50,6 +51,7 @@ export const queueCatalogAppUpdates = (feedUrl: string, release = catalogAppRele
+             completed_at is not null as completed from private_hosted_data_steps
+             where name = ${name} and run = 'apply' for update`;
+           if (locked?.completed) return;
++          // The acceptance identity's provider app is the operation's own; no sweep updates it.
+           yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id, available_at)
+             select distinct on (organization.id)
+               ${catalogAppJobPrefix} || ${release} || ':' || gen_random_uuid()::text, 'member',
+@@ -60,6 +62,7 @@ export const queueCatalogAppUpdates = (feedUrl: string, release = catalogAppRele
+             where exists (select 1 from executor_apps app
+               where app.owner = 'organization:' || organization.id
+                 and left(app.copied_from::jsonb ->> 'reference', length(${apps})) = ${apps})
++              and organization.id <> ${acceptanceIdentity.organization}
+             order by organization.id, member.role = 'owner' desc, member."createdAt"`;
+           yield* sql`update private_hosted_data_steps set completed_at = now()
+             where name = ${name} and run = 'apply'`;
+@@ -93,6 +96,7 @@ export const queueCatalogAppUpdates = (feedUrl: string, release = catalogAppRele
+             and member.role in ('owner', 'admin')
+           join "user" on "user".id = member."userId" and "user"."emailVerified" = true
+           where failed.last < now() - ${requeueAfter}::interval * power(2, failed.sweeps - 1)
++            and failed.organization_id <> ${acceptanceIdentity.organization}
+           order by failed.organization_id, member.role = 'owner' desc, member."createdAt"`;
+       }),
+     );
 diff --git a/apps/hosted/server/src/implementation/pool-app-upgrades.ts b/apps/hosted/server/src/implementation/pool-app-upgrades.ts
 index eb034b5..6c7aa38 100644
 --- a/apps/hosted/server/src/implementation/pool-app-upgrades.ts
