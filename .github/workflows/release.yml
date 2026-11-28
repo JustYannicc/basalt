@@ -322,6 +322,10 @@ jobs:
           # assertion for, per model call, with POOL_APP_SIGNING_KEY, or mid-rotation with
           # POOL_APP_SIGNING_KEY_PREVIOUS, the key the Worker serving before the apply knows.
           POOL_ACCEPTANCE_DEVICE: ${{ secrets.POOL_ACCEPTANCE_DEVICE }}
+          # A masked secret: the emulated upstream's bare host, which carries the account's subdomain.
+          # Unset deploys as before; set, it is a setting on the tools Worker that a release never
+          # removes, so its first release is a reviewed one (docs/releases.md).
+          BASALT_ACCEPTANCE_UPSTREAM_HOST: ${{ secrets.BASALT_ACCEPTANCE_UPSTREAM_HOST }}
         run: bun scripts/release/deploy.ts preflight --stage production
       # A State repair, not a release (scripts/release/placeholder-repair.ts): a container row a stopped
       # apply left holding a local placeholder, repaired after Alchemy's own drift read of the account.
