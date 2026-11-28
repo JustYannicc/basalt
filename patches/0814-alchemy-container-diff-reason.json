@@ -1,0 +1,11 @@
+{
+  "identity": "alchemy-container-diff-reason",
+  "file": "0814-alchemy-container-diff-reason.patch",
+  "content_sha256": "9d75a30f2cf9755b11ec1e045cda6a0137a572a9326ca0778e52d5ce51118959",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "alchemy-dependency-upgrade",
+  "requires": "A pinned Alchemy release plans a Container's bare update without saying which branch of its diff asked; remove when the pinned release's Container diff names its reason and the planner keeps it on the node."
+}

@@ -175,14 +175,39 @@ export function plannedReasons(plan: AlchemyPlan.Plan, fqn: string): string[] {
 export const remainingRows = (snapshot: Snapshot) =>
   changedRows(snapshot)
     .filter((row) => !(row.type.startsWith("Command.") && row.action === "update"))
-    .map(({ fqn, type, action, changedProps, bindings }) => ({
-      fqn,
-      type,
-      action,
-      changedProps,
-      bindings: bindings.map((binding) => binding.sid ?? "?"),
-      reasons: plannedReasons(snapshot.native, fqn),
-    }));
+    .map(({ fqn, type, action, changedProps, bindings }) => {
+      const providerReason = closedProviderReason(snapshot.native.resources[fqn]);
+      return {
+        fqn,
+        type,
+        action,
+        changedProps,
+        bindings: bindings.map((binding) => binding.sid ?? "?"),
+        reasons: plannedReasons(snapshot.native, fqn),
+        ...(providerReason ? { providerReason } : {}),
+      };
+    });
+
+/**
+ * The words the Container provider's diff names a bare update by (carry 0814), one per branch.
+ * Only these reach the public read-back line: a plan node's reason outside the set is dropped, so no
+ * value, id, host, digest or provider text can. The set is private, so an importer cannot add to it.
+ */
+export const providerReasons = Object.freeze([
+  "image-input-unresolved",
+  "placeholder-application",
+  "application-not-found",
+  "digest-unrecorded",
+  "running-digest-differs",
+  "image-input-differs",
+  "dev-differs",
+] as const);
+export type ProviderReason = (typeof providerReasons)[number];
+const providerReasonSet: ReadonlySet<unknown> = new Set(providerReasons);
+const closedProviderReason = (node: unknown): ProviderReason | undefined => {
+  const reason = (node as { providerReason?: unknown } | undefined)?.providerReason;
+  return providerReasonSet.has(reason) ? (reason as ProviderReason) : undefined;
+};
 
 /**
  * A plan that still wants changes right after its apply: the rows and the names of the properties
@@ -201,9 +226,16 @@ export class ChangesRemainAfterApply extends Data.TaggedError("ChangesRemainAfte
       check: "read-back",
       why: "A fresh plan right after the apply still changes these rows, so the apply did not settle.",
       fix: "Find the input that differs on every plan (a per-run value, or a command that always re-runs) and settle it at its source.",
+      // A row with no named property says which branch of the provider's diff asked, when it
+      // named one of its closed words.
       remaining: rows.map(
         (row) =>
-          `${row.fqn} (${row.type} ${row.action}: ${[...row.changedProps, ...row.bindings.map((sid) => `binding ${sid}`)].join(", ") || "no named property"})`,
+          `${row.fqn} (${row.type} ${row.action}: ${
+            [...row.changedProps, ...row.bindings.map((sid) => `binding ${sid}`)].join(", ") ||
+            ("providerReason" in row && row.providerReason
+              ? `provider ${row.providerReason}`
+              : "no named property")
+          })`,
       ),
       detail: rows.map((row) => ({ row: row.fqn, reasons: row.reasons })),
     });

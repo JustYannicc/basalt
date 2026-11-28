@@ -294,3 +294,82 @@ test("a plan that did not settle says which rows and which properties still diff
   assert.doesNotMatch(report.publicText, /props\.env\.A/u);
   assert.match(report.detail, /props\.env\.A: <withheld> -> <withheld>/u);
 });
+
+/** A fresh plan whose one Container row the provider still updates, with its node's reason. */
+const containerUpdate = (providerReason?: unknown, props: Record<string, unknown> = {}) =>
+  ({
+    resources: [
+      { fqn: "Mock", resourceType: "Cloudflare.Container", action: "update", bindings: [] },
+    ],
+    summary: {},
+    native: {
+      resources: {
+        Mock: {
+          action: "update",
+          props: { className: "Mock", ...props },
+          state: { props: { className: "Mock" } },
+          ...(providerReason === undefined ? {} : { providerReason }),
+        },
+      },
+      deletions: {},
+    },
+  }) as never as Snapshot;
+
+test("a row the provider updates for a word of its closed set says that word in public", async () => {
+  const { failureReport } = await import("./public-report.ts");
+  const { ChangesRemainAfterApply, providerReasons } = await import("./plan-summary.ts");
+  assert.equal(providerReasons.length, 7);
+  for (const word of providerReasons) {
+    const rows = remainingRows(containerUpdate(word));
+    assert.equal(rows[0]?.providerReason, word);
+    const error = ChangesRemainAfterApply.of(rows);
+    assert.deepEqual(error.remaining, [`Mock (Cloudflare.Container update: provider ${word})`]);
+    assert.match(
+      failureReport(error).publicText,
+      new RegExp(`remaining=Mock \\(Cloudflare\\.Container update: provider ${word}\\)$`, "mu"),
+    );
+  }
+});
+
+test("a row with no provider word still says no named property", async () => {
+  const { ChangesRemainAfterApply } = await import("./plan-summary.ts");
+  const rows = remainingRows(containerUpdate());
+  assert.equal("providerReason" in rows[0]!, false, "no field is added");
+  assert.deepEqual(ChangesRemainAfterApply.of(rows).remaining, [
+    "Mock (Cloudflare.Container update: no named property)",
+  ]);
+});
+
+test("a reason outside the closed set is dropped, and none of its text reaches a line", async () => {
+  const { failureReport } = await import("./public-report.ts");
+  const { ChangesRemainAfterApply } = await import("./plan-summary.ts");
+  const injected = [
+    `sha256:${"a".repeat(64)}`,
+    "0123456789abcdef0123456789abcdef",
+    "a0b1c2d3-e4f5-4a6b-8c7d-9e0f1a2b3c4d",
+    "registry.cloudflare.com",
+    "https://fixture.example.invalid/v4/accounts/x",
+    "application-not-found registry.cloudflare.com",
+    "Application-Not-Found",
+    "x".repeat(4096),
+  ];
+  const nonStrings = [42, true, null, ["application-not-found"], { word: "dev-differs" }];
+  for (const reason of [...injected, ...nonStrings]) {
+    const rows = remainingRows(containerUpdate(reason));
+    assert.equal("providerReason" in rows[0]!, false, `${String(reason).slice(0, 40)} is dropped`);
+    const error = ChangesRemainAfterApply.of(rows);
+    assert.deepEqual(error.remaining, ["Mock (Cloudflare.Container update: no named property)"]);
+    const report = failureReport(error);
+    for (const text of injected)
+      for (const shown of [report.publicText, report.detail, safeJson(rows)])
+        assert.ok(!shown.includes(text), `${text.slice(0, 40)} never reaches a line`);
+  }
+});
+
+test("a row with named properties prints as before, even when the provider named a word", async () => {
+  const { ChangesRemainAfterApply } = await import("./plan-summary.ts");
+  const rows = remainingRows(containerUpdate("image-input-differs", { instanceType: "basic" }));
+  assert.deepEqual(ChangesRemainAfterApply.of(rows).remaining, [
+    "Mock (Cloudflare.Container update: instanceType)",
+  ]);
+});
