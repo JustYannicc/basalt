@@ -56,8 +56,8 @@ export const operationSchema = Effect.gen(function* () {
  * The product calls as the real paths behave on a repeat: the same request id returns the same
  * pool, the provider install reuses the organization's default, the same creation id returns the
  * same account and a repeated link or unlink changes nothing. Like the product, a disconnect
- * refuses an account still linked to an app, an app's removal takes its links with it, and a
- * removed pool leaves its record as a deletion marker. `failAfter` makes one call commit and then
+ * refuses an account still linked to an app and cannot retire one whose acquiring app is gone,
+ * an app's removal takes its links with it, and a removed pool leaves its record as a marker. `failAfter` makes one call commit and then
  * fail, as a reply lost after the product wrote.
  */
 export function fixtureProduct(options: { readonly failAfter?: Set<string> } = {}) {
@@ -122,8 +122,6 @@ export function fixtureProduct(options: { readonly failAfter?: Set<string> } = {
         if (!state.accounts.includes(id)) {
           accounts.push({ id, app: input.app, method: input.method, fields: { ...input.fields } });
           state.accounts.push(id);
-          // The provider's requirement keeps the account it acquired, as an app-scoped link.
-          state.links.push({ app: input.app, requirement: "custom", account: id });
         }
         return after("createAccount", id);
       }),
@@ -144,6 +142,10 @@ export function fixtureProduct(options: { readonly failAfter?: Set<string> } = {
       Effect.suspend(() => {
         if (state.links.some((link) => link.account === account && link.requirement !== "pool"))
           return Effect.fail(new Error("AccountLinkedToApp"));
+        // An account is retired through the app that acquired it; once that app is gone, it cannot be.
+        const acquired = accounts.find((entry) => entry.id === account);
+        if (acquired !== undefined && !state.apps.some((app) => app.id === acquired.app))
+          return Effect.fail(new Error("InteractiveRetirementFailed"));
         state.links = state.links.filter((link) => link.account !== account);
         state.accounts = state.accounts.filter((id) => id !== account);
         return after("disconnect", undefined);

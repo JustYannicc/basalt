@@ -81,10 +81,10 @@ index e26a1fb..a70755f 100644
        if (current === undefined) return yield* new BillingUnavailable();
 diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/cloud.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/cloud.ts
 new file mode 100644
-index 0000000..01e1a36
+index 0000000..f0a4fa8
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/cloud.ts
-@@ -0,0 +1,75 @@
+@@ -0,0 +1,87 @@
 +import {
 +  acceptanceMembership,
 +  acceptanceState,
@@ -135,6 +135,18 @@ index 0000000..01e1a36
 +  removeApp: removeAcceptanceApp,
 +  membership: acceptanceMembership,
 +});
++
++/**
++ * The deploy's input becomes a plain Worker variable, and only when it is set. Without it the
++ * route has no upstream host: a setup plan says so and its accounts refuse.
++ */
++export const acceptanceUpstreamBinding = Effect.map(
++  Config.String("BASALT_ACCEPTANCE_UPSTREAM_HOST").pipe(Config.option),
++  Option.match({
++    onNone: () => ({}),
++    onSome: (host) => ({ BASALT_ACCEPTANCE_UPSTREAM_HOST: host }),
++  }),
++);
 +
 +/** The deployed route: production-ops' key, hosts, release and database identity. */
 +export const cloudAcceptancePool = Effect.gen(function* () {
@@ -1056,10 +1068,10 @@ index 0000000..7040eab
 +  kind === "setup" ? Effect.asVoid(setupRequest(request)) : Effect.asVoid(teardownRequest(request));
 diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/runner.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/runner.ts
 new file mode 100644
-index 0000000..dacd689
+index 0000000..c870efa
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/runner.ts
-@@ -0,0 +1,303 @@
+@@ -0,0 +1,314 @@
 +import {
 +  acceptanceIdentity,
 +  AcceptancePoolRefused,
@@ -1071,7 +1083,7 @@ index 0000000..dacd689
 +  type StepContext,
 +  type Verification,
 +} from "@executor-js/hosted-server/acceptance-pool";
-+import { Clock, Effect, Option } from "effect";
++import { Cause, Clock, Effect, Option } from "effect";
 +import { SqlClient } from "effect/sql";
 +import { canonical } from "../production-ops/crypto.ts";
 +import { databaseIdentity, type DatabaseOrigin } from "../production-ops/database-identity.ts";
@@ -1154,10 +1166,20 @@ index 0000000..dacd689
 +  ...(key === undefined ? {} : { upstreamKey: key }),
 +});
 +
-+const failedStep = (step: string) => (error: unknown) =>
-+  error instanceof AcceptancePoolRefused
-+    ? Effect.fail(error)
-+    : Effect.fail(new AcceptancePoolRefused({ reason: "step_failed", step }));
++/**
++ * A step's failure, defects included, becomes `step_failed` naming the step, so the receipt keeps
++ * what was done and the closed word is all that leaves. A refusal keeps its own word.
++ */
++const failedStep =
++  (step: string) =>
++  (cause: Cause.Cause<unknown>): Effect.Effect<never, AcceptancePoolRefused> => {
++    const error = Option.getOrUndefined(Cause.findErrorOption(cause));
++    return Effect.fail(
++      error instanceof AcceptancePoolRefused
++        ? error
++        : new AcceptancePoolRefused({ reason: "step_failed", step }),
++    );
++  };
 +
 +/**
 + * The receipt as its readers see it, under names they rely on: the operation, the organization,
@@ -1327,7 +1349,7 @@ index 0000000..dacd689
 +        if (Object.hasOwn(state.steps, step)) continue;
 +        const value: Json = yield* steps
 +          .run(step, context(settings, kind, state, setup, operation.upstreamKey))
-+          .pipe(Effect.timeout(acceptanceStepTimeoutMs), Effect.catch(failedStep(step)));
++          .pipe(Effect.timeout(acceptanceStepTimeoutMs), Effect.catchCause(failedStep(step)));
 +        state = yield* update((current) => ({
 +          ...current,
 +          steps: { ...current.steps, [step]: value },
@@ -1335,7 +1357,7 @@ index 0000000..dacd689
 +      }
 +      const verification = yield* steps
 +        .verify(context(settings, kind, state, setup))
-+        .pipe(Effect.timeout(acceptanceStepTimeoutMs), Effect.catch(failedStep("verify")));
++        .pipe(Effect.timeout(acceptanceStepTimeoutMs), Effect.catchCause(failedStep("verify")));
 +      const passed = checksPass(verification);
 +      yield* update((current) => ({
 +        ...current,
@@ -1351,7 +1373,8 @@ index 0000000..dacd689
 +    });
 +    // A stopped apply gives its lease back, so a retry need not wait for it to run out.
 +    const { verification, receipt } = yield* work.pipe(
-+      Effect.tapError(() => update((current) => ({ ...current, lease: null })).pipe(Effect.ignore)),
++      // Defects and interruption included: a holder that stops for any reason lets go.
++      Effect.onError(() => update((current) => ({ ...current, lease: null })).pipe(Effect.ignore)),
 +    );
 +    return {
 +      action: "apply" as const,
@@ -1617,10 +1640,10 @@ index 0000000..36d19d8
 +};
 diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/teardown.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/teardown.ts
 new file mode 100644
-index 0000000..8b7afb5
+index 0000000..b40540f
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/teardown.ts
-@@ -0,0 +1,271 @@
+@@ -0,0 +1,273 @@
 +import {
 +  acceptanceIdentity,
 +  acceptancePoolName,
@@ -1724,10 +1747,12 @@ index 0000000..8b7afb5
 +    } satisfies TeardownData;
 +  });
 +
++// An account is retired through the app that acquired it, so the accounts go before their
++// provider app, and they are unlinked from the pool before either.
 +const teardownStepNames = (targets: TeardownData) => [
 +  ...(targets.pool === null ? [] : targets.accounts.map((account) => `unlink:${account.profile}`)),
-+  ...(targets.provider === null ? [] : ["remove-provider"]),
 +  ...targets.accounts.map((account) => `disconnect:${account.profile}`),
++  ...(targets.provider === null ? [] : ["remove-provider"]),
 +  ...(targets.pool === null ? [] : ["remove-pool"]),
 +  ...(targets.token === null ? [] : ["disconnect-token"]),
 +];
@@ -1893,19 +1918,67 @@ index 0000000..8b7afb5
 +  return { inspect, run, verify, describe };
 +};
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index 88d5697..4568ad9 100644
+index 88d5697..6a591b1 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
-@@ -52,6 +52,8 @@ import { AppWorkflows } from "./infrastructure/workflows.ts";
+@@ -52,6 +52,11 @@ import { AppWorkflows } from "./infrastructure/workflows.ts";
  import { cloudDataSteps } from "./infrastructure/data-steps.ts";
  import { reportHostPoolInventory } from "./infrastructure/pool-inventory.ts";
  import { cloudProductionOps, productionOpsPath } from "./infrastructure/production-ops/http.ts";
-+import { cloudAcceptancePool } from "./infrastructure/acceptance-pool/cloud.ts";
++import {
++  acceptanceUpstreamBinding,
++  cloudAcceptancePool,
++} from "./infrastructure/acceptance-pool/cloud.ts";
 +import { acceptancePoolPath } from "./infrastructure/acceptance-pool/contracts.ts";
  import { expireIdleAgentGrants } from "@executor-js/app-management/data-steps";
  import { GroupDatabase } from "@executor-js/hosted-server/groups";
  import {
-@@ -714,6 +716,7 @@ export default Api.make(
+@@ -245,6 +250,8 @@ export default Api.make(
+         // Every deployed stage lists production's official app feed.
+         ...(origin === undefined ? {} : yield* appCatalogBinding),
+         ...(yield* productBrandBindings),
++        // The acceptance pool's emulated upstream host, from one deploy input; usually absent.
++        ...(yield* acceptanceUpstreamBinding),
+       },
+       build: workerBuild("api"),
+       // Auth callbacks and the dashboard share the configured canonical origin.
+@@ -598,6 +605,16 @@ export default Api.make(
+     );
+     // Only framework lookups and the published skills read the large authoring reference.
+     const authoring = yield* cloudAuthoringReference;
++    // The API and the acceptance-pool route install catalog apps from the same catalog.
++    const catalog = catalogLive(
++      document.document,
++      catalogFeedUrl === undefined
++        ? egress
++        : { ...egress, client: cachedFeedClient(apiOrigin, catalogFeedUrl, egress.client) },
++      clientMetadata,
++      apiOrigin,
++      catalogFeedUrl,
++    );
+     const api = cloudApi(document).pipe(
+       Layer.provide(localWorkflowStatusFaults.layer),
+       HttpRouter.provideRequest(Layer.succeed(McpAppSandbox, appSandboxAddress(appBase))),
+@@ -606,17 +623,7 @@ export default Api.make(
+       HttpRouter.provideRequest(yield* cloudSourceFormatter),
+       Layer.provide(appUi.dashboard),
+       Layer.provide(requestServices(auth.appSessions).layer),
+-      HttpRouter.provideRequest(
+-        catalogLive(
+-          document.document,
+-          catalogFeedUrl === undefined
+-            ? egress
+-            : { ...egress, client: cachedFeedClient(apiOrigin, catalogFeedUrl, egress.client) },
+-          clientMetadata,
+-          apiOrigin,
+-          catalogFeedUrl,
+-        ),
+-      ),
++      HttpRouter.provideRequest(catalog),
+       // Each release sweeps this feed's installed copies, so Settings says those take its updates.
+       HttpRouter.provideRequest(Layer.succeed(CatalogAppFeed, catalogFeedUrl)),
+       Layer.provide(schedules.layer),
+@@ -714,6 +721,7 @@ export default Api.make(
        HttpRouter.add("POST", "/api/:channel/submit", errorTunnel),
      );
      const productionOps = yield* cloudProductionOps;
@@ -1913,12 +1986,15 @@ index 88d5697..4568ad9 100644
      const routes = Layer.mergeAll(
        HttpRouter.add("GET", organizationChangesPath, organizationChanges.events).pipe(
          HttpRouter.provideRequest(executor),
-@@ -739,6 +742,10 @@ export default Api.make(
+@@ -739,6 +747,13 @@ export default Api.make(
        HttpRouter.add("POST", productionOpsPath, productionOps).pipe(
          HttpRouter.provideRequest(executor),
        ),
 +      // Signed like production-ops, under its own envelope kind; reads no session or key.
 +      HttpRouter.add("POST", acceptancePoolPath, acceptancePool).pipe(
++        HttpRouter.provideRequest(catalog),
++        // Linking and unlinking wake the schedules that read app accounts, as the API does.
++        HttpRouter.provideRequest(schedules.layer),
 +        HttpRouter.provideRequest(executor),
 +      ),
        HttpRouter.add("POST", mapsRoutesPath, mapsRoutes.post).pipe(
@@ -2071,21 +2147,23 @@ index 0000000..f74c51c
 +}
 diff --git a/apps/hosted/server/src/implementation/acceptance-pool.ts b/apps/hosted/server/src/implementation/acceptance-pool.ts
 new file mode 100644
-index 0000000..83b66e4
+index 0000000..5d23132
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/acceptance-pool.ts
-@@ -0,0 +1,181 @@
+@@ -0,0 +1,188 @@
 +/**
 + * The product paths the signed acceptance-pool operation drives, each run as the acceptance
 + * identity exactly as an owner's own request would run it. Nothing here bypasses a product check:
 + * the pool is created, its provider installed, its accounts created and linked, unlinked and
 + * removed through the same calls the dashboard makes.
 + */
++import { fullAuthority } from "@executor-js/authorization";
 +import { AccountId, AppId } from "@executor-js/sdk/core";
 +import { Effect, Redacted, Schema } from "effect";
 +import { acceptanceIdentity } from "../contracts/acceptance-pool.ts";
 +import { AccountTargets } from "../contracts/account-grants.ts";
 +import { CurrentUserId } from "../contracts/auth.ts";
++import { CurrentAuthorization } from "../contracts/authorization.ts";
 +import { HostedExecutor } from "../contracts/executor.ts";
 +import {
 +  CurrentOrganization,
@@ -2107,8 +2185,13 @@ index 0000000..83b66e4
 +export const customRequirement = "custom";
 +export const customProviderName = "Custom endpoint";
 +
++/**
++ * The identity acting in its own organization with the authority its owner's own browser session
++ * would have there; it has no session, so nothing else can act as it.
++ */
 +const asAcceptance = <A, E, R>(work: Effect.Effect<A, E, R>) =>
 +  work.pipe(
++    Effect.provideService(CurrentAuthorization, fullAuthority),
 +    Effect.provideService(CurrentUserId, acceptanceIdentity.user),
 +    Effect.provideService(CurrentOrganization, {
 +      organization,
@@ -2309,3 +2392,420 @@ index eb034b5..6c7aa38 100644
        },
      ];
      // Fresh isolates read only the journal when both rollouts have already completed.
+diff --git a/e2e/support/acceptance-pool-client.ts b/e2e/support/acceptance-pool-client.ts
+new file mode 100644
+index 0000000..dad021c
+--- /dev/null
++++ b/e2e/support/acceptance-pool-client.ts
+@@ -0,0 +1,79 @@
++import { expect } from "@effect/vitest";
++import { Effect } from "effect";
++import {
++  constants,
++  createDecipheriv,
++  createHash,
++  createHmac,
++  generateKeyPairSync,
++  privateDecrypt,
++  randomUUID,
++} from "node:crypto";
++import { Api } from "./api.ts";
++import { acceptanceUpstreamFixtureHost, poolFixtureSigningKey } from "./cloud-pool-gateway.ts";
++import { Target } from "./platform.ts";
++import { targetHosts } from "./role-hosts.ts";
++
++export const acceptancePoolPath = "/api/internal/acceptance-pool";
++
++/** Sign real acceptance-pool requests as the workflow does, and open the recipient's plan copy. */
++export const acceptancePoolClient = Effect.gen(function* () {
++  const api = yield* Api,
++    target = yield* Target;
++  const origin = targetHosts(target).browser;
++  const anonymous = yield* api.session();
++  const pair = generateKeyPairSync("rsa", { modulusLength: 3072 });
++  const recipient = pair.publicKey.export({ type: "spki", format: "der" }).toString("base64");
++  // The workflow's own digest of the origin it holds; the request never carries the address.
++  const upstreamOriginSha256 = createHash("sha256")
++    .update(`basalt-acceptance-upstream-origin-v1\nhttps://${acceptanceUpstreamFixtureHost}`)
++    .digest("hex");
++  const sign = (operation: unknown, prefix = "sbacc1") => {
++    const at = Date.now();
++    const payload = Buffer.from(
++      JSON.stringify({
++        version: 1,
++        id: randomUUID(),
++        target: origin,
++        at,
++        expiresAt: at + 60_000,
++        operation,
++      }),
++    ).toString("base64url");
++    const signature = createHmac("sha256", Buffer.from(poolFixtureSigningKey, "hex"))
++      .update(`${prefix}.${payload}`)
++      .digest("base64url");
++    return `${prefix}.${payload}.${signature}`;
++  };
++  const post = (envelope: string) =>
++    api.request(anonymous, "POST", acceptancePoolPath, { envelope });
++  const request = (operation: unknown, prefix?: string) => post(sign(operation, prefix));
++  const open = (artifact: {
++    readonly sha256: string;
++    readonly recipient: {
++      readonly wrappedKey: string;
++      readonly iv: string;
++      readonly ciphertext: string;
++    };
++  }) => {
++    const key = privateDecrypt(
++      { key: pair.privateKey, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: "sha256" },
++      Buffer.from(artifact.recipient.wrappedKey, "base64"),
++    );
++    const encrypted = Buffer.from(artifact.recipient.ciphertext, "base64");
++    const decipher = createDecipheriv(
++      "aes-256-gcm",
++      key,
++      Buffer.from(artifact.recipient.iv, "base64"),
++    );
++    decipher.setAAD(Buffer.from(`basalt-production-ops-v1:${origin}`));
++    decipher.setAuthTag(encrypted.subarray(-16));
++    const plaintext = Buffer.concat([
++      decipher.update(encrypted.subarray(0, -16)),
++      decipher.final(),
++    ]);
++    expect(createHash("sha256").update(plaintext).digest("hex")).toBe(artifact.sha256);
++    return JSON.parse(plaintext.toString("utf8")) as unknown;
++  };
++  return { origin, recipient, upstreamOriginSha256, sign, post, request, open };
++});
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+index a81e206..9255b72 100644
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -44,7 +44,11 @@ import { productionOpsDatabaseFixture } from "./production-ops-database-fixture.
+ import { productionOpsDatabaseProxy } from "./production-ops-database-proxy.ts";
+ import { statementBatchProxy } from "./statement-batch-proxy.ts";
+ import { sqlLatencyProxy } from "./sql-latency-proxy.ts";
+-import { cloudPoolGateway, poolFixtureSigningKey } from "./cloud-pool-gateway.ts";
++import {
++  acceptanceUpstreamFixtureHost,
++  cloudPoolGateway,
++  poolFixtureSigningKey,
++} from "./cloud-pool-gateway.ts";
+ import { cloudNativeStack } from "./cloud-native-stack.ts";
+ import { startMapsRoutesEmulator } from "./maps-routes-emulator.ts";
+ import {
+@@ -425,6 +429,11 @@ export const startCloudEnvironment = (input: {
+       ...(process.env.BASALT_E2E_PRODUCTION_OPS === "1" || poolBackend
+         ? { POOL_APP_SIGNING_KEY: poolFixtureSigningKey }
+         : {}),
++      // The acceptance pool's emulated upstream: a public-shaped host its accounts name and the
++      // scenario never calls, since no model request runs.
++      ...(nativePoolBackend
++        ? { BASALT_ACCEPTANCE_UPSTREAM_HOST: acceptanceUpstreamFixtureHost }
++        : {}),
+       APP_DOMAIN_CONTROL_SECRET: randomBytes(32).toString("hex"),
+       EXECUTOR_BUILD_VERSION: input.commit,
+       POSTHOG_LOCAL_TEST_PORT: String(analyticsPort),
+diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.ts
+index f1ff252..332f278 100644
+--- a/e2e/support/cloud-pool-gateway.ts
++++ b/e2e/support/cloud-pool-gateway.ts
+@@ -23,6 +23,8 @@ import { poolReceiverFaults } from "./pool-receiver-faults.ts";
+ import { poolProductPeer } from "./pool-product-peer.ts";
+ 
+ export const poolFixtureSigningKey = "ab".repeat(32);
++/** The host a Cloud run with the native pool backend names for the acceptance pool's upstream. */
++export const acceptanceUpstreamFixtureHost = "emulated-upstream.acceptance-fixture.dev";
+ 
+ const access = "/pool/v1/access";
+ const acquisition = "/pool/v1/account-acquisitions";
+@@ -63,7 +65,7 @@ export const cloudPoolGateway = (origin: string, directory: string, api: URL) =>
+     const source = yield* fs.readFileString(
+       path.resolve("..", "src/catalog/provider-apps/openai.json"),
+     );
+-    const additionalSources = yield* Effect.forEach(["anthropic", "xai"], (lab) =>
++    const additionalSources = yield* Effect.forEach(["anthropic", "xai", "custom"], (lab) =>
+       fs
+         .readFileString(path.resolve("..", "src/catalog/provider-apps", `${lab}.json`))
+         .pipe(Effect.map((source) => ({ lab, source }))),
+diff --git a/e2e/support/provider-account-backend.ts b/e2e/support/provider-account-backend.ts
+index 59c6221..de7e457 100644
+--- a/e2e/support/provider-account-backend.ts
++++ b/e2e/support/provider-account-backend.ts
+@@ -10,7 +10,10 @@ const Mirror = Schema.Struct({
+   action: Schema.Literals(["upsert", "remove"]),
+   at: Schema.Number,
+   expiresAt: Schema.Number,
+-  credential: Schema.optionalKey(Schema.Struct({ type: Schema.String, token: Schema.String })),
++  // A config family's removal names its type and family without a token, as the pool Worker accepts.
++  credential: Schema.optionalKey(
++    Schema.Struct({ type: Schema.String, token: Schema.optionalKey(Schema.String) }),
++  ),
+ });
+ 
+ export const providerAccountBackend = Effect.gen(function* () {
+@@ -54,11 +57,13 @@ export const providerAccountBackend = Effect.gen(function* () {
+             (items) => new Set([...items].filter((id) => id !== value.reference)),
+           );
+         } else {
+-          if (value.credential === undefined) return HttpServerResponse.empty({ status: 400 });
+           const credential = value.credential;
++          // An upsert always carries the credential and its token.
++          if (credential?.token === undefined) return HttpServerResponse.empty({ status: 400 });
++          const token = credential.token;
+           yield* Ref.update(calls, (items) => [
+             ...items,
+-            { reference: value.reference, ...credential },
++            { reference: value.reference, type: credential.type, token },
+           ]);
+           yield* Ref.update(references, (items) => new Set([...items, value.reference]));
+           if (yield* Ref.getAndSet(failNext, false))
+diff --git a/e2e/tests/acceptance-pool-operation.spec.ts b/e2e/tests/acceptance-pool-operation.spec.ts
+new file mode 100644
+index 0000000..b4523f0
+--- /dev/null
++++ b/e2e/tests/acceptance-pool-operation.spec.ts
+@@ -0,0 +1,243 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { acceptancePoolClient } from "../support/acceptance-pool-client.ts";
++import { Actors } from "../support/actors.ts";
++import { Api } from "../support/api.ts";
++import { providerAccountBackend } from "../support/provider-account-backend.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Artifact = Schema.Struct({
++  sha256: Schema.String,
++  recipient: Schema.Struct({
++    wrappedKey: Schema.String,
++    iv: Schema.String,
++    ciphertext: Schema.String,
++  }),
++});
++const Planned = Schema.Struct({
++  action: Schema.Literal("dry-run"),
++  planSha256: Schema.String,
++  artifact: Artifact,
++  steps: Schema.Number,
++  upstreamConfigured: Schema.optionalKey(Schema.Literals(["yes", "no"])),
++});
++const Receipt = Schema.Struct({
++  migration: Schema.String,
++  organization: Schema.String,
++  status: Schema.String,
++  app: Schema.NullOr(Schema.String),
++  accounts: Schema.Array(Schema.String),
++});
++const Verification = Schema.Struct({
++  ok: Schema.Boolean,
++  checks: Schema.Record(Schema.String, Schema.Boolean),
++});
++const Applied = Schema.Struct({
++  action: Schema.Literal("apply"),
++  repeated: Schema.Boolean,
++  resumed: Schema.Boolean,
++  receipt: Receipt,
++  verification: Verification,
++});
++const Verified = Schema.Struct({
++  action: Schema.Literal("verify"),
++  completed: Schema.Boolean,
++  receipt: Receipt,
++  verification: Verification,
++});
++const Refused = Schema.Struct({
++  error: Schema.String,
++  reason: Schema.String,
++  step: Schema.optionalKey(Schema.String),
++});
++
++const setupRequest = {
++  pool: "acceptance-e2e-run",
++  accounts: [
++    { profile: "a", method: "anthropic", models: "fixture-model-a" },
++    { profile: "b", method: "openai", models: "fixture-model-b" },
++  ],
++};
++const upstreamKey = "fixture-upstream-key-".padEnd(40, "k");
++
++layer(HostedLive, { excludeTestServices: true })("Acceptance pool operation", (it) => {
++  it.effect(scenarios.acceptancePoolOperation.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const client = yield* acceptancePoolClient;
++        const api = yield* Api,
++          actors = yield* Actors;
++        // The pool service's synthetic custodian: it checks each signed mirror and keeps the
++        // references it holds, as Home keeps the accounts a link mirrors.
++        const custodian = yield* providerAccountBackend;
++        const decode = <S extends Schema.Top>(schema: S, value: unknown) =>
++          Schema.decodeUnknownEffect(schema)(value) as Effect.Effect<S["Type"], unknown>;
++        const refused = (response: { readonly status: number; readonly body: unknown }) =>
++          Effect.map(decode(Refused, response.body), (body) => [response.status, body.reason]);
++        const dry = {
++          kind: "setup",
++          action: "dry-run",
++          request: setupRequest,
++          recipient: client.recipient,
++          upstreamOriginSha256: client.upstreamOriginSha256,
++        };
++
++        // Only its own envelope kind opens the route, and a name outside the pattern is refused.
++        expect((yield* client.request(dry, "sbops1")).status).toBe(401);
++        expect(
++          yield* refused(
++            yield* client.request({ ...dry, request: { ...setupRequest, pool: "people-pool" } }),
++          ),
++        ).toEqual([409, "name_pattern"]);
++
++        // Setup: a dry run the coordinator reads, then an apply bound to its checksum and GO.
++        const planned = yield* client.request(dry);
++        expect(planned.status, JSON.stringify(planned.body)).toBe(200);
++        const plan = yield* decode(Planned, planned.body);
++        // The apply names the artifact exactly as the dry run returned it, both copies included.
++        const artifact = (planned.body as { artifact: unknown }).artifact;
++        expect(plan.upstreamConfigured).toBe("yes");
++        const opened = client.open(plan.artifact) as {
++          steps: string[];
++          request: unknown;
++          data: { accounts: { creation: string }[] };
++        };
++        expect(opened.steps).toEqual([
++          "identity",
++          "create",
++          "provider",
++          "account:a",
++          "link:a",
++          "account:b",
++          "link:b",
++        ]);
++        expect(JSON.stringify(opened)).not.toContain(upstreamKey);
++        const apply = {
++          kind: "setup",
++          action: "apply",
++          request: setupRequest,
++          artifact,
++          planSha256: plan.planSha256,
++          go: `GO ${plan.planSha256}`,
++          upstreamOriginSha256: client.upstreamOriginSha256,
++          upstreamKey,
++        };
++        // The first apply creates the identity, the pool, its provider and the first account, then
++        // stops at the first link: the pool service has nowhere to keep the mirrored account yet.
++        const first = yield* client.request(apply);
++        expect(first.status, JSON.stringify(first.body)).toBe(409);
++        const stopped = yield* decode(Refused, first.body);
++        expect([stopped.reason, stopped.step]).toEqual(["step_failed", "link:a"]);
++        const partial = yield* decode(
++          Verified,
++          (yield* client.request({
++            kind: "setup",
++            action: "verify",
++            request: {},
++            planSha256: plan.planSha256,
++          })).body,
++        );
++        expect(partial.receipt.status).toBe("incomplete");
++        expect(partial.receipt.app).toMatch(/^app_/u);
++        expect(partial.verification.ok).toBe(false);
++        const peered = yield* api.request(
++          actors.owner,
++          "POST",
++          "/native-provider-fixture/product-peer",
++          {
++            pool: partial.receipt.app,
++            origin: custodian.origin,
++          },
++        );
++        expect(peered.status, JSON.stringify(peered.body)).toBe(200);
++
++        // A new envelope for the same plan and GO resumes after the last recorded step.
++        const envelope = client.sign(apply);
++        const applied = yield* client.post(envelope);
++        expect(applied.status, JSON.stringify(applied.body)).toBe(200);
++        const setup = yield* decode(Applied, applied.body);
++        expect(setup.resumed).toBe(true);
++        expect(setup.verification.ok, JSON.stringify(setup.verification)).toBe(true);
++        expect(setup.receipt.migration).toBe("acceptance-pool-setup-v1");
++        expect(setup.receipt.organization).toBe("acceptance");
++        expect(setup.receipt.status).toBe("applied");
++        expect(setup.receipt.app).toBe(partial.receipt.app);
++        expect(setup.receipt.accounts).toEqual(
++          opened.data.accounts.map((account) => `acc_${account.creation.toLowerCase()}`),
++        );
++        expect(JSON.stringify(applied.body)).not.toContain(upstreamKey);
++        const mirrored = yield* custodian.calls;
++        expect(mirrored.map((call) => [call.type, call.token])).toEqual([
++          ["config", upstreamKey],
++          ["config", upstreamKey],
++        ]);
++        expect((yield* custodian.references).size).toBe(2);
++
++        // The same envelope again is refused; a lost reply resumes with a new one and adds nothing.
++        expect(yield* refused(yield* client.post(envelope))).toEqual([409, "replayed"]);
++        const again = yield* decode(Applied, (yield* client.request(apply)).body);
++        expect(again.repeated).toBe(true);
++        expect(again.receipt).toEqual(setup.receipt);
++        expect((yield* custodian.calls).length).toBe(2);
++
++        // Verification reads the tools service's own rows, never a file.
++        const verified = yield* decode(
++          Verified,
++          (yield* client.request({
++            kind: "setup",
++            action: "verify",
++            request: {},
++            planSha256: plan.planSha256,
++          })).body,
++        );
++        expect(verified.verification.ok, JSON.stringify(verified.verification)).toBe(true);
++        expect(verified.receipt).toEqual(setup.receipt);
++
++        // Exactly one pool: another setup is refused while this one lives.
++        expect(
++          yield* refused(
++            yield* client.request({
++              ...dry,
++              request: { ...setupRequest, pool: "acceptance-e2e-two" },
++            }),
++          ),
++        ).toEqual([409, "identity_holds_pool"]);
++
++        // Teardown removes it, and its verification reads every target gone.
++        const teardownDry = yield* client.request({
++          kind: "teardown",
++          action: "dry-run",
++          request: { setup: plan.planSha256 },
++          recipient: client.recipient,
++        });
++        expect(teardownDry.status, JSON.stringify(teardownDry.body)).toBe(200);
++        const teardownPlan = yield* decode(Planned, teardownDry.body);
++        const removed = yield* client.request({
++          kind: "teardown",
++          action: "apply",
++          request: { setup: plan.planSha256 },
++          artifact: (teardownDry.body as { artifact: unknown }).artifact,
++          planSha256: teardownPlan.planSha256,
++          go: `GO ${teardownPlan.planSha256}`,
++        });
++        expect(removed.status, JSON.stringify(removed.body)).toBe(200);
++        const teardown = yield* decode(Applied, removed.body);
++        expect(teardown.verification.ok, JSON.stringify(teardown.verification)).toBe(true);
++        expect(teardown.receipt.migration).toBe("acceptance-pool-teardown-v1");
++        expect((yield* custodian.references).size, "Home lets go of both accounts").toBe(0);
++        const stale = yield* decode(
++          Verified,
++          (yield* client.request({
++            kind: "setup",
++            action: "verify",
++            request: {},
++            planSha256: plan.planSha256,
++          })).body,
++        );
++        expect(stale.verification.ok).toBe(false);
++      }),
++    ),
++  );
++});

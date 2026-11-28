@@ -150,9 +150,9 @@ test("the setup receipt names its pool and exactly two accounts, and teardown re
       assert.deepEqual(fixture.calls, [
         "unlink",
         "unlink",
+        "disconnect",
+        "disconnect",
         "removeApp",
-        "disconnect",
-        "disconnect",
         "removeApp",
         "disconnect",
       ]);
