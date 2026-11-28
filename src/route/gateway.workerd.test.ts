@@ -1,0 +1,262 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { build } from "esbuild";
+import { loadMiniflare } from "../../scripts/startup-profiler/profile.ts";
+import { signEnvelope } from "../pool/token.ts";
+import { routeAcquisitionPrefix } from "./acquisition-contract.ts";
+
+const routeId = "rt_" + "a".repeat(26);
+const strangerRoute = "rt_" + "z".repeat(26);
+const brokenRoute = "rt_" + "b".repeat(26);
+const ownerlessRoute = "rt_" + "f".repeat(26);
+
+// Real workerd, real RouteGateway, signed acquisitions and PoolRoutePeer relay; only the container is fake.
+const fixture = `
+import { DurableObject } from 'cloudflare:workers';
+import { RouteGateway as Gateway, routeAcquisition } from './src/route/gateway.worker.ts';
+import { PoolRoutePeer } from './src/route/pool-peer.worker.ts';
+import { FakeGateway } from './src/route/test/gateway.ts';
+const fakes = [];
+// Every console.error line this isolate writes, so a refusal's log line is read back exactly.
+const lines = [];
+const error = console.error;
+console.error = (...args) => { lines.push(args.join(' ')); error(...args); };
+const routed = (env) => ({ ...env, RouteGateway: env.WITHOUT_GATEWAY ? undefined : { jurisdiction: () => env.Gateways },
+  PoolContainer: { jurisdiction: () => env.Controllers } });
+export class Gateways extends Gateway {
+  constructor(ctx, env) { const fake = new FakeGateway(); if (ctx.id.name !== '${brokenRoute}') fakes.push(fake);
+    Object.defineProperty(ctx, 'container', { value: fake }); super(ctx, routed(env)); }
+  // A gateway object that resets mid-request, as an overloaded or redeployed one would.
+  async fetch(request) { if (this.ctx.id.name === '${brokenRoute}') throw new Error('reset'); return super.fetch(request); }
+}
+export class Controllers extends DurableObject {
+  async routeOwner({ routeId }) {
+    // A controller that cannot answer, as one mid-restart.
+    if (routeId === '${ownerlessRoute}') throw new Error('controller unavailable');
+    return routeId === '${routeId}' || routeId === '${brokenRoute}' ? 'org/org-1/user/person-1' : null;
+  }
+}
+export class Peer extends PoolRoutePeer { constructor(ctx, env) { super(ctx, routed(env)); } }
+export class BarePeer extends PoolRoutePeer { constructor(ctx, env) { super(ctx, { ...routed(env), RouteGateway: undefined }); } }
+export default { async fetch(request, env, ctx) {
+  const url = new URL(request.url);
+  if (url.pathname === '/route/v1/acquisitions') return routeAcquisition(request, routed(env));
+  if (url.pathname === '/logs') return Response.json(lines.splice(0));
+  if (url.pathname === '/approve') { fakes.at(-1).approve(); return new Response('ok'); }
+  if (url.pathname === '/crash') { fakes.at(-1).crash(); return new Response('ok'); }
+  if (url.pathname === '/starts') return Response.json(fakes.at(-1).starts);
+  if (url.pathname.startsWith('/peer/') || url.pathname.startsWith('/bare/')) {
+    const pool = env.Controllers.idFromName('pool').toString();
+    const peer = url.pathname.startsWith('/bare/') ? ctx.exports.BarePeer : ctx.exports.Peer;
+    const target = 'http://route-peer.internal/route/' + url.pathname.split('/')[2];
+    return peer({ props: { pool } }).fetch(new Request(target, { headers: request.headers }));
+  }
+  if (url.pathname === '/tunnel-post') {
+    const id = env.Gateways.idFromName('${routeId}');
+    return env.Gateways.get(id).fetch('http://route-gateway.internal/_internal/route/tunnel', { method: 'POST' });
+  }
+  if (url.pathname === '/direct') {
+    const id = env.Gateways.idFromName('${routeId}');
+    return env.Gateways.get(id).fetch('http://route-gateway.internal/anything');
+  }
+  return new Response(null, { status: 404 });
+} };
+`;
+
+const outbound = { count: 0 };
+const refusals = async (mf: Miniflare) =>
+  ((await (await mf.dispatchFetch("http://fixture/logs")).json()) as string[]).filter((line) =>
+    line.startsWith("POOL_ROUTE_TUNNEL_REFUSED"),
+  );
+
+async function start() {
+  const bundle = await build({
+    stdin: {
+      contents: fixture,
+      resolveDir: fileURLToPath(new URL("../../", import.meta.url)),
+      loader: "ts",
+    },
+    bundle: true,
+    write: false,
+    format: "esm",
+    platform: "neutral",
+    mainFields: ["module", "main"],
+    conditions: ["workerd", "module", "import"],
+    target: "es2023",
+    external: ["node:*", "cloudflare:workers"],
+  });
+  const { Miniflare, convertV4MiniflareOptions } = loadMiniflare();
+  return new Miniflare(
+    convertV4MiniflareOptions({
+      modules: true,
+      script: bundle.outputFiles[0]!.text,
+      compatibilityDate: "2026-09-08",
+      compatibilityFlags: ["nodejs_compat"],
+      durableObjects: {
+        Gateways: { className: "Gateways", useSQLite: true },
+        Controllers: { className: "Controllers", useSQLite: true },
+      },
+      bindings: { POOL_APP_SIGNING_KEY: "a".repeat(64) },
+      // Counted: no step of a route, refused or served, may reach anything outside workerd.
+      outboundService: () => {
+        outbound.count += 1;
+        return new Response(null, { status: 403 });
+      },
+    }),
+  );
+}
+
+type Miniflare = Awaited<ReturnType<typeof start>>;
+const saved = { organization: "org-1", account: "acct-1" };
+async function host(mf: Miniflare, action: string, input: object) {
+  const at = Date.now();
+  const person = ["start", "status", "cancel"].includes(action)
+    ? { owner: "org/org-1/user/person-1" }
+    : saved;
+  const envelope = await signEnvelope("a".repeat(64), routeAcquisitionPrefix, {
+    routeId,
+    at,
+    expiresAt: at + 25_000,
+    action,
+    ...person,
+    ...input,
+  });
+  const response = await mf.dispatchFetch("http://fixture/route/v1/acquisitions", {
+    method: "POST",
+    body: JSON.stringify({ envelope }),
+  });
+  return response.json() as Promise<Record<string, unknown>>;
+}
+
+async function open(mf: Miniflare, path: string) {
+  const response = await mf.dispatchFetch(`http://fixture${path}`, {
+    headers: { Upgrade: "websocket" },
+  });
+  assert.equal(response.status, 101);
+  const socket = response.webSocket!;
+  const messages: unknown[] = [];
+  let next: (() => void) | undefined;
+  const closed = new Promise<{ code: number; reason: string }>((resolve) =>
+    socket.addEventListener("close", (event: { code: number; reason: string }) => resolve(event)),
+  );
+  socket.addEventListener("message", (event: { data: unknown }) => {
+    messages.push(event.data);
+    next?.();
+  });
+  socket.accept();
+  const read = async () => {
+    while (!messages.length)
+      await new Promise<void>((resolve) => {
+        next = resolve;
+      });
+    return messages.shift();
+  };
+  return { socket, read, closed };
+}
+
+test("real workerd: signed acquisitions drive the gateway and the pool peer tunnels bytes", async () => {
+  const mf = await start();
+  try {
+    const started = await host(mf, "start", { app: "tailscale" });
+    assert.equal(started.url, "https://login.example.invalid/a/test");
+    assert.deepEqual(
+      await host(mf, "start", { app: "tailscale", owner: "org/org-1/user/person-2" }),
+      {
+        error: "route_not_permitted",
+      },
+    );
+    assert.deepEqual(await host(mf, "status", {}), { state: "waiting" });
+    await mf.dispatchFetch("http://fixture/approve");
+    assert.deepEqual(await host(mf, "status", {}), {
+      state: "connected",
+      tailnet: "example-tailnet",
+    });
+    const { reading } = (await host(mf, "select", { exitId: "n1", whenDown: "stop" })) as {
+      reading: Record<string, unknown>;
+    };
+    assert.equal(reading.state, "active");
+    assert.equal(reading.exitName, "home-exit");
+    assert.equal(reading.tailnet, "example-tailnet");
+    assert.deepEqual(await host(mf, "reading", { account: "acct-2" }), {
+      error: "route_not_permitted",
+    });
+    assert.deepEqual((await host(mf, "exits", {})).exits, [
+      { id: "n1", name: "home-exit", online: true, lastSeen: null },
+      {
+        id: "n2",
+        name: "away-exit",
+        online: false,
+        lastSeen: Date.parse("2026-11-20T08:00:00Z"),
+      },
+    ]);
+
+    // The relay wire is the Home peer's, end to end, over the gateway's SOCKS port (an echo here).
+    const tunnel = await open(mf, `/peer/${routeId}`);
+    assert.deepEqual(JSON.parse(String(await tunnel.read())), { credit: 65_536 });
+    tunnel.socket.send(JSON.stringify({ credit: 65_536 }));
+    const bytes = new Uint8Array([5, 1, 0, 255, 42]);
+    tunnel.socket.send(bytes);
+    let reply: unknown;
+    do reply = await tunnel.read();
+    while (typeof reply === "string");
+    assert.deepEqual(new Uint8Array(reply as ArrayBuffer), bytes);
+    tunnel.socket.send(JSON.stringify({ fin: true }));
+    assert.equal((await tunnel.closed).code, 1000);
+
+    // A route this pool never assigned, and a pool without the class, are refused by close code.
+    const stranger = await open(mf, `/peer/${strangerRoute}`);
+    const refusal = await stranger.closed;
+    assert.deepEqual([refusal.code, refusal.reason], [1008, "route_not_permitted"]);
+    const bare = await open(mf, `/bare/${routeId}`);
+    assert.equal((await bare.closed).code, 1013);
+    assert.equal(
+      (
+        await mf.dispatchFetch("http://fixture/peer/not-a-route", {
+          headers: { Upgrade: "websocket" },
+        })
+      ).status,
+      403,
+    );
+    // One line per refusal, its reason code only: no route, owner or pool in it.
+    assert.deepEqual(await refusals(mf), [
+      'POOL_ROUTE_TUNNEL_REFUSED {"reason":"route_not_permitted"}',
+      'POOL_ROUTE_TUNNEL_REFUSED {"reason":"route_gateway_unavailable"}',
+      'POOL_ROUTE_TUNNEL_REFUSED {"reason":"route_request_invalid"}',
+    ]);
+    // Everything but the private tunnel waits for slice 2.
+    assert.equal((await mf.dispatchFetch("http://fixture/direct")).status, 501);
+    assert.equal((await mf.dispatchFetch("http://fixture/tunnel-post")).status, 501);
+    // A gateway object that fails mid-request still answers the pool with a close code.
+    const broken = await open(mf, `/peer/${brokenRoute}`);
+    const reset = await broken.closed;
+    assert.deepEqual([reset.code, reset.reason], [1013, "route_gateway_unavailable"]);
+    assert.deepEqual(await refusals(mf), [
+      'POOL_ROUTE_TUNNEL_REFUSED {"reason":"route_gateway_unavailable"}',
+    ]);
+    // A controller that cannot say who owns the route: refused, never sent on.
+    const ownerless = await open(mf, `/peer/${ownerlessRoute}`);
+    const unanswered = await ownerless.closed;
+    assert.deepEqual([unanswered.code, unanswered.reason], [1013, "route_gateway_unavailable"]);
+    assert.deepEqual(await refusals(mf), [
+      'POOL_ROUTE_TUNNEL_REFUSED {"reason":"route_gateway_unavailable"}',
+    ]);
+    // A refused route never went direct: nothing left workerd at any step.
+    assert.equal(outbound.count, 0);
+
+    // A restarted container gets the sealed identity back without a new approval.
+    await mf.dispatchFetch("http://fixture/crash");
+    assert.equal(((await host(mf, "reading", {})).reading as { state: string }).state, "active");
+    assert.deepEqual(await (await mf.dispatchFetch("http://fixture/starts")).json(), [
+      null,
+      "node-state-after-login",
+    ]);
+    assert.deepEqual(await host(mf, "remove", {}), {});
+    assert.equal(
+      ((await host(mf, "reading", {})).reading as { state: string }).state,
+      "needs_login",
+    );
+  } finally {
+    await mf.dispose();
+  }
+});

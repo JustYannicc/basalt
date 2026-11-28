@@ -33,6 +33,8 @@
     "src/pool/stream-resume.worker.ts",
     "src/pool/resume-admission.worker.ts",
     "src/pool/terminal-socket.worker.ts",
+    "src/route/gateway.worker.ts",
+    "src/route/pool-peer.worker.ts",
     "scripts/preview/stack",
     "scripts/scale-test/stack.ts",
     "scripts/scale-test/worker.ts",
