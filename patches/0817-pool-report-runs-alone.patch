@@ -1,0 +1,252 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/pool-inventory.ts b/apps/hosted/cloud/src/infrastructure/pool-inventory.ts
+--- a/apps/hosted/cloud/src/infrastructure/pool-inventory.ts
++++ b/apps/hosted/cloud/src/infrastructure/pool-inventory.ts
+@@ -1,11 +1,7 @@
+ import { GroupDatabase } from "@executor-js/hosted-server/groups";
+-import { Console, Effect, Exit, Schema } from "effect";
++import { Cause, Console, Effect, Exit, Option, Schema } from "effect";
+ import { createHash, randomUUID } from "node:crypto";
+-import {
+-  poolOwnershipLine,
+-  readPoolPopulation,
+-  type PopulationFacts,
+-} from "./pool-ownership-report.ts";
++import { poolOwnershipLine, readPoolPopulationAlone } from "./pool-ownership-report.ts";
+ 
+ // No caller supplies SQL or a selector. JSON projections stop at known identifier leaves.
+ const queries = {
+@@ -58,18 +54,47 @@ const queries = {
+ } as const;
+ 
+ const Rows = Schema.Array(Schema.Record(Schema.String, Schema.NullOr(Schema.String)));
++type Section = keyof typeof queries;
++/** Why the inventory's own read ended without its report: a closed set, never a value. */
++type Failure =
++  | "row_cap"
++  | "value_cap"
++  | "bytes_cap"
++  | "not_read_only"
++  | "statement_timeout"
++  | "lock_timeout"
++  | "sql_error"
++  | "connection"
++  | "unknown";
+ class InventoryUnavailable extends Schema.TaggedError<InventoryUnavailable>()(
+   "InventoryUnavailable",
+-  {},
++  {
++    failure: Schema.Literals(["row_cap", "value_cap", "bytes_cap", "not_read_only"]),
++  },
+ ) {}
+ 
++const isRecord = (value: unknown): value is Record<string, unknown> =>
++  typeof value === "object" && value !== null;
++/** The closed cause of a failed read: its own cap, or the database's own error class. */
++const failureOf = (cause: Cause.Cause<unknown>, connected: boolean): Failure => {
++  const error = Option.getOrUndefined(Cause.findErrorOption(cause));
++  if (error instanceof InventoryUnavailable) return error.failure;
++  if (!connected) return "connection";
++  const reason = isRecord(error) && isRecord(error.reason) ? error.reason._tag : undefined;
++  if (reason === "StatementTimeoutError") return "statement_timeout";
++  if (reason === "LockTimeoutError") return "lock_timeout";
++  return isRecord(error) ? "sql_error" : "unknown";
++};
++
+ /** A separate internal job never initializes the SDK or enters mutating data steps. */
+ export const reportHostPoolInventory = Effect.gen(function* () {
+   const run = randomUUID();
+-  // The pool ownership report reads in this same snapshot, after the inventory's own reads.
+-  let population: Exit.Exit<PopulationFacts, unknown> | undefined;
++  // Where the read had got to when it ended: a fixed key of `queries`, never a value.
++  let connected = false;
++  let section: Section | undefined;
+   const report = yield* Effect.gen(function* () {
+     const sql = yield* Effect.flatten(GroupDatabase);
++    connected = true;
+     return yield* sql.withTransaction(
+       Effect.gen(function* () {
+         yield* sql`set transaction isolation level repeatable read read only`;
+@@ -79,33 +104,35 @@ export const reportHostPoolInventory = Effect.gen(function* () {
+         const identity =
+           yield* sql`select current_setting('transaction_read_only') as read_only, transaction_timestamp()::text as snapshot`;
+         if (identity[0]?.read_only !== "on" || typeof identity[0]?.snapshot !== "string") {
+-          return yield* new InventoryUnavailable();
++          return yield* new InventoryUnavailable({ failure: "not_read_only" });
+         }
+         const sections: Record<string, typeof Rows.Type> = {};
+-        for (const [section, query] of Object.entries(queries)) {
++        for (const [name, query] of Object.entries(queries) as Array<[Section, string]>) {
++          section = name;
+           const rows = yield* sql
+             .unsafe(query)
+             .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Rows)));
++          if (rows.length > 1_000) return yield* new InventoryUnavailable({ failure: "row_cap" });
+           if (
+-            rows.length > 1_000 ||
+             rows.some((row) =>
+               Object.values(row).some((value) => value !== null && value.length > 512),
+             )
+-          ) {
+-            return yield* new InventoryUnavailable();
+-          }
+-          sections[section] = rows;
++          )
++            return yield* new InventoryUnavailable({ failure: "value_cap" });
++          sections[name] = rows;
+         }
++        section = undefined;
+         const report = { snapshot: identity[0].snapshot, sections };
+         if (Buffer.byteLength(JSON.stringify(report)) > 120_000)
+-          return yield* new InventoryUnavailable();
+-        population = yield* Effect.exit(readPoolPopulation(sql));
++          return yield* new InventoryUnavailable({ failure: "bytes_cap" });
+         return report;
+       }),
+     );
+   }).pipe(
+     Effect.map((report) => ({ ok: true as const, report })),
+-    Effect.catchCause(() => Effect.succeed({ ok: false as const })),
++    Effect.catchCause((cause) =>
++      Effect.succeed({ ok: false as const, failure: failureOf(cause, connected) }),
++    ),
+   );
+   if (!report.ok) {
+     yield* Console.info(
+@@ -115,10 +142,13 @@ export const reportHostPoolInventory = Effect.gen(function* () {
+         event: "end",
+         complete: false,
+         reason: "query_failed",
++        // What ended it, from a closed set, and where: a fixed section key, never a value.
++        failure: report.failure,
++        ...(section === undefined ? {} : { section }),
+         migrationGo: false,
+       }),
+     );
+-    yield* Console.info(poolOwnershipLine(undefined, run, undefined));
++    yield* populationLine(run);
+     return;
+   }
+   const json = JSON.stringify(report.report);
+@@ -149,19 +179,38 @@ export const reportHostPoolInventory = Effect.gen(function* () {
+       migrationGo: false,
+     }),
+   );
+-  // Whatever the report meets, the inventory's outcome is the inventory's own.
+-  yield* Console.info(
+-    yield* Effect.try(() => poolOwnershipLine(population, run, report.report.snapshot)).pipe(
+-      Effect.orElseSucceed(() =>
+-        JSON.stringify({
+-          inventory: "pool-ownership-v1",
++  yield* populationLine(run);
++}).pipe(Effect.withTracerEnabled(false));
++
++/**
++ * The pool ownership report's one line, after the inventory's own lines, whatever the inventory's
++ * read did: the report reads in its own read-only transaction and bound, so its line never waits on
++ * the inventory, and the inventory's outcome stays the inventory's own.
++ */
++const populationLine = (run: string) =>
++  Effect.gen(function* () {
++    const read = yield* Effect.exit(
++      Effect.flatten(GroupDatabase).pipe(Effect.flatMap(readPoolPopulationAlone)),
++    );
++    const snapshot = Exit.isSuccess(read) ? read.value.snapshot : undefined;
++    yield* Console.info(
++      yield* Effect.try(() =>
++        poolOwnershipLine(
++          Exit.map(read, (alone) => alone.facts),
+           run,
+-          snapshot: report.report.snapshot,
+-          complete: false,
+-          reason: "report_failed",
+-          migrationGo: false,
+-        }),
++          snapshot,
++        ),
++      ).pipe(
++        Effect.orElseSucceed(() =>
++          JSON.stringify({
++            inventory: "pool-ownership-v1",
++            run,
++            snapshot: snapshot ?? null,
++            complete: false,
++            reason: "report_failed",
++            migrationGo: false,
++          }),
++        ),
+       ),
+-    ),
+-  );
+-}).pipe(Effect.withTracerEnabled(false));
++    );
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/pool-ownership-report.ts b/apps/hosted/cloud/src/infrastructure/pool-ownership-report.ts
+--- a/apps/hosted/cloud/src/infrastructure/pool-ownership-report.ts
++++ b/apps/hosted/cloud/src/infrastructure/pool-ownership-report.ts
+@@ -6,8 +6,8 @@ import { Effect, Exit, Schema } from "effect";
+ import type { SqlClient } from "effect/sql";
+ 
+ /**
+- * The pool ownership population, read inside the hourly inventory's read-only transaction: every
+- * pair a pool token can name. That is each record in an organization's `basaltPools`, each recorded
++ * The pool ownership population, read by the hourly inventory job in a read-only transaction of
++ * its own: every pair a pool token can name. That is each record in an organization's `basaltPools`, each recorded
+  * app with the organization that owns it, and each pool app with its owner, recorded or not. A pool
+  * app is a copy whose origin is the pool app's source, whatever name it was given: the catalog
+  * names it `basalt-pool`, a person's default pool `<brand> pool`. Per pair it reads the facts the
+@@ -80,7 +80,7 @@ export interface PopulationFacts {
+ 
+ /**
+  * The population read, in a savepoint of the caller's transaction: a statement that fails or is
+- * cancelled rolls back to it alone, so the inventory's own reads and outcome stand as they are.
++ * cancelled rolls back to it alone.
+  */
+ export const readPoolPopulation = (sql: SqlClient.SqlClient) =>
+   sql.withTransaction(
+@@ -95,6 +95,26 @@ export const readPoolPopulation = (sql: SqlClient.SqlClient) =>
+     }),
+   );
+ 
++/**
++ * The population read in its own read-only, repeatable-read transaction, with the inventory's own
++ * bounds, and the snapshot it read. It runs whether or not the inventory's own read succeeded.
++ */
++export const readPoolPopulationAlone = (sql: SqlClient.SqlClient) =>
++  sql.withTransaction(
++    Effect.gen(function* () {
++      yield* sql`set transaction isolation level repeatable read read only`;
++      yield* sql`set local statement_timeout = '3s'`;
++      yield* sql`set local lock_timeout = '500ms'`;
++      yield* sql`set local idle_in_transaction_session_timeout = '5s'`;
++      const [identity] = yield* sql
++        .unsafe("select transaction_timestamp()::text as snapshot")
++        .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Snapshot)));
++      const facts = yield* readPoolPopulation(sql);
++      return { facts, snapshot: identity?.snapshot };
++    }),
++  );
++const Snapshot = Schema.Array(Schema.Struct({ snapshot: Schema.String }));
++
+ /** The most pool ids one line carries; the rest are counted. */
+ const listed = 50;
+ /** The most pairs one read covers; above it the line says it is incomplete and lists nothing. */
+@@ -106,18 +126,11 @@ const covered = 1_000;
+  * one never look alike. Pool ids only, never organization metadata.
+  */
+ export function poolOwnershipLine(
+-  read: Exit.Exit<PopulationFacts, unknown> | undefined,
++  read: Exit.Exit<PopulationFacts, unknown>,
+   run: string,
+   snapshot: string | undefined,
+ ) {
+   const head = { inventory: "pool-ownership-v1", run, snapshot: snapshot ?? null };
+-  if (read === undefined)
+-    return JSON.stringify({
+-      ...head,
+-      complete: false,
+-      reason: "inventory_failed",
+-      migrationGo: false,
+-    });
+   if (Exit.isFailure(read))
+     return JSON.stringify({ ...head, complete: false, reason: "query_failed", migrationGo: false });
+   const { pairs, invalidMetadataOrganizations } = read.value;

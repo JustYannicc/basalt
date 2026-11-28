@@ -298,7 +298,7 @@ test("a report statement cancelled behind a lock leaves the inventory exactly as
   });
 });
 
-test("above its row cap, or when the inventory itself fails, the report still writes an incomplete line", async () => {
+test("above its row cap the report still writes an incomplete line", async () => {
   await withInventoryDatabase(async ({ admin, schema }) => {
     // A record without an app names no pair.
     await admin.query("insert into organization values ('org_a', $1)", [
@@ -326,22 +326,55 @@ test("above its row cap, or when the inventory itself fails, the report still wr
     const [line] = ownership(capped);
     assert.deepEqual([line.complete, line.reason, line.pairs], [false, "row_cap", 1_001]);
     assert.equal(line.refusing, undefined);
-    // An inventory that cannot read leaves its own failure line, and the report's after it.
+  });
+});
+
+test("an inventory whose own read fails names why and where, and the report still covers every pair", async () => {
+  await withInventoryDatabase(async ({ admin, locker, schema }) => {
+    await admin.query("insert into organization values ('org_a', $1)", [record("app_a")]);
+    await admin.query("insert into executor_apps values ('app_a', 'organization:org_a', null)");
+    const failedWith = async () => {
+      const lines = await inventoryLines(schema);
+      const [end] = inventoryOnly(lines);
+      const [line] = ownership(lines);
+      // The report's line still comes last, and it is complete.
+      assert.equal(lines.at(-1), line);
+      assert.equal(line.complete, true);
+      assert.equal(line.counts.owned, 1);
+      return { reason: end.reason, failure: end.failure, section: end.section };
+    };
+    // A section over the inventory's own row cap.
+    for (let index = 0; index < 1_001; index++)
+      await admin.query("insert into executor_accounts values ($1, 'o', 'p', 'm')", [
+        `acc_${index}`,
+      ]);
+    assert.deepEqual(await failedWith(), {
+      reason: "query_failed",
+      failure: "row_cap",
+      section: "accounts",
+    });
+    await admin.query("delete from executor_accounts");
+    // A section the inventory waits for behind a lock past its own lock bound.
+    await locker.query("begin");
+    await locker.query(`lock table ${schema}.hosted_groups in access exclusive mode`);
+    assert.deepEqual(await failedWith(), {
+      reason: "query_failed",
+      failure: "lock_timeout",
+      section: "groups",
+    });
+    await locker.query("rollback");
+    // A section the database cannot read at all.
     await admin.query(`drop table ${schema}.hosted_groups`);
-    const failed = await inventoryLines(schema);
-    assert.equal(inventoryOnly(failed).at(-1)?.reason, "query_failed");
-    assert.deepEqual(
-      ownership(failed).map(({ run: _run, ...rest }) => rest),
-      [
-        {
-          inventory: "pool-ownership-v1",
-          snapshot: null,
-          complete: false,
-          reason: "inventory_failed",
-          migrationGo: false,
-        },
-      ],
-    );
+    assert.deepEqual(await failedWith(), {
+      reason: "query_failed",
+      failure: "sql_error",
+      section: "groups",
+    });
+    // And one that reads, with nothing failing: complete, no failure named.
+    await admin.query(tables.find((statement) => statement.includes(" hosted_groups "))!);
+    const lines = await inventoryLines(schema);
+    assert.equal(inventoryOnly(lines).at(-1)?.complete, true);
+    assert.equal(inventoryOnly(lines).at(-1)?.failure, undefined);
   });
 });
 
