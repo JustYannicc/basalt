@@ -1,0 +1,125 @@
+name: Acceptance pool
+run-name: Acceptance pool / ${{ inputs.kind }} ${{ inputs.action }} / ${{ inputs.target }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      kind:
+        description: The plan kind
+        required: true
+        type: choice
+        options: [setup, teardown]
+      action:
+        description: A dry run makes the plan; apply needs its checksum and GO; verify only reads
+        required: true
+        default: dry-run
+        type: choice
+        options: [dry-run, apply, verify]
+      target:
+        description: production, or a test-rehearsal-<n> stage
+        required: true
+        default: production
+        type: string
+      request:
+        description: Exact non-secret JSON request; never credentials, keys or addresses
+        required: true
+        default: "{}"
+        type: string
+      recipient:
+        description: RSA 3072+ public recipient key, SPKI DER encoded as base64 (dry run)
+        required: false
+        type: string
+      source_run:
+        description: The successful dry-run workflow run an apply names
+        required: false
+        type: string
+      plan_sha256:
+        description: The reviewed plan checksum (apply), or the receipt to verify (verify)
+        required: false
+        type: string
+      go:
+        description: Coordinator's exact GO followed by a space and the reviewed plan checksum
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+# One group with production-ops, so two production operations never run at once.
+concurrency:
+  group: production-ops
+  cancel-in-progress: false
+
+jobs:
+  operate:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ${{ vars.BASALT_RELEASE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    # The emulated upstream's key and origin live only in this environment.
+    environment:
+      name: emulated-upstream
+      deployment: false
+    steps:
+      - name: Refuse every ref but main
+        run: test "$GITHUB_REF" = refs/heads/main
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - name: Load the completed dry run
+        if: inputs.action == 'apply'
+        uses: actions/download-artifact@v4
+        with:
+          name: acceptance-pool-${{ inputs.source_run }}
+          run-id: ${{ inputs.source_run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/previous-operation
+      - name: Run the dry run, verification or teardown
+        if: inputs.kind != 'setup' || inputs.action != 'apply'
+        run: node scripts/acceptance-pool/run.ts
+        env:
+          POOL_APP_SIGNING_KEY: ${{ secrets.POOL_APP_SIGNING_KEY }}
+          REHEARSAL_POOL_APP_SIGNING_KEY: ${{ secrets.REHEARSAL_POOL_APP_SIGNING_KEY }}
+          EMULATED_UPSTREAM_ORIGIN: ${{ inputs.kind == 'setup' && secrets.EMULATED_UPSTREAM_ORIGIN || '' }}
+          GITHUB_TOKEN: ${{ github.token }}
+          ACCEPTANCE_KIND: ${{ inputs.kind }}
+          ACCEPTANCE_ACTION: ${{ inputs.action }}
+          ACCEPTANCE_TARGET: ${{ inputs.target }}
+          ACCEPTANCE_REQUEST: ${{ inputs.request }}
+          ACCEPTANCE_RECIPIENT: ${{ inputs.recipient }}
+          ACCEPTANCE_SOURCE_RUN: ${{ inputs.source_run }}
+          ACCEPTANCE_PLAN_SHA256: ${{ inputs.plan_sha256 }}
+          ACCEPTANCE_GO: ${{ inputs.go }}
+          ACCEPTANCE_PREVIOUS_DIRECTORY: ${{ runner.temp }}/previous-operation
+          ACCEPTANCE_OUTPUT_DIRECTORY: ${{ runner.temp }}/acceptance-pool
+      # The upstream key reaches only this step, and only the accounts' encrypted token keeps it.
+      - name: Run the setup apply
+        if: inputs.kind == 'setup' && inputs.action == 'apply'
+        run: node scripts/acceptance-pool/run.ts
+        env:
+          POOL_APP_SIGNING_KEY: ${{ secrets.POOL_APP_SIGNING_KEY }}
+          REHEARSAL_POOL_APP_SIGNING_KEY: ${{ secrets.REHEARSAL_POOL_APP_SIGNING_KEY }}
+          EMULATED_UPSTREAM_ORIGIN: ${{ inputs.kind == 'setup' && secrets.EMULATED_UPSTREAM_ORIGIN || '' }}
+          GITHUB_TOKEN: ${{ github.token }}
+          ACCEPTANCE_KIND: ${{ inputs.kind }}
+          ACCEPTANCE_ACTION: ${{ inputs.action }}
+          ACCEPTANCE_TARGET: ${{ inputs.target }}
+          ACCEPTANCE_REQUEST: ${{ inputs.request }}
+          ACCEPTANCE_RECIPIENT: ${{ inputs.recipient }}
+          ACCEPTANCE_SOURCE_RUN: ${{ inputs.source_run }}
+          ACCEPTANCE_PLAN_SHA256: ${{ inputs.plan_sha256 }}
+          ACCEPTANCE_GO: ${{ inputs.go }}
+          ACCEPTANCE_PREVIOUS_DIRECTORY: ${{ runner.temp }}/previous-operation
+          ACCEPTANCE_OUTPUT_DIRECTORY: ${{ runner.temp }}/acceptance-pool
+          EMULATED_UPSTREAM_KEY: ${{ secrets.EMULATED_UPSTREAM_KEY }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: acceptance-pool-${{ github.run_id }}
+          path: ${{ runner.temp }}/acceptance-pool
+          if-no-files-found: error
+          retention-days: 30

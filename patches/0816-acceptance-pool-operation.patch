@@ -1,0 +1,1138 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/cloud.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/cloud.ts
+new file mode 100644
+index 0000000..3d19bef
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/cloud.ts
+@@ -0,0 +1,33 @@
++import { acceptancePoolSteps } from "@executor-js/hosted-server/acceptance-pool-steps";
++import { Config, Effect, Option, Redacted } from "effect";
++import { productionOpsRelease } from "../../implementation/production-ops-release.ts";
++import { cloudDirectDatabaseConnection } from "../database.ts";
++import { databaseOrigin } from "../production-ops/database-identity.ts";
++import { cloudEncryptionKey } from "../secrets.ts";
++import { cloudHosts } from "../stage.ts";
++import { acceptancePoolHandler } from "./http.ts";
++
++/** The deployed route: production-ops' key, hosts, release and database identity. */
++export const cloudAcceptancePool = Effect.gen(function* () {
++  const signingKey = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
++  // Set once by the deploy's input; unset means a setup plan says so and its link refuses.
++  const upstreamHost = yield* Config.String("BASALT_ACCEPTANCE_UPSTREAM_HOST").pipe(Config.option);
++  const encryptionKey = yield* cloudEncryptionKey.pipe(Effect.orDie);
++  const hosts = yield* cloudHosts.pipe(Effect.orDie);
++  const directConnection = yield* cloudDirectDatabaseConnection;
++  return acceptancePoolHandler({
++    signingKey,
++    target: hosts.browser,
++    settings: Effect.gen(function* () {
++      const secret = yield* encryptionKey;
++      return {
++        target: hosts.browser,
++        release: productionOpsRelease,
++        encryptionKey: Redacted.value(secret),
++        databaseOrigin: yield* databaseOrigin(yield* directConnection.connectionString),
++        upstreamHost: Option.getOrUndefined(upstreamHost),
++      };
++    }),
++    steps: acceptancePoolSteps,
++  });
++});
+diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/contracts.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/contracts.ts
+new file mode 100644
+index 0000000..a0d93a8
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/contracts.ts
+@@ -0,0 +1,55 @@
++import {
++  AcceptanceKind,
++  type AcceptanceRefusalReason,
++} from "@executor-js/hosted-server/acceptance-pool";
++import { Schema } from "effect";
++import { ProtectedArtifact } from "../production-ops/crypto.ts";
++
++export const acceptancePoolPath = "/api/internal/acceptance-pool";
++/** Its own prefix, so a production-ops envelope never opens here and this one never opens there. */
++export const acceptancePoolPrefix = "sbacc1";
++export const acceptancePoolBodyLimit = 64 * 1024;
++export const acceptancePlanFormat = "basalt-acceptance-pool-plan-v1";
++export const acceptanceReceiptFormat = "basalt-acceptance-pool-receipt-v1";
++export const acceptancePoolRevision = "1";
++export const acceptanceMigration = (kind: AcceptanceKind) => `acceptance-pool-${kind}-v1`;
++
++/**
++ * A holder that stops renewing is gone within this time: every step is bounded well below it, and
++ * the request as a whole below the driver's own wait. Only then may another apply take it over.
++ */
++export const acceptanceLeaseMs = 120_000;
++export const acceptanceStepTimeoutMs = 90_000;
++export const acceptanceRequestTimeoutMs = 280_000;
++/** A receipt names every envelope that acted on it; a bounded list keeps the row bounded. */
++export const acceptanceEnvelopeLimit = 64;
++
++const Sha256 = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
++
++export const Operation = Schema.Struct({
++  kind: AcceptanceKind,
++  action: Schema.Literals(["dry-run", "apply", "verify"]),
++  request: Schema.Json,
++  recipient: Schema.optionalKey(Schema.NonEmptyString),
++  artifact: Schema.optionalKey(ProtectedArtifact),
++  planSha256: Schema.optionalKey(Schema.String),
++  go: Schema.optionalKey(Schema.String),
++  /** The workflow's own digest of the origin it holds; the request never carries an address. */
++  upstreamOriginSha256: Schema.optionalKey(Sha256),
++  /** Present only on a setup apply; stored as the accounts' encrypted token and never echoed. */
++  upstreamKey: Schema.optionalKey(Schema.String),
++});
++export type Operation = typeof Operation.Type;
++
++export const SignedRequest = Schema.Struct({
++  version: Schema.Literal(1),
++  id: Schema.NonEmptyString,
++  target: Schema.NonEmptyString,
++  at: Schema.Number,
++  expiresAt: Schema.Number,
++  operation: Operation,
++});
++export type SignedRequest = typeof SignedRequest.Type;
++
++const retryable: ReadonlySet<AcceptanceRefusalReason> = new Set(["operation_busy"]);
++export const isRetryable = (reason: AcceptanceRefusalReason) => retryable.has(reason);
+diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/guard.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/guard.ts
+new file mode 100644
+index 0000000..5f8440d
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/guard.ts
+@@ -0,0 +1,40 @@
++import { openEnvelope } from "@executor-js/hosted-server/pool-token";
++import { Option, Schema } from "effect";
++import { sha256 } from "../production-ops/crypto.ts";
++import { acceptancePoolPrefix, SignedRequest } from "./contracts.ts";
++
++/**
++ * The signed request, or undefined for anything else. These are production-ops' own bounds:
++ * the current key only, the browser host as target, at most 5 s early, at most 60 s to live.
++ */
++export async function openSignedRequest(
++  key: string,
++  envelope: string,
++  now: number,
++  target: string,
++): Promise<SignedRequest | undefined> {
++  const raw = await openEnvelope(key, acceptancePoolPrefix, envelope);
++  const signed = Schema.decodeUnknownOption(SignedRequest)(raw);
++  if (Option.isNone(signed)) return undefined;
++  const request = signed.value;
++  if (
++    request.target !== target ||
++    request.at > now + 5000 ||
++    request.expiresAt <= now ||
++    request.expiresAt > request.at + 60_000 ||
++    request.id.length > 128
++  )
++    return undefined;
++  return request;
++}
++
++const label = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?";
++const hostName = new RegExp(`^(?=.{1,253}$)${label}(?:\\.${label})+$`, "u");
++
++/** The deploy's value is a bare host name; anything else counts as not configured. */
++export const upstreamOrigin = (host: string | undefined) =>
++  host !== undefined && hostName.test(host) ? `https://${host}` : undefined;
++
++/** The workflow sends this digest of the origin it holds, so a mistyped value on either side refuses. */
++export const upstreamOriginSha256 = (origin: string) =>
++  sha256(`basalt-acceptance-upstream-origin-v1\n${origin}`);
+diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/http.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/http.ts
+new file mode 100644
+index 0000000..e0cb84b
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/http.ts
+@@ -0,0 +1,112 @@
++import {
++  AcceptancePoolRefused,
++  type AcceptancePoolSteps,
++} from "@executor-js/hosted-server/acceptance-pool";
++import { GroupDatabase } from "@executor-js/hosted-server/groups";
++import { Cause, Clock, Effect, Option, Redacted, Schema, Stream } from "effect";
++import { HttpServerRequest, HttpServerResponse } from "effect/http";
++import { SqlClient } from "effect/sql";
++import { acceptancePoolBodyLimit, acceptanceRequestTimeoutMs, isRetryable } from "./contracts.ts";
++import { openSignedRequest } from "./guard.ts";
++import { runAcceptancePool, type RunnerSettings } from "./runner.ts";
++
++export { acceptancePoolPath } from "./contracts.ts";
++
++const noStore = { "cache-control": "no-store" } as const;
++const fixed = (status: number, body: Record<string, string | boolean>) =>
++  HttpServerResponse.json(body, { status, headers: noStore });
++
++/** Read with a byte bound before parsing, including requests without Content-Length. */
++const envelopeBody = Effect.gen(function* () {
++  const request = yield* HttpServerRequest.HttpServerRequest;
++  const chunks: Uint8Array[] = [];
++  let length = 0;
++  yield* request.stream.pipe(
++    Stream.runForEach((chunk) =>
++      Effect.gen(function* () {
++        length += chunk.byteLength;
++        if (length > acceptancePoolBodyLimit) return yield* Effect.fail("too-large" as const);
++        chunks.push(chunk);
++      }),
++    ),
++  );
++  const text = yield* Effect.try(() =>
++    new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)),
++  );
++  return yield* Schema.decodeUnknownEffect(
++    Schema.fromJsonString(Schema.Struct({ envelope: Schema.String })),
++  )(text);
++});
++
++export interface AcceptancePoolRoute<R> {
++  readonly signingKey: Option.Option<Redacted.Redacted<string>>;
++  readonly target: string;
++  /** Resolved per request: the runtime secrets and the database it may act on. */
++  readonly settings: Effect.Effect<RunnerSettings, unknown, SqlClient.SqlClient>;
++  readonly steps: AcceptancePoolSteps<R>;
++}
++
++/**
++ * No session, cookie, API key or MCP identity participates: only an envelope signed with the
++ * current pool signing key reaches the runner. Every answer is one of a few fixed bodies.
++ */
++export const acceptancePoolHandler = <R>(route: AcceptancePoolRoute<R>) =>
++  Effect.gen(function* () {
++    const signingKey = route.signingKey;
++    if (Option.isNone(signingKey)) {
++      yield* Effect.logWarning("acceptance_pool.refused", { reason: "signing_key_missing" });
++      return yield* fixed(503, { error: "acceptance_pool_unavailable" });
++    }
++    const body = yield* envelopeBody.pipe(Effect.option);
++    if (Option.isNone(body))
++      return yield* fixed(400, {
++        error: "acceptance_pool_refused",
++        reason: "request_invalid",
++        retryable: false,
++      });
++    const now = yield* Clock.currentTimeMillis;
++    const signed = yield* Effect.promise(() =>
++      openSignedRequest(
++        Redacted.value(signingKey.value),
++        body.value.envelope,
++        now,
++        route.target,
++      ).catch(() => undefined),
++    );
++    if (signed === undefined) {
++      yield* Effect.logWarning("acceptance_pool.refused", { reason: "unauthenticated" });
++      return yield* fixed(401, {
++        error: "acceptance_pool_refused",
++        reason: "unauthenticated",
++        retryable: false,
++      });
++    }
++    const sql = yield* Effect.flatten(GroupDatabase);
++    const result = yield* Effect.gen(function* () {
++      const settings = yield* route.settings;
++      return yield* runAcceptancePool(settings, signed, route.steps);
++    }).pipe(
++      Effect.provideService(SqlClient.SqlClient, sql),
++      Effect.timeout(acceptanceRequestTimeoutMs),
++    );
++    return yield* HttpServerResponse.json(result, { headers: noStore });
++  }).pipe(
++    // Errors from SQL or a product call can quote stored values. Only a closed word crosses.
++    Effect.catchCause((cause) => {
++      const first = Option.getOrUndefined(Cause.findErrorOption(cause));
++      const refused = first instanceof AcceptancePoolRefused ? first : undefined;
++      const body =
++        refused === undefined
++          ? { error: "acceptance_pool_refused", reason: "failed", retryable: false }
++          : {
++              error: "acceptance_pool_refused",
++              reason: refused.reason,
++              retryable: isRetryable(refused.reason),
++              ...(refused.step === undefined ? {} : { step: refused.step }),
++            };
++      return Effect.logWarning("acceptance_pool.refused", { reason: body.reason }).pipe(
++        Effect.andThen(fixed(409, body)),
++      );
++    }),
++    Effect.withTracerEnabled(false),
++  );
+diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/plan.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/plan.ts
+new file mode 100644
+index 0000000..63dd29b
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/plan.ts
+@@ -0,0 +1,108 @@
++import {
++  AcceptanceKind,
++  refuse,
++  type Inspection,
++  type Json,
++} from "@executor-js/hosted-server/acceptance-pool";
++import { Effect, Schema } from "effect";
++import {
++  canonical,
++  openArtifact,
++  protectArtifact,
++  sha256,
++  type ProtectedArtifact,
++} from "../production-ops/crypto.ts";
++import { acceptancePlanFormat, type Operation } from "./contracts.ts";
++
++export const Plan = Schema.Struct({
++  format: Schema.Literal(acceptancePlanFormat),
++  kind: AcceptanceKind,
++  target: Schema.String,
++  database: Schema.Struct({ name: Schema.String, targetSha256: Schema.String }),
++  release: Schema.String,
++  preparedAt: Schema.Number,
++  request: Schema.Json,
++  /** For a teardown, the setup receipt it acts on. */
++  setup: Schema.NullOr(Schema.String),
++  observed: Schema.Record(Schema.String, Schema.String),
++  steps: Schema.Array(Schema.String),
++  writes: Schema.Array(
++    Schema.Struct({
++      store: Schema.Literals(["tools", "pool", "home", "cloudflare"]),
++      table: Schema.String,
++      key: Schema.String,
++      action: Schema.Literals(["insert", "update", "delete", "call"]),
++    }),
++  ),
++  data: Schema.Json,
++});
++export type Plan = typeof Plan.Type;
++
++export interface PlanSettings {
++  readonly target: string;
++  readonly release: string;
++  readonly encryptionKey: string;
++}
++
++export const observedSha256 = (observed: Plan["observed"]) => sha256(`${canonical(observed)}\n`);
++
++export const makePlan = (input: {
++  readonly kind: AcceptanceKind;
++  readonly settings: PlanSettings;
++  readonly database: Plan["database"];
++  readonly now: number;
++  readonly request: Json;
++  readonly setup: string | null;
++  readonly inspection: Inspection;
++}): Plan => ({
++  format: acceptancePlanFormat,
++  kind: input.kind,
++  target: input.settings.target,
++  database: input.database,
++  release: input.settings.release,
++  preparedAt: input.now,
++  request: input.request,
++  setup: input.setup,
++  observed: input.inspection.observed,
++  steps: input.inspection.steps,
++  writes: input.inspection.writes,
++  data: input.inspection.data,
++});
++
++export const sealPlan = (plan: Plan, settings: PlanSettings, recipient: string) =>
++  Effect.tryPromise(() =>
++    protectArtifact(plan, settings.encryptionKey, recipient, settings.target),
++  ).pipe(Effect.mapError(() => refuse("request_invalid")));
++
++/**
++ * The reviewed plan an apply names: its checksum, the exact GO for it, and production-ops' own
++ * freshness rules (same target, release and kind, at most an hour old, never from the future).
++ */
++export const openPlan = (operation: Operation, settings: PlanSettings, now: number) =>
++  Effect.gen(function* () {
++    const artifact: ProtectedArtifact | undefined = operation.artifact;
++    if (
++      artifact === undefined ||
++      operation.planSha256 === undefined ||
++      !/^[a-f0-9]{64}$/u.test(operation.planSha256) ||
++      artifact.sha256 !== operation.planSha256
++    )
++      return yield* refuse("checksum_mismatch");
++    if (operation.go !== `GO ${operation.planSha256}`) return yield* refuse("go_mismatch");
++    const raw = yield* Effect.tryPromise(() =>
++      openArtifact(artifact, settings.encryptionKey, settings.target),
++    ).pipe(Effect.mapError(() => refuse("checksum_mismatch")));
++    const plan = yield* Schema.decodeUnknownEffect(Plan)(raw).pipe(
++      Effect.mapError(() => refuse("checksum_mismatch")),
++    );
++    if (
++      plan.kind !== operation.kind ||
++      plan.target !== settings.target ||
++      plan.release !== settings.release ||
++      canonical(plan.request) !== canonical(operation.request) ||
++      now - plan.preparedAt > 3_600_000 ||
++      plan.preparedAt > now
++    )
++      return yield* refuse("stale_plan");
++    return { plan, planSha256: operation.planSha256 };
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/receipt.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/receipt.ts
+new file mode 100644
+index 0000000..1baa37f
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/receipt.ts
+@@ -0,0 +1,225 @@
++import {
++  acceptanceIdentity,
++  AcceptanceKind,
++  refuse,
++  type Json,
++} from "@executor-js/hosted-server/acceptance-pool";
++import { Effect, Option, Schema } from "effect";
++import { SqlClient, SqlError } from "effect/sql";
++import {
++  acceptanceEnvelopeLimit,
++  acceptanceLeaseMs,
++  acceptanceMigration,
++  acceptancePoolRevision,
++  acceptanceReceiptFormat,
++} from "./contracts.ts";
++
++const Verification = Schema.Struct({
++  ok: Schema.Boolean,
++  checks: Schema.Record(Schema.String, Schema.Boolean),
++});
++
++/** Progress lives in the production-ops receipt's `verification` column; there is no new table. */
++export const ReceiptState = Schema.Struct({
++  format: Schema.Literal(acceptanceReceiptFormat),
++  kind: AcceptanceKind,
++  request: Schema.Json,
++  data: Schema.Json,
++  steps: Schema.Record(Schema.String, Schema.Json),
++  envelopes: Schema.Array(Schema.String),
++  lease: Schema.NullOr(Schema.Struct({ envelope: Schema.String, until: Schema.Number })),
++  completed: Schema.Boolean,
++  verification: Schema.optionalKey(Verification),
++});
++export type ReceiptState = typeof ReceiptState.Type;
++
++const Row = Schema.Struct({
++  organization_id: Schema.String,
++  migration: Schema.String,
++  revision: Schema.String,
++  release: Schema.String,
++  backup_sha256: Schema.String,
++  verification: Schema.Unknown,
++});
++
++const lockedOrMoved = (error: unknown) => {
++  if (!SqlError.isSqlError(error)) return Effect.fail(error);
++  const driver = error.reason.cause;
++  const code =
++    typeof driver === "object" && driver !== null && "code" in driver ? driver.code : undefined;
++  // Another apply holds the row (55P03), or two first applies raced (23505, 40001).
++  return code === "55P03" || code === "23505" || code === "40001"
++    ? Effect.fail(refuse("operation_busy"))
++    : Effect.fail(error);
++};
++
++const bounded = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  yield* sql`set local statement_timeout = '5s'`;
++  yield* sql`set local lock_timeout = '500ms'`;
++  yield* sql`set local idle_in_transaction_session_timeout = '10s'`;
++});
++
++const decodeRow = (row: unknown, kind: AcceptanceKind, release: string, observed: string) =>
++  Effect.gen(function* () {
++    const decoded = yield* Schema.decodeUnknownEffect(Row)(row).pipe(
++      Effect.mapError(() => refuse("receipt_mismatch")),
++    );
++    if (
++      decoded.organization_id !== acceptanceIdentity.organization ||
++      decoded.migration !== acceptanceMigration(kind) ||
++      decoded.revision !== acceptancePoolRevision ||
++      decoded.release !== release ||
++      decoded.backup_sha256 !== observed
++    )
++      return yield* refuse("receipt_mismatch");
++    const state = yield* Schema.decodeUnknownEffect(ReceiptState)(decoded.verification).pipe(
++      Effect.mapError(() => refuse("receipt_mismatch")),
++    );
++    if (state.kind !== kind) return yield* refuse("receipt_mismatch");
++    return state;
++  });
++
++const write = (planSha256: string, state: ReceiptState) =>
++  Effect.flatMap(
++    SqlClient.SqlClient,
++    (sql) => sql`update private_production_ops_receipts
++      set verification = ${JSON.stringify(state)}::jsonb where plan_sha256 = ${planSha256}`,
++  );
++
++export interface Claim {
++  readonly state: ReceiptState;
++  readonly outcome: "fresh" | "resumed" | "completed";
++}
++
++/**
++ * Claims the plan's receipt for one envelope. A first claim runs `fresh` (the precondition re-read)
++ * in the same transaction before the row exists. A repeated envelope id is refused and writes
++ * nothing. A live lease is never taken; an expired one is, and its steps resume.
++ */
++export const claimReceipt = <R>(input: {
++  readonly planSha256: string;
++  readonly kind: AcceptanceKind;
++  readonly release: string;
++  /** The digest of the observed state the plan was made from, in the column named for a backup. */
++  readonly observedSha256: string;
++  readonly request: Json;
++  readonly data: Json;
++  readonly envelope: string;
++  readonly now: number;
++  /** Runs before any claim that will act: the same database, and nothing that forbids the act. */
++  readonly guard: Effect.Effect<void, unknown, SqlClient.SqlClient | R>;
++  readonly fresh: Effect.Effect<void, unknown, SqlClient.SqlClient | R>;
++}) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    return yield* sql
++      .withTransaction(
++        Effect.gen(function* () {
++          yield* sql`set transaction isolation level serializable`;
++          yield* bounded;
++          const rows = yield* sql`select organization_id, migration, revision, release,
++            backup_sha256, verification from private_production_ops_receipts
++            where plan_sha256 = ${input.planSha256} for update nowait`;
++          const lease = { envelope: input.envelope, until: input.now + acceptanceLeaseMs };
++          if (rows.length === 0) {
++            yield* input.guard;
++            yield* input.fresh;
++            const state: ReceiptState = {
++              format: acceptanceReceiptFormat,
++              kind: input.kind,
++              request: input.request,
++              data: input.data,
++              steps: {},
++              envelopes: [input.envelope],
++              lease,
++              completed: false,
++            };
++            yield* sql`insert into private_production_ops_receipts
++              (plan_sha256, organization_id, migration, revision, release, backup_sha256, verification)
++              values (${input.planSha256}, ${acceptanceIdentity.organization},
++                ${acceptanceMigration(input.kind)}, ${acceptancePoolRevision}, ${input.release},
++                ${input.observedSha256}, ${JSON.stringify(state)}::jsonb)`;
++            return { state, outcome: "fresh" } satisfies Claim;
++          }
++          const state = yield* decodeRow(rows[0], input.kind, input.release, input.observedSha256);
++          if (state.envelopes.includes(input.envelope)) return yield* refuse("replayed");
++          if (state.envelopes.length >= acceptanceEnvelopeLimit)
++            return yield* refuse("receipt_full");
++          const envelopes = [...state.envelopes, input.envelope];
++          if (state.completed) {
++            const next = { ...state, envelopes };
++            yield* write(input.planSha256, next);
++            return { state: next, outcome: "completed" } satisfies Claim;
++          }
++          if (state.lease !== null && state.lease.until > input.now)
++            return yield* refuse("operation_busy");
++          yield* input.guard;
++          const next = { ...state, envelopes, lease };
++          yield* write(input.planSha256, next);
++          return { state: next, outcome: "resumed" } satisfies Claim;
++        }),
++      )
++      .pipe(Effect.catch(lockedOrMoved));
++  });
++
++/** Changes the receipt only while this envelope still holds a live lease, and renews it. */
++export const updateReceipt = (input: {
++  readonly planSha256: string;
++  readonly kind: AcceptanceKind;
++  readonly release: string;
++  readonly observedSha256: string;
++  readonly envelope: string;
++  readonly now: number;
++  readonly change: (state: ReceiptState) => ReceiptState;
++}) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    return yield* sql
++      .withTransaction(
++        Effect.gen(function* () {
++          yield* bounded;
++          const rows = yield* sql`select organization_id, migration, revision, release,
++            backup_sha256, verification from private_production_ops_receipts
++            where plan_sha256 = ${input.planSha256} for update nowait`;
++          if (rows.length !== 1) return yield* refuse("receipt_mismatch");
++          const state = yield* decodeRow(rows[0], input.kind, input.release, input.observedSha256);
++          if (
++            state.lease === null ||
++            state.lease.envelope !== input.envelope ||
++            state.lease.until <= input.now
++          )
++            return yield* refuse("operation_busy");
++          const changed = input.change(state);
++          const next = {
++            ...changed,
++            lease:
++              changed.lease === null
++                ? null
++                : { envelope: input.envelope, until: input.now + acceptanceLeaseMs },
++          };
++          yield* write(input.planSha256, next);
++          return next;
++        }),
++      )
++      .pipe(Effect.catch(lockedOrMoved));
++  });
++
++/** A recorded receipt, read without a lock: what verification and a teardown work from. */
++export const readReceipt = (planSha256: string, kind: AcceptanceKind) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const rows = yield* sql`select organization_id, migration, revision, verification
++      from private_production_ops_receipts where plan_sha256 = ${planSha256}`;
++    const row = rows[0];
++    if (rows.length !== 1 || row === undefined) return Option.none();
++    if (
++      row.organization_id !== acceptanceIdentity.organization ||
++      row.migration !== acceptanceMigration(kind) ||
++      row.revision !== acceptancePoolRevision
++    )
++      return Option.none();
++    return Schema.decodeUnknownOption(ReceiptState)(row.verification).pipe(
++      Option.filter((state) => state.kind === kind),
++    );
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/request.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/request.ts
+new file mode 100644
+index 0000000..12067b8
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/request.ts
+@@ -0,0 +1,51 @@
++import {
++  acceptancePoolName,
++  refuse,
++  type AcceptanceKind,
++  type Json,
++} from "@executor-js/hosted-server/acceptance-pool";
++import { Effect, Schema } from "effect";
++
++export const upstreamProfiles = ["a", "b"] as const;
++
++export const SetupRequest = Schema.Struct({
++  pool: Schema.String,
++  accounts: Schema.Array(
++    Schema.Struct({
++      profile: Schema.Literals(upstreamProfiles),
++      method: Schema.Literals(["anthropic", "openai"]),
++      models: Schema.String.check(Schema.isMaxLength(4096)),
++    }),
++  ),
++});
++export type SetupRequest = typeof SetupRequest.Type;
++
++export const TeardownRequest = Schema.Struct({
++  setup: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
++});
++export type TeardownRequest = typeof TeardownRequest.Type;
++
++/** The server's own reading of a request; nothing the caller names outside this shape is used. */
++export const setupRequest = (request: Json) =>
++  Effect.gen(function* () {
++    const setup = yield* Schema.decodeUnknownEffect(SetupRequest)(request).pipe(
++      Effect.mapError(() => refuse("request_invalid")),
++    );
++    if (!acceptancePoolName.test(setup.pool)) return yield* refuse("name_pattern");
++    const profiles = new Set(setup.accounts.map((account) => account.profile));
++    if (
++      setup.accounts.length === 0 ||
++      setup.accounts.length > upstreamProfiles.length ||
++      profiles.size !== setup.accounts.length
++    )
++      return yield* refuse("request_invalid");
++    return setup;
++  });
++
++export const teardownRequest = (request: Json) =>
++  Schema.decodeUnknownEffect(TeardownRequest)(request).pipe(
++    Effect.mapError(() => refuse("request_invalid")),
++  );
++
++export const checkRequest = (kind: AcceptanceKind, request: Json) =>
++  kind === "setup" ? Effect.asVoid(setupRequest(request)) : Effect.asVoid(teardownRequest(request));
+diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/runner.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/runner.ts
+new file mode 100644
+index 0000000..3ad6eac
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/runner.ts
+@@ -0,0 +1,279 @@
++import {
++  AcceptancePoolRefused,
++  refuse,
++  type AcceptanceKind,
++  type AcceptancePoolSteps,
++  type Json,
++  type RecordedSetup,
++  type StepContext,
++  type Verification,
++} from "@executor-js/hosted-server/acceptance-pool";
++import { Clock, Effect, Option } from "effect";
++import { SqlClient } from "effect/sql";
++import { canonical } from "../production-ops/crypto.ts";
++import { databaseIdentity, type DatabaseOrigin } from "../production-ops/database-identity.ts";
++import { acceptanceMigration, acceptanceStepTimeoutMs, type SignedRequest } from "./contracts.ts";
++import { upstreamOrigin, upstreamOriginSha256 } from "./guard.ts";
++import {
++  makePlan,
++  observedSha256,
++  openPlan,
++  sealPlan,
++  type Plan,
++  type PlanSettings,
++} from "./plan.ts";
++import { claimReceipt, readReceipt, updateReceipt, type ReceiptState } from "./receipt.ts";
++import { checkRequest, teardownRequest } from "./request.ts";
++
++export interface RunnerSettings extends PlanSettings {
++  readonly databaseOrigin: DatabaseOrigin;
++  /** The deploy's value for the emulated upstream's host; undefined when the deploy set none. */
++  readonly upstreamHost: string | undefined;
++}
++
++// The emulated upstream's own key format (scripts/emulated-upstream/settings.ts).
++const upstreamKey = /^[A-Za-z0-9_-]{32,128}$/u;
++
++const now = Clock.currentTimeMillis;
++
++/** production-ops' read-only transaction, for steps that need more than SQL. */
++const readOnly = <A, E, R>(work: Effect.Effect<A, E, SqlClient.SqlClient | R>) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    return yield* sql.withTransaction(
++      Effect.gen(function* () {
++        yield* sql`set transaction isolation level repeatable read read only`;
++        yield* sql`set local statement_timeout = '5s'`;
++        yield* sql`set local lock_timeout = '500ms'`;
++        yield* sql`set local idle_in_transaction_session_timeout = '10s'`;
++        return yield* work;
++      }),
++    );
++  });
++
++/** What a setup recorded. A teardown that will act passes `time`, and waits out a running setup. */
++const recordedSetup = (planSha256: string, time?: number) =>
++  Effect.gen(function* () {
++    const state = yield* readReceipt(planSha256, "setup");
++    if (Option.isNone(state)) return yield* refuse("setup_missing");
++    if (time !== undefined && state.value.lease !== null && state.value.lease.until > time)
++      return yield* refuse("operation_busy");
++    return {
++      planSha256,
++      data: state.value.data,
++      progress: state.value.steps,
++    } satisfies RecordedSetup;
++  });
++
++/** A setup never resumes once a teardown has claimed it. */
++const noTeardownOf = (setup: string) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const rows = yield* sql`select 1 from private_production_ops_receipts
++      where migration = ${acceptanceMigration("teardown")}
++        and verification -> 'request' ->> 'setup' = ${setup}`;
++    if (rows.length > 0) return yield* refuse("pool_state");
++  });
++
++const context = (
++  settings: RunnerSettings,
++  kind: AcceptanceKind,
++  state: Pick<ReceiptState, "request" | "data" | "steps">,
++  setup: RecordedSetup | undefined,
++  key?: string,
++): StepContext => ({
++  kind,
++  request: state.request,
++  data: state.data,
++  progress: state.steps,
++  ...(setup === undefined ? {} : { setup }),
++  upstreamOrigin: upstreamOrigin(settings.upstreamHost),
++  ...(key === undefined ? {} : { upstreamKey: key }),
++});
++
++const failedStep = (step: string) => (error: unknown) =>
++  error instanceof AcceptancePoolRefused
++    ? Effect.fail(error)
++    : Effect.fail(new AcceptancePoolRefused({ reason: "step_failed", step }));
++
++const checksPass = (verification: Verification) =>
++  verification.ok && Object.values(verification.checks).every(Boolean);
++
++/**
++ * Dry run, apply or verify for one signed request. The runner owns plans, receipts, leases and
++ * resumption; steps own the product calls and never see the envelope.
++ */
++export const runAcceptancePool = <R>(
++  settings: RunnerSettings,
++  signed: SignedRequest,
++  steps: AcceptancePoolSteps<R>,
++) =>
++  Effect.gen(function* () {
++    const { operation } = signed;
++    const { kind } = operation;
++    // A verification reads the receipt's own request; the one it was sent is not used.
++    if (operation.action !== "verify") yield* checkRequest(kind, operation.request);
++    const origin = upstreamOrigin(settings.upstreamHost);
++    if (
++      kind === "setup" &&
++      operation.action !== "verify" &&
++      origin !== undefined &&
++      operation.upstreamOriginSha256 !== upstreamOriginSha256(origin)
++    )
++      return yield* refuse("upstream_differs");
++
++    if (operation.action === "verify") {
++      if (operation.planSha256 === undefined || !/^[a-f0-9]{64}$/u.test(operation.planSha256))
++        return yield* refuse("request_invalid");
++      const state = yield* readReceipt(operation.planSha256, kind);
++      if (Option.isNone(state)) return yield* refuse("setup_missing");
++      const setup =
++        kind === "teardown"
++          ? yield* teardownRequest(state.value.request).pipe(
++              Effect.flatMap((request) => recordedSetup(request.setup)),
++            )
++          : undefined;
++      const verification = yield* steps.verify(context(settings, kind, state.value, setup));
++      return {
++        action: "verify" as const,
++        kind,
++        planSha256: operation.planSha256,
++        completed: state.value.completed,
++        verification,
++      };
++    }
++
++    if (operation.action === "dry-run") {
++      if (operation.recipient === undefined) return yield* refuse("request_invalid");
++      const time = yield* now;
++      const setupSha256 =
++        kind === "teardown" ? (yield* teardownRequest(operation.request)).setup : null;
++      const { database, inspection } = yield* readOnly(
++        Effect.gen(function* () {
++          const setup = setupSha256 === null ? undefined : yield* recordedSetup(setupSha256, time);
++          return {
++            database: yield* databaseIdentity(settings.databaseOrigin),
++            inspection: yield* steps.inspect(kind, operation.request, setup),
++          };
++        }),
++      );
++      const plan = makePlan({
++        kind,
++        settings,
++        database,
++        now: time,
++        request: operation.request,
++        setup: setupSha256,
++        inspection,
++      });
++      const artifact = yield* sealPlan(plan, settings, operation.recipient);
++      return {
++        action: "dry-run" as const,
++        kind,
++        planSha256: artifact.sha256,
++        artifact,
++        steps: plan.steps.length,
++        writes: plan.writes.length,
++        upstreamConfigured: kind === "setup" ? (origin === undefined ? "no" : "yes") : undefined,
++      };
++    }
++
++    const opened = yield* openPlan(operation, settings, yield* now);
++    const plan: Plan = opened.plan;
++    const { planSha256 } = opened;
++    if (kind === "setup") {
++      if (origin === undefined) return yield* refuse("upstream_unset");
++      if (operation.upstreamKey === undefined || !upstreamKey.test(operation.upstreamKey))
++        return yield* refuse("upstream_key_invalid");
++    }
++    const sql = yield* SqlClient.SqlClient;
++    const observed = observedSha256(plan.observed);
++    const setupOf = () =>
++      plan.setup === null
++        ? Effect.succeed(undefined)
++        : Effect.flatMap(now, (time) => recordedSetup(plan.setup!, time));
++    const claim = yield* claimReceipt({
++      planSha256,
++      kind,
++      release: settings.release,
++      observedSha256: observed,
++      request: plan.request,
++      data: plan.data,
++      envelope: signed.id,
++      now: yield* now,
++      guard: Effect.gen(function* () {
++        const database = yield* databaseIdentity(settings.databaseOrigin);
++        if (
++          database.name !== plan.database.name ||
++          database.targetSha256 !== plan.database.targetSha256
++        )
++          return yield* refuse("stale_plan");
++        if (kind === "setup") yield* noTeardownOf(planSha256);
++      }),
++      fresh: Effect.gen(function* () {
++        const current = yield* steps.inspect(kind, plan.request, yield* setupOf());
++        if (canonical(current.observed) !== canonical(plan.observed))
++          return yield* refuse("stale_plan");
++      }),
++    }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
++    if (claim.outcome === "completed")
++      return {
++        action: "apply" as const,
++        kind,
++        planSha256,
++        repeated: true,
++        resumed: false,
++        verification: claim.state.verification,
++      };
++
++    const update = (change: (state: ReceiptState) => ReceiptState) =>
++      Effect.flatMap(now, (time) =>
++        updateReceipt({
++          planSha256,
++          kind,
++          release: settings.release,
++          observedSha256: observed,
++          envelope: signed.id,
++          now: time,
++          change,
++        }),
++      );
++    const work = Effect.gen(function* () {
++      const setup = yield* setupOf();
++      let state = claim.state;
++      for (const step of plan.steps) {
++        if (Object.hasOwn(state.steps, step)) continue;
++        const value: Json = yield* steps
++          .run(step, context(settings, kind, state, setup, operation.upstreamKey))
++          .pipe(Effect.timeout(acceptanceStepTimeoutMs), Effect.catch(failedStep(step)));
++        state = yield* update((current) => ({
++          ...current,
++          steps: { ...current.steps, [step]: value },
++        }));
++      }
++      const verification = yield* steps
++        .verify(context(settings, kind, state, setup))
++        .pipe(Effect.timeout(acceptanceStepTimeoutMs), Effect.catch(failedStep("verify")));
++      const passed = checksPass(verification);
++      yield* update((current) => ({
++        ...current,
++        verification,
++        completed: passed,
++        lease: null,
++      }));
++      if (!passed) return yield* refuse("verification_failed");
++      return verification;
++    });
++    // A stopped apply gives its lease back, so a retry need not wait for it to run out.
++    const verification = yield* work.pipe(
++      Effect.tapError(() => update((current) => ({ ...current, lease: null })).pipe(Effect.ignore)),
++    );
++    return {
++      action: "apply" as const,
++      kind,
++      planSha256,
++      repeated: false,
++      resumed: claim.outcome === "resumed",
++      verification,
++    };
++  });
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+index 88d5697..4568ad9 100644
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -52,6 +52,8 @@ import { AppWorkflows } from "./infrastructure/workflows.ts";
+ import { cloudDataSteps } from "./infrastructure/data-steps.ts";
+ import { reportHostPoolInventory } from "./infrastructure/pool-inventory.ts";
+ import { cloudProductionOps, productionOpsPath } from "./infrastructure/production-ops/http.ts";
++import { cloudAcceptancePool } from "./infrastructure/acceptance-pool/cloud.ts";
++import { acceptancePoolPath } from "./infrastructure/acceptance-pool/contracts.ts";
+ import { expireIdleAgentGrants } from "@executor-js/app-management/data-steps";
+ import { GroupDatabase } from "@executor-js/hosted-server/groups";
+ import {
+@@ -714,6 +716,7 @@ export default Api.make(
+       HttpRouter.add("POST", "/api/:channel/submit", errorTunnel),
+     );
+     const productionOps = yield* cloudProductionOps;
++    const acceptancePool = yield* cloudAcceptancePool;
+     const routes = Layer.mergeAll(
+       HttpRouter.add("GET", organizationChangesPath, organizationChanges.events).pipe(
+         HttpRouter.provideRequest(executor),
+@@ -739,6 +742,10 @@ export default Api.make(
+       HttpRouter.add("POST", productionOpsPath, productionOps).pipe(
+         HttpRouter.provideRequest(executor),
+       ),
++      // Signed like production-ops, under its own envelope kind; reads no session or key.
++      HttpRouter.add("POST", acceptancePoolPath, acceptancePool).pipe(
++        HttpRouter.provideRequest(executor),
++      ),
+       HttpRouter.add("POST", mapsRoutesPath, mapsRoutes.post).pipe(
+         HttpRouter.provideRequest(executor),
+       ),
+diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+index bafb8cd..332e376 100644
+--- a/apps/hosted/server/package.json
++++ b/apps/hosted/server/package.json
+@@ -59,6 +59,8 @@
+     "./pool-account-acquisition-contract": "./src/implementation/pool-account-acquisition-contract.ts",
+     "./account-key-mirror": "./src/implementation/account-key-mirror.ts",
+     "./pool-token": "./src/implementation/pool-token.ts",
++    "./acceptance-pool": "./src/contracts/acceptance-pool.ts",
++    "./acceptance-pool-steps": "./src/implementation/acceptance-pool/steps.ts",
+     "./hosted-routes": "./src/implementation/hosted-routes-accounts.ts",
+     "./hosted-routes-token": "./src/implementation/hosted-routes-token.ts",
+     "./hosted-routes/contracts": "./src/contracts/hosted-routes.ts",
+diff --git a/apps/hosted/server/src/contracts/acceptance-pool.ts b/apps/hosted/server/src/contracts/acceptance-pool.ts
+new file mode 100644
+index 0000000..6fae418
+--- /dev/null
++++ b/apps/hosted/server/src/contracts/acceptance-pool.ts
+@@ -0,0 +1,121 @@
++import { Data, Schema, type Effect } from "effect";
++import type { SqlClient } from "effect/sql";
++
++/**
++ * The one inert identity that holds the acceptance pool. The signed acceptance-pool operation is
++ * the only writer of its rows; every product path that would act for a person refuses or skips it.
++ */
++export const acceptanceIdentity = {
++  user: "acceptance",
++  organization: "acceptance",
++  slug: "acceptance",
++  member: "acceptance-owner",
++  name: "Acceptance",
++  // RFC 6761 reserves .invalid: no code sent here is ever delivered, and no provider verifies it.
++  email: "acceptance@basalt.invalid",
++} as const;
++
++export const isAcceptanceUser = (user: string | null | undefined) =>
++  user === acceptanceIdentity.user;
++export const isAcceptanceOrganization = (organization: string | null | undefined) =>
++  organization === acceptanceIdentity.organization;
++
++/** Every pool the operation creates is named so; the server refuses any other name. */
++export const acceptancePoolName = /^acceptance-[a-z0-9][a-z0-9-]{0,47}$/u;
++
++export type Json = typeof Schema.Json.Type;
++
++export const AcceptanceKind = Schema.Literals(["setup", "teardown"]);
++export type AcceptanceKind = typeof AcceptanceKind.Type;
++
++/** Every refusal is one of these words, so a caller and a log learn why and nothing else. */
++export const AcceptanceRefusalReason = Schema.Literals([
++  "request_invalid",
++  "name_pattern",
++  "checksum_mismatch",
++  "go_mismatch",
++  "stale_plan",
++  "replayed",
++  "operation_busy",
++  "receipt_mismatch",
++  "receipt_full",
++  "setup_missing",
++  "upstream_unset",
++  "upstream_differs",
++  "upstream_key_invalid",
++  "identity_conflict",
++  "identity_holds_pool",
++  "unrecorded_app",
++  "unrecorded_link",
++  "unrecorded_account",
++  "pool_state",
++  "verification_failed",
++  "step_failed",
++]);
++export type AcceptanceRefusalReason = typeof AcceptanceRefusalReason.Type;
++
++export class AcceptancePoolRefused extends Data.TaggedError("AcceptancePoolRefused")<{
++  readonly reason: AcceptanceRefusalReason;
++  /** For `step_failed`: the plan's own step name, never anything a caller sent. */
++  readonly step?: string;
++}> {}
++export const refuse = (reason: AcceptanceRefusalReason) => new AcceptancePoolRefused({ reason });
++
++export interface Verification {
++  readonly ok: boolean;
++  readonly checks: Readonly<Record<string, boolean>>;
++}
++
++export interface PlannedWrite {
++  readonly store: "tools" | "pool" | "home" | "cloudflare";
++  readonly table: string;
++  readonly key: string;
++  readonly action: "insert" | "update" | "delete" | "call";
++}
++
++export interface Inspection {
++  /** The sha256 of every precondition row, or "absent". Re-read and compared before a first apply. */
++  readonly observed: Readonly<Record<string, string>>;
++  readonly steps: readonly string[];
++  readonly writes: readonly PlannedWrite[];
++  /** Every id the apply will use, fixed here so a resumed apply reuses them. */
++  readonly data: Json;
++}
++
++/** What a setup recorded, which a teardown and its verification act on and nothing else. */
++export interface RecordedSetup {
++  readonly planSha256: string;
++  readonly data: Json;
++  readonly progress: Readonly<Record<string, Json>>;
++}
++
++export interface StepContext {
++  readonly kind: AcceptanceKind;
++  readonly request: Json;
++  readonly data: Json;
++  readonly progress: Readonly<Record<string, Json>>;
++  readonly setup?: RecordedSetup;
++  /** `https://<host>` from the deploy's own value, or undefined when the deploy set none. */
++  readonly upstreamOrigin: string | undefined;
++  readonly upstreamKey?: string;
++}
++
++/**
++ * The tools-service work behind the signed runner. The runner owns envelopes, plans, receipts,
++ * leases and resumption; steps own the product calls. Every step is idempotent on the ids its
++ * plan fixed, so a resumed apply repeats none of them.
++ */
++export interface AcceptancePoolSteps<R = never> {
++  readonly inspect: (
++    kind: AcceptanceKind,
++    request: Json,
++    setup: RecordedSetup | undefined,
++  ) => Effect.Effect<Inspection, unknown, SqlClient.SqlClient | R>;
++  readonly run: (
++    step: string,
++    context: StepContext,
++  ) => Effect.Effect<Json, unknown, SqlClient.SqlClient | R>;
++  readonly verify: (
++    context: StepContext,
++  ) => Effect.Effect<Verification, unknown, SqlClient.SqlClient | R>;
++}
+diff --git a/apps/hosted/server/src/implementation/acceptance-pool/steps.ts b/apps/hosted/server/src/implementation/acceptance-pool/steps.ts
+new file mode 100644
+index 0000000..5701735
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/acceptance-pool/steps.ts
+@@ -0,0 +1,9 @@
++import { Effect } from "effect";
++import { refuse, type AcceptancePoolSteps } from "../../contracts/acceptance-pool.ts";
++
++// Skeleton: the identity, setup and teardown steps replace this. Until then every plan refuses.
++export const acceptancePoolSteps: AcceptancePoolSteps = {
++  inspect: () => Effect.fail(refuse("pool_state")),
++  run: () => Effect.fail(refuse("pool_state")),
++  verify: () => Effect.fail(refuse("pool_state")),
++};

@@ -1,0 +1,13 @@
+model {
+  extend basalt {
+    acceptancePool = module "Acceptance pool operation" {
+      #basalt
+      description "A manual main-branch workflow drives the tools gateway's signed acceptance-pool route: one setup plan and one teardown plan per test run, each a dry run first and then an apply bound to that plan's checksum and the coordinator's exact GO, plus read-only verifications. It runs in the emulated upstream's own environment and shares production-ops' concurrency group, so two production operations never run at once. The target is production or a rehearsal stage, and the driver builds its host from the stage rule; no dispatch names an address. For a setup it sends only a digest of the emulated upstream origin it holds, never the origin, and only the setup apply step receives the upstream key, which travels inside the signed body and nowhere else. Its outputs, summary and logs carry the encrypted plan, counts, checksums and the server's closed refusal words, and its tests assert that neither the key nor the origin appears in any of them."
+      metadata { code "scripts/acceptance-pool|.github/workflows/acceptance-pool.yml" }
+    }
+  }
+  basalt.acceptancePool -[sync]-> basalt.router "send a signed acceptance-pool operation to the target origin"
+  basalt.acceptancePool -[sync]-> basalt.toolsGateway "plan, apply and verify the acceptance pool's setup and teardown"
+  basalt.acceptancePool -[sync]-> repositoryApi "verify the completed dry-run dispatch an apply names"
+  basalt.acceptancePool -[sync]-> basalt.brandConfig "read the production host and the rehearsal zone"
+}
