@@ -138,6 +138,10 @@ jobs:
           # assertion for, per model call, with POOL_APP_SIGNING_KEY, or mid-rotation with
           # POOL_APP_SIGNING_KEY_PREVIOUS, the key the Worker serving before the apply knows.
           POOL_ACCEPTANCE_DEVICE: ${{ secrets.POOL_ACCEPTANCE_DEVICE }}
+          # A masked secret: the emulated upstream's bare host, which carries the account's subdomain.
+          # Unset deploys as before; set, it is a setting on the tools Worker that a release never
+          # removes, so its first release is a reviewed one (docs/releases.md).
+          BASALT_ACCEPTANCE_UPSTREAM_HOST: ${{ secrets.BASALT_ACCEPTANCE_UPSTREAM_HOST }}
       # A deploy that died in its fleet step (a cancel, a timeout) printed no line about scale-out,
       # though its drain may have disabled the fleet. One read says where it stands.
       - name: Say where scale-out stands after a deploy that ended in its fleet step
