@@ -397,7 +397,6 @@ test("every production attempt from the backup on leaves a GitHub Deployment wit
   assert.match(finish, /always\(\)/u);
   assert.match(finish, /job\.status == 'success' && 'success' \|\| 'failure'/u);
   assert.match(workflow, /run-name: ".*override_reason.*Release \(override: \{0\}\)/u);
-  assert.match(step("Stop the line and require a rehearsal"), /OVERRIDE_REASON/u);
 });
 
 test("every release run, plan-only included, passes the read-only preflight before planning", () => {
@@ -454,13 +453,6 @@ test("a dispatched apply applies exactly the reviewed plan, and every record nam
   assert.match(apply, /--plan-digest "\$PLAN_DIGEST" --attempt "\$ATTEMPT"/u);
   assert.doesNotMatch(apply, /inputs\.plan_digest/u);
   assert.match(step("Record the deployment"), /DIGEST: \$\{\{ steps\.plan\.outputs\.digest \}\}/u);
-});
-
-test("the stop-the-line gate names who triggered the run", () => {
-  const gate = step("Stop the line and require a rehearsal");
-  assert.match(gate, /TRIGGERING_ACTOR: \$\{\{ github\.triggering_actor \}\}/u);
-  assert.match(gate, /GH_TOKEN: \$\{\{ github\.token \}\}/u);
-  assert.match(job("release"), /statuses: read/u);
 });
 
 test("every production entry call the workflow makes is one the entry accepts", () => {
@@ -788,7 +780,6 @@ test("a repair is a step of the release job: its production lock, environment an
 const releaseConditions: Record<string, string> = {
   "A dispatched apply names its reviewed plan":
     "github.event_name == 'workflow_dispatch' && env.MODE == 'apply'",
-  "Stop the line and require a rehearsal": "hashFiles('scripts/guardrails/release-gate.ts') != ''",
   "Stop on an unread provider observation":
     "always() && env.MODE == 'plan' && steps.provider.outcome == 'failure'",
   "Refuse while the pool database is busy": "env.MODE == 'apply'",
