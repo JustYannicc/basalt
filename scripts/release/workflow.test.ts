@@ -819,3 +819,33 @@ test("a plan and an apply run every release step exactly as they would with no r
       assert.equal(now(context), release(context), `${label(entry)}: ${JSON.stringify(context)}`);
   }
 });
+
+test("both production deploys hand every entry step the acceptance upstream host as a masked secret", () => {
+  const input = "${{ secrets.BASALT_ACCEPTANCE_UPSTREAM_HOST }}";
+  const production = readFileSync(
+    new URL("../../.github/workflows/production.yml", import.meta.url),
+    "utf8",
+  );
+  const deploy = parse(production) as {
+    jobs: { production: { env: Record<string, string>; steps: Step[] } };
+  };
+  // The steps that hold production's secrets are the ones that run the entry; each must plan the
+  // same tools Worker, so each reads the same input.
+  const entrySteps = [...parsedSteps, ...deploy.jobs.production.steps].filter(
+    (entry) => entry.env !== undefined && "POOL_APP_SIGNING_KEY" in entry.env,
+  );
+  assert.ok(entrySteps.length > 2);
+  for (const entry of entrySteps)
+    assert.equal(
+      (entry.env as Record<string, string>).BASALT_ACCEPTANCE_UPSTREAM_HOST,
+      input,
+      entry.name ?? "a step with no name",
+    );
+  // A secret only: a variable's value is printed in every step's log of this public repository.
+  assert.equal(parsed.jobs.release.env.BASALT_ACCEPTANCE_UPSTREAM_HOST, undefined);
+  assert.equal(deploy.jobs.production.env.BASALT_ACCEPTANCE_UPSTREAM_HOST, undefined);
+  for (const text of [workflow, production]) {
+    assert.doesNotMatch(text, /vars\.BASALT_ACCEPTANCE_UPSTREAM_HOST/u);
+    assert.equal(text.match(/^ *BASALT_ACCEPTANCE_UPSTREAM_HOST: .*$/gmu)?.length, 1);
+  }
+});
