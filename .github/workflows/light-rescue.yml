@@ -1,11 +1,12 @@
 name: Light rescue
 
-# A Check job queued for the box's light runners can't move to hosted runners. Only main's push
-# Checks use them, so a light job of one that has waited 3 minutes means the lane isn't taking jobs:
-# this force-cancels that first attempt (scripts/ci/light-rescue.ts) and ends red so it shows;
-# box-rerun.yml then re-runs its failed and cancelled jobs as attempt 2, which runs every job
-# hosted, unless a job failed for real. It runs hosted, as the box may be down, and whether or not
-# the light lane's variable is set: emptying it must still free the Checks the lane holds.
+# A Check job queued for the box's light runners can't move to hosted runners. Only main's and the
+# batches' push Checks use them, a few seconds-long jobs an hour, so a light job of one that has
+# waited 3 minutes means the lane isn't taking jobs: this force-cancels that first attempt
+# (scripts/ci/light-rescue.ts) and ends red so it shows; box-rerun.yml then re-runs its failed and
+# cancelled jobs as attempt 2, which runs every job hosted, unless a job failed for real. It runs
+# hosted, as the box may be down, and whether or not the light lane's variable is set: emptying it
+# must still free the Checks the lane holds.
 on:
   schedule:
     - cron: "*/5 * * * *"
@@ -32,7 +33,7 @@ jobs:
       - uses: ./.github/actions/setup-node
         with:
           node-version: 24.18.0
-      - name: Cancel main's Checks whose light jobs the lane doesn't take
+      - name: Cancel the push Checks whose light jobs the lane doesn't take
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/ci/light-rescue.ts

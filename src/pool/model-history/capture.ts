@@ -8,6 +8,7 @@ import { existingRequests, historyBatchSize, insertRequests } from "./store.ts";
 import { pendingPoolHistoryChanges, poolHistoryPendingProjection } from "./change-revisions.ts";
 import { projectPoolHistoryChanges } from "./change-projection.ts";
 import { captureForwardPage } from "./capture-page.ts";
+import { sweepLateCommits } from "./capture-sweep.ts";
 
 export interface CaptureOptions {
   /**
@@ -27,6 +28,8 @@ export async function captureHomeRequests(db: HistoryDatabase, options: CaptureO
   await db.query("BEGIN");
   let inserted = 0,
     swept = 0,
+    sweptRead = 0,
+    sweepDeferred = false,
     backfilled = 0,
     old: string,
     complete: boolean,
@@ -81,7 +84,6 @@ export async function captureHomeRequests(db: HistoryDatabase, options: CaptureO
     forward = next;
     old = backfill;
     complete = state.backfill_complete === true;
-    let seen = sweep;
     // Everything this transaction will insert is read first: its marks go in one ordered statement
     // before any insert takes the rollup's rows, as a single-statement import takes them.
     const batches: ModelRequest[][] = [];
@@ -98,19 +100,16 @@ export async function captureHomeRequests(db: HistoryDatabase, options: CaptureO
       if (rows.length) old = counter(rows.at(-1)!.source_id)!;
       complete = rows.length < historyBatchSize || old === upper;
     }
-    // Sequence allocation can precede commit. A bounded repeat sweep catches a lower id that
-    // commits after the forward cursor passed it, however long that transaction took.
-    let sweepUpper = savedSweepUpper === "0" ? forward : savedSweepUpper;
-    const late = (
-      await db.query(
-        `${homeHistorySelect} WHERE u.id > $1::bigint AND u.id <= $2::bigint
-      ORDER BY u.id LIMIT $3`,
-        [seen, sweepUpper, historyBatchSize],
-      )
-    ).rows;
-    batches.push(await Promise.all(late.map((row) => homeRequest(row, source))));
+    // Sequence allocation can precede commit: the sweep checks each id the pages passed, once.
+    const late = await sweepLateCommits(db, source, {
+      sweepId: sweep,
+      sweepUpper: savedSweepUpper,
+      forward,
+      backfillUpper: upper,
+    });
+    batches.push(await Promise.all(late.rows.map((row) => homeRequest(row, source))));
     if (writes.captureHours) {
-      // Only rows history lacks: the sweep reads rows captured long ago on every pass.
+      // Only rows history lacks: the backfill can read rows an import already holds.
       const missing: ModelRequest[] = [];
       for (const batch of batches) {
         const held = await existingRequests(db, batch, true);
@@ -121,17 +120,14 @@ export async function captureHomeRequests(db: HistoryDatabase, options: CaptureO
     // A key may have moved since an uncharged row was captured. Keep the original attribution;
     // re-reading Home's current key owner must neither rewrite the row nor stall capture.
     for (const batch of batches) inserted += await insertRequests(db, batch, true, false, true);
-    swept = late.length;
-    seen = late.length ? counter(late.at(-1)!.source_id)! : seen;
-    if (late.length < historyBatchSize || BigInt(seen) >= BigInt(sweepUpper)) {
-      seen = "0";
-      sweepUpper = "0";
-    }
+    swept = late.checked;
+    sweptRead = late.rows.length;
+    sweepDeferred = late.deferred;
     // The forward cursor and the capture time are the pages' own; this moves the backfill and sweep.
     await db.query(
       `UPDATE basalt_model_history_cursor SET sweep_id=$2,backfill_id=$3,
       backfill_complete=$4,sweep_upper=$5 WHERE source=$1`,
-      [source, seen, old, complete, sweepUpper],
+      [source, late.sweepId, old, complete, late.sweepUpper],
     );
     await db.query("COMMIT");
   } catch (error) {
@@ -155,11 +151,13 @@ export async function captureHomeRequests(db: HistoryDatabase, options: CaptureO
   pending = await project(db, journalReady, unprojected || inserted > 0, pending);
   return {
     state: "active" as const,
-    scanned: fresh + backfilled + swept,
+    // Rows read in full; the sweep's id checks are `swept`.
+    scanned: fresh + backfilled + sweptRead,
     inserted,
     pages,
     fresh,
     swept,
+    sweepDeferred,
     caughtUp,
     through: forward,
     backfillThrough: old,

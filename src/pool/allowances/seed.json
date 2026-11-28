@@ -1,5 +1,5 @@
 {
-  "attribution": "Includes adapted PlanYield open dataset, https://planyield.dev/data/, CC BY 4.0. Vendor evidence checked 2026-11-25. Seeds expire; they are not a permanent entitlement table.",
+  "attribution": "Includes adapted PlanYield open dataset, https://planyield.dev/data/, CC BY 4.0. Vendor evidence checked 2026-11-27. Seeds expire; they are not a permanent entitlement table.",
   "entries": [
     {
       "vendor": "anthropic",
@@ -15,10 +15,10 @@
       "sources": [
         "https://support.claude.com/en/articles/11049741-what-is-the-max-plan"
       ],
-      "checkedAt": 1795628371486,
-      "fetchedAt": 1795628371486,
+      "checkedAt": 1795798820111,
+      "fetchedAt": 1795798820111,
       "detail": "Session and weekly allowance stated by the vendor",
-      "expiresAt": 1796837971486,
+      "expiresAt": 1797008420111,
       "revision": "2026-10-30",
       "sourceId": "claude-max"
     },
@@ -36,10 +36,10 @@
       "sources": [
         "https://support.claude.com/en/articles/11049741-what-is-the-max-plan"
       ],
-      "checkedAt": 1795628371486,
-      "fetchedAt": 1795628371486,
+      "checkedAt": 1795798820111,
+      "fetchedAt": 1795798820111,
       "detail": "Session and weekly allowance stated by the vendor",
-      "expiresAt": 1796837971486,
+      "expiresAt": 1797008420111,
       "revision": "2026-11-09",
       "sourceId": "claude-max"
     },
@@ -57,10 +57,10 @@
       "sources": [
         "https://support.claude.com/en/articles/17728952-what-is-the-ultra-plan"
       ],
-      "checkedAt": 1795628371486,
-      "fetchedAt": 1795628371486,
+      "checkedAt": 1795798820111,
+      "fetchedAt": 1795798820111,
       "detail": "Pool policy: Max 20x counts as twenty Pro-eq; the vendor names it the plan that became Ultra",
-      "expiresAt": 1796837971486,
+      "expiresAt": 1797008420111,
       "revision": "2026-10-30",
       "sourceId": "claude-ultra"
     },
@@ -78,10 +78,10 @@
       "sources": [
         "https://support.claude.com/en/articles/17728952-what-is-the-ultra-plan"
       ],
-      "checkedAt": 1795628371486,
-      "fetchedAt": 1795628371486,
+      "checkedAt": 1795798820111,
+      "fetchedAt": 1795798820111,
       "detail": "Pool policy: Max 20x counts as twenty Pro-eq; the vendor names it the plan that became Ultra",
-      "expiresAt": 1796837971486,
+      "expiresAt": 1797008420111,
       "revision": "2026-11-09-max20x-20",
       "sourceId": "claude-ultra"
     },
@@ -99,10 +99,10 @@
       "sources": [
         "https://support.claude.com/en/articles/17728952-what-is-the-ultra-plan"
       ],
-      "checkedAt": 1795628371486,
-      "fetchedAt": 1795628371486,
+      "checkedAt": 1795798820111,
+      "fetchedAt": 1795798820111,
       "detail": "Weekly; verified Ultra accounts have no five-hour cap",
-      "expiresAt": 1796837971486,
+      "expiresAt": 1797008420111,
       "revision": "2026-11-09",
       "sourceId": "claude-ultra"
     },
@@ -122,7 +122,7 @@
         "https://claude.com/pricing"
       ],
       "checkedAt": 1795392000000,
-      "fetchedAt": 1795628371486,
+      "fetchedAt": 1795798820111,
       "detail": "PlanYield CC BY 4.0; published; “5x Pro per 5h session and per week”",
       "expiresAt": 1796601600000,
       "revision": "2026-10-30",
@@ -144,7 +144,7 @@
         "https://claude.com/pricing"
       ],
       "checkedAt": 1795392000000,
-      "fetchedAt": 1795628371486,
+      "fetchedAt": 1795798820111,
       "detail": "PlanYield CC BY 4.0; published; “5x Pro per 5h session and per week”",
       "expiresAt": 1796601600000,
       "revision": "2026-11-09",
@@ -166,7 +166,7 @@
         "https://claude.com/pricing"
       ],
       "checkedAt": 1795392000000,
-      "fetchedAt": 1795628371486,
+      "fetchedAt": 1795798820111,
       "detail": "PlanYield CC BY 4.0; baseline; “5x Pro per 5h session and per week” (Claude Max row)",
       "expiresAt": 1796601600000,
       "revision": "2026-10-30",
@@ -188,7 +188,7 @@
         "https://claude.com/pricing"
       ],
       "checkedAt": 1795392000000,
-      "fetchedAt": 1795628371486,
+      "fetchedAt": 1795798820111,
       "detail": "PlanYield CC BY 4.0; baseline; “5x Pro per 5h session and per week” (Claude Max row)",
       "expiresAt": 1796601600000,
       "revision": "2026-10-30",
@@ -210,7 +210,7 @@
         "https://claude.com/pricing"
       ],
       "checkedAt": 1795392000000,
-      "fetchedAt": 1795628371486,
+      "fetchedAt": 1795798820111,
       "detail": "PlanYield CC BY 4.0; published; “10x Pro per week”",
       "unlimited": true,
       "expiresAt": 1796601600000,
@@ -233,7 +233,7 @@
         "https://claude.com/pricing"
       ],
       "checkedAt": 1795392000000,
-      "fetchedAt": 1795628371486,
+      "fetchedAt": 1795798820111,
       "detail": "PlanYield CC BY 4.0; published; “10x Pro per week”",
       "expiresAt": 1796601600000,
       "revision": "2026-11-09",
@@ -255,7 +255,7 @@
         "https://openai.com/index/introducing-gpt-6-2-astra-sol/"
       ],
       "checkedAt": 1794960000000,
-      "fetchedAt": 1795628371486,
+      "fetchedAt": 1795798820111,
       "detail": "PlanYield CC BY 4.0; baseline; “Pro 500 50x Plus” (ChatGPT Pro row)",
       "expiresAt": 1796169600000,
       "revision": "2026-10-30",
@@ -277,7 +277,7 @@
         "https://openai.com/index/introducing-gpt-6-2-astra-sol/"
       ],
       "checkedAt": 1794960000000,
-      "fetchedAt": 1795628371486,
+      "fetchedAt": 1795798820111,
       "detail": "PlanYield CC BY 4.0; baseline; “Pro 500 50x Plus” (ChatGPT Pro row)",
       "expiresAt": 1796169600000,
       "revision": "2026-10-30",
@@ -299,7 +299,7 @@
         "https://openai.com/index/introducing-gpt-6-2-astra-sol/"
       ],
       "checkedAt": 1794960000000,
-      "fetchedAt": 1795628371486,
+      "fetchedAt": 1795798820111,
       "detail": "PlanYield CC BY 4.0; reported; “Pro 200 20x Plus”",
       "unlimited": true,
       "expiresAt": 1796169600000,
@@ -322,7 +322,7 @@
         "https://openai.com/index/introducing-gpt-6-2-astra-sol/"
       ],
       "checkedAt": 1794960000000,
-      "fetchedAt": 1795628371486,
+      "fetchedAt": 1795798820111,
       "detail": "PlanYield CC BY 4.0; reported; “Pro 200 20x Plus”",
       "expiresAt": 1796169600000,
       "revision": "allowance-v1:a1663dee95dfd331dea1f32534342c4f4bd990f4ec716ba8ffdf87854004bfd8",
@@ -344,7 +344,7 @@
         "https://openai.com/index/introducing-gpt-6-2-astra-sol/"
       ],
       "checkedAt": 1794960000000,
-      "fetchedAt": 1795628371486,
+      "fetchedAt": 1795798820111,
       "detail": "PlanYield CC BY 4.0; reported; “Pro 100 10x Plus”",
       "unlimited": true,
       "expiresAt": 1796169600000,
@@ -367,7 +367,7 @@
         "https://openai.com/index/introducing-gpt-6-2-astra-sol/"
       ],
       "checkedAt": 1794960000000,
-      "fetchedAt": 1795628371486,
+      "fetchedAt": 1795798820111,
       "detail": "PlanYield CC BY 4.0; reported; “Pro 100 10x Plus”",
       "expiresAt": 1796169600000,
       "revision": "allowance-v1:1e156b49356bbf6632396826c6d46f29017825d91a27d10ef0b1870be68dafb2",
@@ -389,7 +389,7 @@
         "https://openai.com/index/introducing-gpt-6-2-astra-sol/"
       ],
       "checkedAt": 1794960000000,
-      "fetchedAt": 1795628371486,
+      "fetchedAt": 1795798820111,
       "detail": "PlanYield CC BY 4.0; reported; “Pro 500 50x Plus”",
       "unlimited": true,
       "expiresAt": 1796169600000,
@@ -412,7 +412,7 @@
         "https://openai.com/index/introducing-gpt-6-2-astra-sol/"
       ],
       "checkedAt": 1794960000000,
-      "fetchedAt": 1795628371486,
+      "fetchedAt": 1795798820111,
       "detail": "PlanYield CC BY 4.0; reported; “Pro 500 50x Plus”",
       "expiresAt": 1796169600000,
       "revision": "allowance-v1:427840d08e90d14d454dd1df937a66c55706d2d203811d97ab384ee52ca9959a",
@@ -543,10 +543,10 @@
       "sources": [
         "https://docs.x.ai/x-subscription/pricing.md"
       ],
-      "checkedAt": 1795628371486,
-      "fetchedAt": 1795628371486,
+      "checkedAt": 1795798820111,
+      "fetchedAt": 1795798820111,
       "detail": "Unified X Subscription only; legacy Grok plans are separate",
-      "expiresAt": 1796837971486,
+      "expiresAt": 1797008420111,
       "revision": "allowance-v1:f33f48ce15b839620759344b44017eb8f5c668fdc6a8f83db2e4c36380cce116",
       "sourceId": "x-subscription"
     },
@@ -564,10 +564,10 @@
       "sources": [
         "https://docs.x.ai/x-subscription/pricing.md"
       ],
-      "checkedAt": 1795628371486,
-      "fetchedAt": 1795628371486,
+      "checkedAt": 1795798820111,
+      "fetchedAt": 1795798820111,
       "detail": "Unified X Subscription only; legacy Grok plans are separate",
-      "expiresAt": 1796837971486,
+      "expiresAt": 1797008420111,
       "revision": "allowance-v1:48b7b41b810c6ec2727b6b010b9d253a3341452f3cb8777b39949a42d7867fe1",
       "sourceId": "x-subscription"
     },
@@ -585,10 +585,10 @@
       "sources": [
         "https://docs.x.ai/x-subscription/pricing.md"
       ],
-      "checkedAt": 1795628371486,
-      "fetchedAt": 1795628371486,
+      "checkedAt": 1795798820111,
+      "fetchedAt": 1795798820111,
       "detail": "Unified X Subscription only; legacy Grok plans are separate",
-      "expiresAt": 1796837971486,
+      "expiresAt": 1797008420111,
       "revision": "allowance-v1:814592d11155df4c10fed98c6b8ccfa30e485dd0cf4ec48dd1631e639920c3b6",
       "sourceId": "x-subscription"
     },
@@ -606,10 +606,10 @@
       "sources": [
         "https://docs.x.ai/x-subscription/pricing.md"
       ],
-      "checkedAt": 1795628371486,
-      "fetchedAt": 1795628371486,
+      "checkedAt": 1795798820111,
+      "fetchedAt": 1795798820111,
       "detail": "Unified X Subscription only; legacy Grok plans are separate",
-      "expiresAt": 1796837971486,
+      "expiresAt": 1797008420111,
       "revision": "allowance-v1:653573bd00fe96683900a0ed91595e8663b5fc1742a2b627d6eabb60d821ebda",
       "sourceId": "x-subscription"
     }

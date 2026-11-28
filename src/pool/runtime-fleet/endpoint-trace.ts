@@ -16,6 +16,7 @@ const actions = [
   "/admit",
   "/attest",
   "/witness",
+  "/attestation",
   "/ready",
   "/install",
   "/native",

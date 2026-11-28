@@ -5,8 +5,12 @@ import { homeHistorySource } from "./home.ts";
 import { digest } from "../backend-users.ts";
 import { postgresCode } from "./usage-rollup-apply.ts";
 
-/** How long one block's count may run; past it a block splits into hours, and an hour is slow. */
-export const captureHoursCountLimitMs = 1_000;
+/**
+ * How long one block's count may run; past it a block splits into hours, and an hour is slow. A
+ * heavy production hour counts in about a second, so a limit at a second sends it down the slow
+ * path for nothing.
+ */
+export const captureHoursCountLimitMs = 2_000;
 /** The shortest a count is given: one the session's budget cuts shorter is a budget stop. */
 export const captureHoursMinCountMs = 50;
 /** Another session holding the pool makes the count step aside; this many refusals end the block. */

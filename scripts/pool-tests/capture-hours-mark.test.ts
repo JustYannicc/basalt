@@ -141,7 +141,10 @@ test("the late-commit sweep makes the hour it fills count again", async () => {
       at(3, 10 * minute),
       c.fingerprint,
     ]);
-    await f.db.query("UPDATE basalt_model_history_cursor SET sweep_id=0");
+    // The fixture's backfill reaches the forward cursor; a real one ends below the ids the pages pass.
+    await f.db.query(
+      "UPDATE basalt_model_history_cursor SET backfill_upper=0, backfill_id=0, sweep_id=0, sweep_upper=forward_id",
+    );
     const swept = await captureHomeRequests(f.db);
     assert.ok(swept.state === "active");
     assert.equal(swept.fresh, 0);

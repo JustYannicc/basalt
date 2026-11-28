@@ -280,7 +280,9 @@ test("a never-served start is abandoned only once its instance stayed absent thr
   const f = await fixture();
   context.after(f.cleanup);
   context.mock.timers.enable({ apis: ["Date"], now: Date.now() });
-  await f.cell.start(f.target);
+  // Its activation is refused: a start that activated is admitted instead, never abandoned.
+  f.transport.refuse["/attest"] = "uncertain";
+  await assert.rejects(f.cell.start(f.target));
   assert.equal(await f.cell.abandon(f.target), false, "a listed instance is running");
   // The container exits on its own, and the provider keeps listing it as inactive.
   await f.ctx.container!.destroy();
@@ -382,7 +384,9 @@ test("an abandoned start's absence wait runs only while no sibling the ledger do
   const f = await fixture();
   context.after(f.cleanup);
   context.mock.timers.enable({ apis: ["Date"], now: Date.now() });
-  await f.cell.start(f.target);
+  // Its activation is refused: a start that activated is admitted instead, never abandoned.
+  f.transport.refuse["/attest"] = "uncertain";
+  await assert.rejects(f.cell.start(f.target));
   await f.ctx.container!.destroy();
   f.sibling("provisioning");
   assert.equal(await f.cell.abandon(f.target), false);

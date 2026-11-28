@@ -8,6 +8,7 @@ import { openPoolOperations, type PoolOperationsTarget } from "../pool-operation
 import { providerObservationFailureHeader } from "../../src/pool/runtime-provider/observation.ts";
 import { provisioningRefusal } from "./provisioning-refusal.ts";
 import { BarrierRefusal } from "./refusal.ts";
+import { poolOperationsAnswered } from "../../src/pool/operations-call.ts";
 import {
   knownRuntimeFailureCode,
   runtimeResponseDiagnostic,
@@ -103,6 +104,9 @@ export async function sendRuntimeCommand(
           { path: "handoff.command.action", old: null, new: frozen.action },
           // The status as a number, so a public line can say which answer it was.
           { path: "handoff.response.http", old: null, new: response.status },
+          // Without the pool's mark no answer left the pool's handoff code: a proxy on the bridge, a
+          // throw or platform failure in the pool's invocation before it, or a pool from before the mark.
+          { path: "handoff.response.origin", old: null, new: detail.origin },
           { path: "handoff.response.step", old: null, new: detail.step },
           { path: "handoff.response.reason", old: null, new: detail.reason },
           { path: "handoff.response.code", old: null, new: detail.code },
@@ -136,6 +140,7 @@ async function refusalDetail(response: Response) {
     } catch {}
   }
   return {
+    origin: poolOperationsAnswered(response) ? "pool" : "unmarked",
     step: headers?.runtimeStep ?? "unclassified",
     reason: headers?.runtimeReason ?? "unclassified",
     code,

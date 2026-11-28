@@ -1,3 +1,5 @@
+import { Exit, Schema } from "effect";
+import { NativeUsage, nativeUsagePath } from "../../src/pool/native-usage-contract.ts";
 import { verifySse } from "./sse.ts";
 import {
   AcceptanceFailure,
@@ -54,7 +56,7 @@ const token = (value: unknown) =>
  * `<code>: <message>` message under a generic type and code; a provider's refusal passes through.
  * Reads a bounded body and never returns or logs any text of it but those codes.
  */
-async function readRefusal(response: Response): Promise<Refusal | undefined> {
+export async function readRefusal(response: Response): Promise<Refusal | undefined> {
   const reader = response.body?.getReader();
   if (!reader) return undefined;
   const decoder = new TextDecoder();
@@ -126,6 +128,8 @@ function usageRecord(value: unknown): UsageRecord {
   return { id: value.id, account: value.account, status: value.status, at: value.at };
 }
 
+const decodeNativeUsage = Schema.decodeUnknownExit(NativeUsage);
+
 export class PoolAcceptanceClient {
   private readonly origin: string;
   private readonly fetchImpl: typeof fetch;
@@ -160,7 +164,7 @@ export class PoolAcceptanceClient {
   }
 
   /** The URL a model request is sent to, and its authorization for exactly that URL. */
-  private async authorized(credential: ModelCredential, method: string, path: string) {
+  async authorized(credential: ModelCredential, method: string, path: string) {
     const url = new URL(path, this.origin);
     const headers =
       typeof credential === "string"
@@ -182,6 +186,32 @@ export class PoolAcceptanceClient {
     const boot = requireBoot(response);
     const ids = modelIds(await readJson(response, "/v1/models"));
     return { boot, ids, completedAt: this.now() };
+  }
+
+  /** The device's own usage rows for these sessions, read with its own per-request assertion. */
+  async nativeUsage(
+    credential: ModelCredential,
+    sessions: readonly string[],
+  ): Promise<NativeUsage> {
+    const query = new URLSearchParams(sessions.map((session) => ["session", session]));
+    const { url, headers } = await this.authorized(
+      credential,
+      "GET",
+      `${nativeUsagePath}?${query}`,
+    );
+    const response = await this.request(url, { method: "GET", headers }, nativeUsagePath);
+    if (response.status !== 200) {
+      await discardBody(response);
+      throw new HttpStatusFailure(
+        response.status,
+        `${nativeUsagePath} returned HTTP ${response.status}`,
+      );
+    }
+    // The decode error quotes the body, which names accounts; only the verdict leaves here.
+    const decoded = decodeNativeUsage(await readJson(response, nativeUsagePath));
+    if (Exit.isFailure(decoded))
+      throw new AcceptanceFailure(`${nativeUsagePath} did not return the device usage contract`);
+    return decoded.value;
   }
 
   async testAccountIds(access: PoolAccess): Promise<Set<string>> {

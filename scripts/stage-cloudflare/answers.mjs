@@ -7,6 +7,8 @@
 // registry list with a further page throws, so a wrong template or a missing permission never reads
 // as an empty account. Refusals carry only the operation, the status, the error codes and known
 // field names; remote messages and pointers may hold secrets. Nothing here sends a request.
+import { typeOfManifest } from "./kept-entries.mjs";
+import { offersNextIn } from "./link-header.mjs";
 
 export const DIGEST = /^sha256:[a-f0-9]{64}$/u;
 const FIELDS = [
@@ -146,34 +148,9 @@ export function credentialsOf(data) {
   return `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
 }
 
-/** Whether a Link header offers a next page; relation types are case-insensitive (RFC 8288). */
-const offersNext = (link) => /\brel\s*=\s*"?[^";,]*\bnext\b/iu.test(link);
-
-/**
- * The target of a Link header's `rel="next"` entry, as the registry wrote it; undefined when there
- * is none it can read. Only its parameters are ever used, never its host or path.
- */
-function nextTargetOf(link) {
-  // A parameter's value may be quoted, and a quoted value may hold `;` or `,`.
-  for (const [, target, params] of link.matchAll(/<([^<>]*)>((?:\s*;\s*[^;,"]*(?:"[^"]*")?)*)/gu))
-    for (const [, name, value] of params.matchAll(
-      /;\s*([^=;\s]+)\s*=\s*("[^"]*"|'[^']*'|[^;,\s]*)/gu,
-    ))
-      if (
-        name.toLowerCase() === "rel" &&
-        value
-          .replace(/^["']|["']$/gu, "")
-          .toLowerCase()
-          .split(/\s+/u)
-          .includes("next")
-      )
-        return target;
-  return undefined;
-}
-
 // A registry list that says it has another page could hide one of the stage's repositories or tags.
 function singlePage(answer, listing) {
-  if (offersNext(answer.link))
+  if (offersNextIn(answer.link))
     throw fail(`The registry ${listing} has more than one page; the check reads only one`);
 }
 
@@ -190,12 +167,11 @@ export function catalogOf(answer) {
 }
 
 /**
- * One page of the tags a repository holds, whether the registry offers another, and that offer's
- * link target; `gone` when the repository is not there.
+ * One page of the tags a repository holds, whether the registry offers another, and its Link header
+ * as written; `gone` when the repository is not there.
  */
 export function tagPageOf(answer) {
-  if (answer.status === 404)
-    return { gone: true, missing: false, tags: [], next: false, target: undefined };
+  if (answer.status === 404) return { gone: true, missing: false, tags: [], next: false, link: "" };
   if (!answer.ok) throw fail(`Registry tag list failed (HTTP ${answer.status})`);
   if (answer.data === undefined) throw fail("A registry tag list answered without its tags");
   // A repository whose tags are all deleted answers `tags: null`; `missing` is no field at all.
@@ -203,12 +179,13 @@ export function tagPageOf(answer) {
   const tags = field ?? [];
   if (!Array.isArray(tags) || !tags.every((tag) => typeof tag === "string"))
     throw fail("A registry tag list answered without its tags");
+  // The header goes to the page reader as written; only it decides what may be taken from it.
   return {
     gone: false,
     missing: field === undefined,
     tags,
-    next: offersNext(answer.link),
-    target: nextTargetOf(answer.link),
+    next: offersNextIn(answer.link),
+    link: answer.link,
   };
 }
 
@@ -223,12 +200,24 @@ export function manifestOf(answer) {
     : [];
   if (!children.every((child) => typeof child === "string" && DIGEST.test(child)))
     throw fail("A registry index names a manifest without a digest");
-  return { digest: answer.digest, children };
+  return { digest: answer.digest, children, type: typeOfManifest(answer.data) };
 }
 
 /** Whether a manifest delete removed it; one already gone counts as removed. */
 export function deletedOf(answer) {
-  if (!answer.ok && answer.status !== 404)
-    throw fail(`Registry manifest delete failed (HTTP ${answer.status})`);
+  if (!answer.ok && answer.status !== 404) {
+    const errors = ownField(answer.data, "errors");
+    const codes = [
+      ownField(answer.data, "code"),
+      ...(Array.isArray(errors) ? errors : []).map((entry) => ownField(entry, "code")),
+    ];
+    const error = fail(`Registry manifest delete failed (HTTP ${answer.status})`);
+    // Closed facts only: the status, and whether the registry named its one kept code.
+    error.refusal = Object.freeze({
+      status: answer.status,
+      singleton: codes.includes("SINGLETON_ARTIFACT_EXISTS"),
+    });
+    throw error;
+  }
   return answer.ok;
 }

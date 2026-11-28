@@ -61,8 +61,10 @@ import { admitRuntimeRestart, confirmedStopped } from "./restart-admission.ts";
 import { RuntimeForcedStop, stopGracefully } from "./forced-stop.ts";
 import { leakedStreamsMs } from "./forced-restart-timing.ts";
 import { RuntimeStartupStop } from "./startup-stop.ts";
+import { RuntimeAbandonedStop } from "./abandoned-stop.ts";
 import { endedForGood, lastContainerEnd, markStopSent } from "./container-end.ts";
 import type { StartupStopIntent } from "./startup-abort-contract.ts";
+import { RuntimeCodeAdoption } from "./code-adoption.ts";
 
 export interface EndpointEnvironment extends RuntimeEnvironment {
   POOL_RUNTIME_APPLICATION_ID?: string;
@@ -83,6 +85,8 @@ export interface EndpointOptions {
   ownStorage?: OwnedRuntimeStorage;
   beforeStart?(witness: StartupWitness): Promise<void>;
   beforeBootstrap?(identity: SlotIdentity): Promise<void>;
+  /** Runs once an answer has been handed to the platform; by default a moment later. */
+  afterReply?(work: () => void): void;
 }
 
 /** Reads never start compute. Start owns one durable launch, and attestation never grants routing. */
@@ -103,9 +107,11 @@ export class RuntimeEndpoint {
   private refusals = new RuntimeHealthRefusalLog();
   private maintenance: RuntimeMaintenance;
   private startupStop: RuntimeStartupStop;
+  private abandonedStop: RuntimeAbandonedStop;
   private modelLifetimes: RuntimeModelLifetimes;
   private leaseProofs = new Map<string, number>();
   private settleFailures = new Map<string, number>();
+  private adoption: RuntimeCodeAdoption;
   constructor(
     ctx: ControllerState,
     env: EndpointEnvironment,
@@ -127,6 +133,7 @@ export class RuntimeEndpoint {
       role === "runtime" ? options.ownStorage : undefined,
     );
     this.startupStop = new RuntimeStartupStop(ctx, this.store);
+    this.abandonedStop = new RuntimeAbandonedStop(ctx, this.store, role);
     this.channel = new RuntimeChannel(ctx, env);
     this.activity = new RuntimeActivity(ctx.storage);
     this.maintenance = new RuntimeMaintenance({
@@ -140,6 +147,15 @@ export class RuntimeEndpoint {
     });
     this.wrap = wrap;
     this.options = options;
+    const abort = ctx.abort;
+    this.adoption = new RuntimeCodeAdoption({
+      own: code,
+      role,
+      storage: ctx.storage,
+      activity: this.activity,
+      ...(abort ? { abort: (reason: string) => abort.call(ctx, reason) } : {}),
+      ...(options.afterReply ? { afterReply: options.afterReply } : {}),
+    });
     this.forcedStop = new RuntimeForcedStop({
       ctx,
       store: this.store,
@@ -236,13 +252,22 @@ export class RuntimeEndpoint {
       throw new SlotRefused("identity");
     if (!this.ctx.container || !this.env.POOL_DEPLOYMENT_KEY) throw new SlotRefused("selection");
   }
-  private async proof(envelope: string): Promise<AdmissionProof> {
+  /** With `adopts`, a proof signed by other controller code still adopts it before the refusal. */
+  private async proof(envelope: string, adopts = false): Promise<AdmissionProof> {
     const proof = decodeAdmissionProof(
       await openEnvelope(this.env.POOL_DEPLOYMENT_KEY ?? "", runtimeAttestationFormat, envelope),
     );
     this.bound(proof.target);
-    if (!sameControllerCode(proof.controllerCode, this.code)) throw new SlotRefused("identity");
+    if (!sameControllerCode(proof.controllerCode, this.code)) {
+      // Refused either way; whether this object adopts only decides where the next read runs.
+      if (adopts) await this.adopt(proof.target, proof.controllerCode).catch(() => undefined);
+      throw new SlotRefused("controller_code");
+    }
     return proof;
+  }
+  /** Since when this slot's object adopts `caller`'s code; see `RuntimeCodeAdoption`. */
+  private async adopt(target: SlotTarget, caller: ControllerCode) {
+    return this.adoption.adopt((await this.store.read(target)).record, caller);
   }
   admit(envelope: string) {
     return this.serialize(async () => {
@@ -438,8 +463,15 @@ export class RuntimeEndpoint {
     await this.channel.keepAlive();
     return health;
   }
-  async witness(target: SlotTarget) {
+  async witness(target: SlotTarget, controllerCode?: ControllerCode) {
     this.bound(target);
+    // Only a controller that names its code can be adopted; one on older code never does.
+    if (controllerCode && !sameControllerCode(controllerCode, this.code))
+      return this.serialize(async () => ({
+        kind: "adopting" as const,
+        controllerCode: this.code,
+        since: await this.adopt(target, controllerCode),
+      }));
     const { record } = await this.store.read(target);
     return record.authorization.kind === "unattested-active"
       ? {
@@ -464,7 +496,7 @@ export class RuntimeEndpoint {
   }
   attest(envelope: string) {
     return this.serialize(async () => {
-      const proof = await this.proof(envelope);
+      const proof = await this.proof(envelope, true);
       if (!isRuntimeAttestation(proof)) throw new SlotRefused("identity");
       const { record } = await this.store.read(proof.target),
         witness = record.witness;
@@ -492,6 +524,18 @@ export class RuntimeEndpoint {
       await this.health(record.identity, AbortSignal.timeout(2_000));
       await this.store.put(proof.target, { ...record, attestation: proof });
     });
+  }
+  /**
+   * Whether this slot's record holds its start's attestation, read from the record itself, so a
+   * fenced slot still answers. For the fleet inspect: it never fences, stops, starts or renews.
+   */
+  async attested(target: SlotTarget) {
+    this.bound(target);
+    const record = await this.store.retained(target.slotId);
+    return {
+      attested:
+        record?.attestation !== undefined && sameTarget(record.authorization.target, target),
+    };
   }
   async ready(identity: SlotIdentity, fingerprint: string, imageInput: string) {
     const { record } = await this.store.read(identity);
@@ -595,12 +639,15 @@ export class RuntimeEndpoint {
   /**
    * Fences a fleet start its controller abandoned. Queued behind any start already running here, it
    * is durable before it answers, and from then on this slot is never admitted or started again, so
-   * a container it finds stopped can't come back.
+   * a container it finds stopped can't come back. With `stop`, which its cell asks only for a first
+   * start that never activated, that start's container is then stopped, once (`RuntimeAbandonedStop`).
    */
-  abandonStart(target: SlotTarget) {
+  abandonStart(target: SlotTarget, stop = false) {
     return this.serialize(async () => {
       this.bound(target);
       await this.store.abandon(target);
+      // Only behind the fence, which refuses every later start and attestation for this slot.
+      if (stop) await this.abandonedStop.stop(target);
       return { stopped: !this.ctx.container!.running };
     });
   }

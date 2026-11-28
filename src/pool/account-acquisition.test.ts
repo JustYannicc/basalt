@@ -140,3 +140,341 @@ test("native model discovery does not offer an OAuth sign-in for Jev keys", asyn
   assert.equal(f.calls.length, 0);
   assert.equal(f.markers.size, 0);
 });
+
+const signInRoute = { routeId: "rt_" + "a".repeat(26), owner: "org/fixture/user/example-user" };
+function routeRecorder() {
+  const events: string[] = [];
+  const fleet: { image: string | null } = { image: "0123456789abcdef" };
+  return {
+    events,
+    fleet,
+    routes: {
+      servingImage: async () => fleet.image,
+      beginSignIn: async (session: string, route: { routeId: string }) => {
+        events.push(`begin ${route.routeId}`);
+      },
+      settleSignIn: async (_session: string, references: readonly string[]) => {
+        events.push(`settle ${references.join(",")}`);
+      },
+    },
+  };
+}
+
+test("a routed owner's sign-in sends Home's code exchange through the route, and the saved credential keeps it", async () => {
+  const recorder = routeRecorder();
+  const f = fixture([], "claude", {}, recorder.routes);
+  const started = await body(await f.send("start", { hasRules: true, route: signInRoute }));
+  const start = f.calls.find((call) => call.path.includes("/oauth/auth-url"))!;
+  assert.equal(
+    new URL(start.path, "https://fixture.invalid").searchParams.get("proxy_url"),
+    `socks5://${signInRoute.routeId}:x@127.0.0.1:20990`,
+  );
+  // The owner check knows the route before Home can open the exchange's tunnel.
+  assert.deepEqual(recorder.events, [`begin ${signInRoute.routeId}`]);
+  f.complete(["fresh"]);
+  assert.equal(
+    (await body(await f.send("status", { session: started.session }))).state,
+    "connected",
+  );
+  assert.deepEqual(recorder.events, [`begin ${signInRoute.routeId}`, "settle fresh"]);
+});
+
+test("a routed sign-in whose route is down fails as route_unavailable and is never retried directly", async () => {
+  const recorder = routeRecorder();
+  const f = fixture([], "claude", {}, recorder.routes);
+  const started = await body(await f.send("start", { hasRules: true, route: signInRoute }));
+  f.statusIs({ status: "error", error: "proxy_unavailable" });
+  assert.deepEqual(await body(await f.send("status", { session: started.session })), {
+    state: "failed",
+    message: "route_unavailable",
+  });
+  const starts = f.calls.filter((call) => call.path.includes("/oauth/auth-url"));
+  assert.equal(starts.length, 1);
+  assert.ok(starts.every((call) => call.path.includes("proxy_url=")));
+  assert.ok(!f.calls.some((call) => call.path.includes("/oauth/callback")));
+  assert.deepEqual(recorder.events, [`begin ${signInRoute.routeId}`, "settle "]);
+});
+
+test("a sign-in its owner's rules route but no route applies to is refused with route_unavailable before Home sees it", async () => {
+  for (const [routing, routes] of [
+    [{ hasRules: true }, routeRecorder().routes],
+    [{ hasRules: true, route: { routeId: "rt_../x", owner: "x" } }, routeRecorder().routes],
+    // A controller without routing wired can't route anything.
+    [{ hasRules: true, route: signInRoute }, undefined],
+  ] as const) {
+    const f = fixture([], "claude", {}, routes);
+    const refused = await f.send("start", routing);
+    assert.equal(refused.status, 409);
+    assert.deepEqual(await refused.json(), { error: "route_unavailable" });
+    assert.equal(f.calls.length, 0);
+  }
+});
+
+test("a sign-in without route rules, or one the host decided is direct, starts exactly as on main", async () => {
+  for (const routing of [{}, { hasRules: false }, { hasRules: true, route: null }]) {
+    const recorder = routeRecorder();
+    const f = fixture([], "claude", {}, recorder.routes);
+    const started = await body(await f.send("start", routing));
+    assert.equal(typeof started.session, "string");
+    const starts = f.calls.filter((call) => call.path.includes("/oauth/auth-url"));
+    assert.equal(starts.length, 1);
+    assert.ok(!starts[0]!.path.includes("proxy_url"));
+    assert.deepEqual(recorder.events, []);
+  }
+});
+
+test("a routed start Home can't route is refused before any session: plugin providers and an unreachable route", async () => {
+  for (const [provider, reply, expected] of [
+    // A plugin provider's sign-in can't use a route (change 30).
+    [
+      "gemini-cli",
+      () => Response.json({ error: "proxy_unsupported" }, { status: 400 }),
+      "route_unsupported",
+    ],
+    // A device-flow start that can't reach its route.
+    [
+      "kimi",
+      () => Response.json({ error: "proxy_unavailable" }, { status: 502 }),
+      "route_unavailable",
+    ],
+  ] as const) {
+    const recorder = routeRecorder();
+    const f = fixture([], provider, {}, recorder.routes);
+    f.startAnswers(reply);
+    const refused = await f.send("start", { hasRules: true, route: signInRoute });
+    assert.equal(refused.status, 409);
+    assert.deepEqual(await refused.json(), { error: expected });
+    // One start, carrying the route; nothing else reaches Home's sign-in endpoints.
+    const signIn = f.calls.filter((call) => call.path.includes("/oauth/"));
+    assert.equal(signIn.length, 1);
+    assert.ok(signIn[0]!.path.includes("proxy_url="));
+    assert.deepEqual(recorder.events, [`begin ${signInRoute.routeId}`, "settle "]);
+  }
+});
+
+test("a proxy URL Home rejects is a pool bug: 500 with a reason code, no session", async () => {
+  const recorder = routeRecorder();
+  const f = fixture([], "claude", {}, recorder.routes);
+  f.startAnswers(() => Response.json({ error: "invalid_proxy_url" }, { status: 400 }));
+  const failed = await f.send("start", { hasRules: true, route: signInRoute });
+  assert.equal(failed.status, 500);
+  assert.deepEqual(await failed.json(), { error: "internal" });
+  assert.equal(f.calls.filter((call) => call.path.includes("/oauth/")).length, 1);
+});
+
+test("a teammate's sign-in in the same Home never takes another owner's route", async () => {
+  const recorder = routeRecorder();
+  const f = fixture([], "claude", {}, recorder.routes);
+  const owners = await body(await f.send("start", { hasRules: true, route: signInRoute }));
+  assert.equal(typeof owners.session, "string");
+  const mates = await body(
+    await f.send("start", { hasRules: false }, "organization:teammate", "connect:mate"),
+  );
+  assert.equal(typeof mates.session, "string");
+  const starts = f.calls.filter((call) => call.path.includes("/oauth/auth-url"));
+  assert.equal(starts.length, 2);
+  assert.ok(starts[0]!.path.includes("proxy_url="));
+  assert.ok(!starts[1]!.path.includes("proxy_url"));
+  // Only the owner's sign-in registered a route.
+  assert.deepEqual(recorder.events, [`begin ${signInRoute.routeId}`]);
+});
+
+test("a routed start with an uncertain answer still releases its route when the attempt expires", async (t) => {
+  const recorder = routeRecorder();
+  const f = fixture([], "claude", {}, recorder.routes);
+  f.startAnswers(() => new Response(null, { status: 503 }));
+  assert.equal((await f.send("start", { hasRules: true, route: signInRoute })).status, 503);
+  assert.deepEqual(recorder.events, [`begin ${signInRoute.routeId}`]);
+  const later = Date.now() + 2 * 24 * 60 * 60_000;
+  t.mock.method(Date, "now", () => later);
+  await f.tick();
+  assert.deepEqual(recorder.events, [`begin ${signInRoute.routeId}`, "settle "]);
+});
+
+test("a Home that can't route a sign-in session never gets a routed start: route_unsupported, nothing sent", async () => {
+  const recorder = routeRecorder();
+  const f = fixture([], "claude", {}, recorder.routes);
+  f.withoutSessionProxy();
+  const refused = await f.send("start", { hasRules: true, route: signInRoute });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), { error: "route_unsupported" });
+  assert.deepEqual(
+    f.calls.map((call) => new URL(call.path, "https://fixture.invalid").pathname.split("/").pop()),
+    ["capabilities"],
+  );
+  assert.deepEqual(recorder.events, []);
+  // Someone without rules signs in as on main, on the same Home.
+  assert.equal(
+    typeof (await body(await f.send("start", { hasRules: false }, owner, "connect:plain"))).session,
+    "string",
+  );
+});
+
+test("a routed sign-in is refused while the serving runtimes run different images", async () => {
+  const recorder = routeRecorder();
+  recorder.fleet.image = null;
+  const f = fixture([], "claude", {}, recorder.routes);
+  const refused = await f.send("start", { hasRules: true, route: signInRoute });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), { error: "route_unsupported" });
+  assert.equal(f.calls.length, 0);
+  assert.deepEqual(recorder.events, []);
+});
+
+test("a routed sign-in that loses a homogeneous fleet before its callback fails as route_unavailable and sends nothing more", async () => {
+  const recorder = routeRecorder();
+  const f = fixture([], "claude", { flow: "callback" }, recorder.routes);
+  const started = await body(await f.send("start", { hasRules: true, route: signInRoute }));
+  assert.ok(started.paste);
+  const before = f.calls.length;
+  recorder.fleet.image = null;
+  assert.deepEqual(
+    await body(
+      await f.send("submit", {
+        session: started.session,
+        value: "http://localhost/cb?code=x&state=home-state",
+      }),
+    ),
+    { state: "failed", message: "route_unavailable" },
+  );
+  assert.ok(!f.calls.slice(before).some((call) => call.path.includes("/oauth/")));
+  assert.deepEqual(recorder.events, [`begin ${signInRoute.routeId}`, "settle "]);
+});
+
+test("a routed device sign-in that loses a homogeneous fleet stops polling: route_unavailable", async () => {
+  const recorder = routeRecorder();
+  const f = fixture([], "claude", {}, recorder.routes);
+  const started = await body(await f.send("start", { hasRules: true, route: signInRoute }));
+  const before = f.calls.length;
+  recorder.fleet.image = null;
+  assert.deepEqual(await body(await f.send("status", { session: started.session })), {
+    state: "failed",
+    message: "route_unavailable",
+  });
+  assert.ok(!f.calls.slice(before).some((call) => call.path.includes("/oauth/")));
+});
+
+test("a routed sign-in that fails for any other reason keeps main's failure message", async () => {
+  const failure = { status: "error", error: "Meta device sign-in failed" };
+  const plain = fixture([], "meta");
+  const plainStart = await body(await plain.send("start"));
+  plain.statusIs(failure);
+  const expected = await body(await plain.send("status", { session: plainStart.session }));
+  const recorder = routeRecorder();
+  const routed = fixture([], "meta", {}, recorder.routes);
+  const routedStart = await body(
+    await routed.send("start", { hasRules: true, route: signInRoute }),
+  );
+  routed.statusIs(failure);
+  const answer = await body(await routed.send("status", { session: routedStart.session }));
+  assert.equal(answer.state, "failed");
+  assert.deepEqual(answer, expected);
+  assert.notEqual(answer.message, "route_unavailable");
+});
+
+test("a routed sign-in whose reachable image changes after its start fails before the callback, even when the new fleet is one image", async () => {
+  const recorder = routeRecorder();
+  const f = fixture([], "claude", { flow: "callback" }, recorder.routes);
+  const started = await body(await f.send("start", { hasRules: true, route: signInRoute }));
+  const before = f.calls.length;
+  // A full rollover: one image again, but not the one the start proved.
+  recorder.fleet.image = "fedcba9876543210";
+  assert.deepEqual(
+    await body(
+      await f.send("submit", {
+        session: started.session,
+        value: "http://localhost/cb?code=x&state=home-state",
+      }),
+    ),
+    { state: "failed", message: "route_unavailable" },
+  );
+  assert.ok(!f.calls.slice(before).some((call) => call.path.includes("/oauth/")));
+  assert.deepEqual(recorder.events, [`begin ${signInRoute.routeId}`, "settle "]);
+});
+
+/** The image the n-th check reads: the proven one until `from`, then another. */
+function imageChangesAt(from: number) {
+  const recorder = routeRecorder();
+  let reads = 0;
+  return {
+    ...recorder,
+    routes: {
+      ...recorder.routes,
+      servingImage: async () => (++reads >= from ? "fedcba9876543210" : "0123456789abcdef"),
+    },
+  };
+}
+
+test("a routed start whose image changes before Home sees it is refused: route_unsupported, no session", async () => {
+  // Reads 1 and 2 prove the start around the capability check; read 3 is just before auth-url.
+  const recorder = imageChangesAt(3);
+  const f = fixture([], "claude", {}, recorder.routes);
+  const refused = await f.send("start", { hasRules: true, route: signInRoute });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), { error: "route_unsupported" });
+  assert.ok(!f.calls.some((call) => call.path.includes("/oauth/")));
+  assert.deepEqual(recorder.events, [`begin ${signInRoute.routeId}`, "settle "]);
+});
+
+test("a routed start whose image changes while Home starts it ends that session: route_unavailable", async () => {
+  const recorder = imageChangesAt(4);
+  const f = fixture([], "claude", {}, recorder.routes);
+  const refused = await f.send("start", { hasRules: true, route: signInRoute });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), { error: "route_unavailable" });
+  assert.deepEqual(
+    f.calls
+      .filter((call) => call.path.includes("/oauth/"))
+      .map((call) => `${call.method} ${new URL(call.path, "https://fixture.invalid").pathname}`),
+    ["GET /v8/management/oauth/auth-url", "DELETE /v8/management/oauth/session"],
+  );
+  assert.deepEqual(recorder.events, [`begin ${signInRoute.routeId}`, "settle "]);
+});
+
+test("a routed device sign-in that loses its image between reads stops on the alarm too", async () => {
+  const recorder = routeRecorder();
+  const f = fixture([], "claude", {}, recorder.routes);
+  const started = await body(await f.send("start", { hasRules: true, route: signInRoute }));
+  const before = f.calls.length;
+  recorder.fleet.image = "fedcba9876543210";
+  await f.tick();
+  assert.ok(!f.calls.slice(before).some((call) => call.path.includes("/oauth/")));
+  assert.deepEqual(recorder.events, [`begin ${signInRoute.routeId}`, "settle "]);
+  assert.deepEqual(await body(await f.send("status", { session: started.session })), {
+    state: "failed",
+    message: "route_unavailable",
+  });
+});
+
+test("a routed sign-in whose running Home stops routing sessions under the same image fails closed before the callback and on the alarm", async () => {
+  // A rollback the configured image can't show: the container rolled, the hash did not.
+  const recorder = routeRecorder();
+  const f = fixture([], "claude", { flow: "callback" }, recorder.routes);
+  const started = await body(await f.send("start", { hasRules: true, route: signInRoute }));
+  f.withoutSessionProxy();
+  const before = f.calls.length;
+  assert.deepEqual(
+    await body(
+      await f.send("submit", {
+        session: started.session,
+        value: "http://localhost/cb?code=x&state=home-state",
+      }),
+    ),
+    { state: "failed", message: "route_unavailable" },
+  );
+  assert.ok(!f.calls.slice(before).some((call) => call.path.includes("/oauth/callback")));
+  assert.deepEqual(recorder.events, [`begin ${signInRoute.routeId}`, "settle "]);
+
+  const device = routeRecorder();
+  const g = fixture([], "claude", {}, device.routes);
+  const polled = await body(
+    await g.send("start", { hasRules: true, route: signInRoute }, owner, "connect:device"),
+  );
+  g.withoutSessionProxy();
+  await g.tick();
+  assert.ok(!g.calls.some((call) => call.path.includes("/oauth/status")));
+  assert.deepEqual(await body(await g.send("status", { session: polled.session })), {
+    state: "failed",
+    message: "route_unavailable",
+  });
+});

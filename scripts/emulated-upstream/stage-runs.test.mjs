@@ -1,16 +1,27 @@
 // What deploy, check, destroy and the expiry decide on their own, and that no run prints the
 // account's workers.dev hostname.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { inspect } from "node:util";
 import { test } from "node:test";
-import { activeDispatches } from "./dispatch-busy.mjs";
+import { activeDispatches, busyFor } from "./dispatch-busy.mjs";
 import { gate, mockCalls, plainReason } from "./gateway.ts";
 import { SLOW_MS } from "./profile-check.mjs";
 import { publicMessage } from "./public-error.mjs";
-import { checkFailures, emulatedStage, keyedRoutes, LONG_MIN_MS, main, paced } from "./stage.mjs";
+import {
+  checkFailures,
+  emulatedStage,
+  keyedRoutes,
+  LONG_MIN_MS,
+  main,
+  jobReserveMs,
+  paced,
+  teardownBudgetMs,
+  teardownDeadline,
+} from "./stage.mjs";
 import { prefix } from "./settings.ts";
 import { fakeAimock, memoryStore } from "./test/fake-aimock.mjs";
-import { script } from "../stage-cloudflare/test/cloudflare-shapes.mjs";
+import { application, refusalBody, script } from "../stage-cloudflare/test/cloudflare-shapes.mjs";
 import { fakeAccount } from "../stage-cloudflare/test/fake-account.mjs";
 
 const worker = "basalt-emulated-upstream-gateway";
@@ -39,6 +50,13 @@ function fakeApi({ resources = none(), lease } = {}) {
       return "acctsub";
     },
     empty: (found) => Object.values(found).every((rows) => rows.length === 0),
+    inert: (found) =>
+      found.applications.length === 0 &&
+      found.scripts.length === 0 &&
+      found.namespaces.length === 0,
+    repositoryLeft: (found) => ({ repositories: found.images.length, entries: 0 }),
+    counted: (found) =>
+      Object.fromEntries(Object.entries(found).map(([kind, rows]) => [kind, rows.length])),
     describe: (found) => found.scripts.map((row) => `Worker ${row.id}`).join(", "),
   };
 }
@@ -201,7 +219,7 @@ test("a check passes only when every part does, and names each part that failed"
       profiles: { control: [{ step: "read", status: 200 }], calls: [], failure: "it stopped" },
     }),
     [
-      "7 of 8 calls without the right key ran",
+      "9 of 10 calls without the right key ran",
       "the mock itself did not refuse a call without the right key",
       "5 of 6 streams ran",
       "0 of 3 non-streamed calls ran",
@@ -345,10 +363,11 @@ const unreachable =
 test("a failing stage fetch prints no hostname, at the top level or in the summary", async () => {
   for (const reachable of [[], keyedRoutes]) {
     const printed = [];
+    const errors = [];
     const code = await main(dispatch, {
       fetcher: unreachable(reachable),
       now: () => NOW,
-      error: (line) => printed.push(line),
+      error: (line) => printed.push(line) && errors.push(line),
       summary: (line) => printed.push(line),
       save: (name, value) => printed.push(JSON.stringify(value)),
       deployEntry: () => {},
@@ -359,7 +378,7 @@ test("a failing stage fetch prints no hostname, at the top level or in the summa
       assert.doesNotMatch(line, new RegExp(`${subdomain}|workers\\.dev|ENOTFOUND`, "u"), line);
     }
     assert.match(
-      printed.at(-1),
+      errors.at(-1),
       reachable.length
         ? /^Emulated upstream check failed: the mock itself did not refuse.*chat short The stage's chat short stream call failed \(TypeError\)/u
         : /^The stage's unkeyed \/v1\/models call failed \(TypeError\)$/u,
@@ -405,6 +424,441 @@ test("a destroy stopped by the registry's tag list keeps its record of closed fa
   assert.equal(saved.teardown, undefined);
   assert.ok(printed[1].startsWith("- stop record: {"), printed.join("\n"));
   for (const line of printed) assert.doesNotMatch(line, /h1|h2|acct|https?:/u, line);
+});
+
+test("a destroy the registry refuses keeps its record of closed facts before it ends", async () => {
+  // The stage's own platform manifest refused: nothing of the stage's image may read as kept.
+  const fake = fakeAccount({
+    tags: { [`acct/${prefix}-mock`]: ["h1"] },
+    cloudflare: {
+      pageSize: 5,
+      emptyEnd: true,
+      refuse: { [`sha256:${"b".repeat(64)}`]: { status: 403 } },
+    },
+  });
+  const printed = [];
+  const saved = {};
+  const code = await main(
+    { ...dispatch, EMULATED_MODE: "destroy" },
+    {
+      fetcher: fake.fetcher,
+      now: () => NOW,
+      error: (line) => printed.push(line),
+      summary: (line) => printed.push(line),
+      save: (name, value) => (saved[name] = value),
+      deployEntry: () => {},
+    },
+  );
+  assert.equal(code, 1);
+  const [deletes] = saved["stopped-destroy"].teardown;
+  assert.deepEqual(deletes.registryDeletes, {
+    // The list held the tag and the two manifests of its image. The tag was read first, reaching
+    // both; its own delete was accepted and took the index with it, so the index's delete answered
+    // absent, and the platform manifest the tag reached was refused.
+    tags: 1,
+    digests: 2,
+    byTag: { sent: 1, accepted: 1, absent: 0, refused: 0 },
+    tagRead: { ok: 1, absent: 0 },
+    delete: { accepted: 0, absent: 1, refused: 1 },
+    kept: [],
+    refused: [
+      {
+        entry: "tag",
+        digestShaped: false,
+        type: "application/vnd.oci.image.index.v1+json",
+        class: "403",
+      },
+    ],
+  });
+  for (const line of printed) assert.doesNotMatch(line, /sha256|acct\//u, line);
+});
+
+test("a teardown spends at most its budget on stage requests, and stops between them", async () => {
+  const fake = fakeAccount({
+    tags: { [`acct/${prefix}-mock`]: ["h1", "h2", "h3"] },
+    cloudflare: { pageSize: 1, emptyEnd: true },
+  });
+  let clock = NOW;
+  const started = [];
+  // A registry that takes four minutes a request: the 15-minute budget fits three of them.
+  const slow = async (url, init) => {
+    started.push(clock);
+    clock += 4 * 60_000;
+    return fake.fetcher(url, init);
+  };
+  const printed = [];
+  const code = await main(
+    { ...dispatch, EMULATED_MODE: "destroy" },
+    {
+      fetcher: slow,
+      now: () => clock,
+      error: (line) => printed.push(line),
+      summary: (line) => printed.push(line),
+      save: () => {},
+      deployEntry: () => {},
+    },
+  );
+  assert.equal(code, 1);
+  assert.match(printed.join("\n"), /time budget is spent/u);
+  // Every request started with a whole 30-second timeout still inside the budget.
+  assert.ok(
+    started.every((at) => at + 30_000 <= NOW + teardownBudgetMs),
+    started.join(","),
+  );
+  assert.equal(fake.calls.filter((call) => call.method === "DELETE").length, 0);
+});
+
+test("a teardown out of time during its deletes keeps everything it gathered", async () => {
+  // Thirty-five seconds a request: every delete is sent, then the read back runs out. Fifty: the
+  // repository's own delete runs out too, and the line names it.
+  for (const [step, failedDeletes] of [
+    [35_000, 0],
+    [50_000, 1],
+  ]) {
+    const fake = fakeAccount({
+      live: {
+        applications: [application({ id: "a1", name: `${prefix}-mock` })],
+        scripts: [script(`${prefix}-gateway`)],
+      },
+      tags: { [`acct/${prefix}-mock`]: ["h1"] },
+      cloudflare: { pageSize: 5, emptyEnd: true },
+    });
+    let clock = NOW;
+    const slow = async (url, init) => {
+      clock += step;
+      return fake.fetcher(url, init);
+    };
+    const printed = [];
+    const saved = {};
+    const code = await main(
+      { ...dispatch, EMULATED_MODE: "destroy" },
+      {
+        fetcher: slow,
+        now: () => clock,
+        error: (line) => printed.push(line),
+        summary: (line) => printed.push(line),
+        save: (name, value) => (saved[name] = value),
+        deployEntry: () => {},
+      },
+    );
+    assert.equal(code, 1, String(step));
+    assert.match(
+      printed[0],
+      /^Emulated upstream teardown could not read back what remains: .*time budget is spent/u,
+    );
+    assert.equal(
+      /; failed: registry repository /u.test(printed[0]),
+      failedDeletes > 0,
+      String(step),
+    );
+    const stopped = saved["stopped-destroy"];
+    assert.equal(stopped.readBack, "not-completed", String(step));
+    assert.deepEqual(stopped.found, {
+      applications: 1,
+      namespaces: 0,
+      scripts: 1,
+      images: 1,
+      kept: 0,
+      gone: 0,
+    });
+    assert.equal(stopped.failedDeletes, failedDeletes, String(step));
+    assert.deepEqual(stopped.reads, [], String(step));
+    // The repository's delete pass, finished or cut, left its counts.
+    assert.equal(stopped.registryDeletes.length, 1, String(step));
+    assert.equal(stopped.registryDeletes[0].stopped === true, failedDeletes > 0, String(step));
+    // The app and the Worker went first, inside the budget.
+    assert.equal(fake.live.applications.length, 0, String(step));
+    assert.equal(fake.live.scripts.length, 0, String(step));
+  }
+});
+
+/** One run of `main`, with every file it saves and every line it prints. */
+async function runOf(env, fetcher, { now = () => NOW, wait = async () => {} } = {}) {
+  const printed = [];
+  const saved = {};
+  const code = await main(env, {
+    fetcher,
+    now,
+    wait,
+    error: (line) => printed.push(line),
+    summary: (line) => printed.push(line),
+    save: (name, value) => (saved[name] = value),
+    deployEntry: () => {},
+  });
+  return { code, printed, saved };
+}
+/** The account `fake`, refusing any registry credential that may push. */
+const pushRefused = (fake) => ({
+  ...fake,
+  fetcher: (url, init) =>
+    url.endsWith("/credentials") && JSON.parse(init.body).permissions.includes("push")
+      ? Promise.resolve(
+          Response.json(refusalBody([{ code: 10000, message: "x" }]), { status: 403 }),
+        )
+      : fake.fetcher(url, init),
+});
+/** The stage deployed in an account whose registry answers as Cloudflare's does, per `cloudflare`. */
+const stageAccount = (cloudflare = {}, { lease } = {}) =>
+  fakeAccount({
+    live: {
+      applications: [application({ id: "a1", name: `${prefix}-mock` })],
+      scripts: [script(`${prefix}-gateway`)],
+    },
+    bindings: lease === undefined ? {} : { [`${prefix}-gateway`]: { DELETE_BY: String(lease) } },
+    tags: { [`acct/${prefix}-mock`]: ["h1"] },
+    cloudflare: { pageSize: 5, emptyEnd: true, ...cloudflare },
+  });
+
+test("the read-back's retries stay inside the teardown's budget, and a cut leaves the record", async () => {
+  const fake = stageAccount({ collectAfter: 1_000 });
+  let clock = NOW;
+  const started = [];
+  const fetcher = async (url, init) => {
+    started.push(clock);
+    return fake.fetcher(url, init);
+  };
+  // A job whose limit leaves this teardown 90 seconds.
+  const deadline = NOW + 90_000;
+  const env = {
+    ...dispatch,
+    EMULATED_MODE: "destroy",
+    EMULATED_JOB_STARTED_MS: String(deadline + jobReserveMs - 60 * 60_000),
+    EMULATED_JOB_LIMIT_MINUTES: "60",
+  };
+  const { code, printed, saved } = await runOf(env, fetcher, {
+    now: () => clock,
+    wait: async (ms) => void (clock += ms),
+  });
+  assert.equal(code, 1);
+  assert.match(printed[0], /; the read after was cut by the run's time budget$/u);
+  const stopped = saved["stopped-destroy"];
+  assert.equal(stopped.readBackCut, true);
+  // Reads at 0, 20, 40 and 60 s; one at 80 s would leave its requests no room before 90 s.
+  assert.equal(stopped.reads.length, 4);
+  assert.ok(
+    started.every((at) => at + 30_000 <= deadline),
+    started.join(","),
+  );
+});
+
+test("every exit of a destroy or an expiry leaves its file", async () => {
+  const destroy = { ...dispatch, EMULATED_MODE: "destroy" };
+  const expire = {
+    ...dispatch,
+    GITHUB_EVENT_NAME: "schedule",
+    EMULATED_MODE: "expire",
+    EMULATED_GO: undefined,
+  };
+  const ghosts = [`sha256:${"e".repeat(64)}`];
+  const cases = [
+    // The green line, with and without entries listed without a manifest.
+    ["destroy, green", destroy, stageAccount(), 0, "teardown"],
+    [
+      "destroy, green, listed without a manifest",
+      destroy,
+      stageAccount({ own: false, ghosts }),
+      0,
+      "teardown",
+    ],
+    // A delete refused: the record of its refusals.
+    [
+      "destroy, refused",
+      destroy,
+      stageAccount({ refuse: { [`sha256:${"b".repeat(64)}`]: { status: 403 } } }),
+      1,
+      "stopped-destroy",
+    ],
+    // Every delete accepted, and the list still names them: the path that once saved nothing.
+    [
+      "destroy, remains with nothing refused",
+      destroy,
+      stageAccount({ collectAfter: 1_000 }),
+      1,
+      "stopped-destroy",
+    ],
+    // An error that carries no record, before any account call.
+    [
+      "destroy, no credentials",
+      { ...destroy, CLOUDFLARE_API_TOKEN: "" },
+      stageAccount(),
+      1,
+      "stopped-destroy",
+    ],
+    ["destroy, guard", { ...destroy, EMULATED_GO: "" }, stageAccount(), 1, "stopped-destroy"],
+    ["expire, nothing", expire, fakeAccount({ cloudflare: { pageSize: 5 } }), 0, "expire"],
+    ["expire, kept", expire, stageAccount({}, { lease: NOW + hour }), 0, "expire"],
+    ["expire, destroyed", expire, stageAccount({}, { lease: NOW - 1 }), 0, "teardown"],
+    ["expire, fails", expire, stageAccount({ collectAfter: 1_000 }), 1, "stopped-expire"],
+    [
+      "expire, guard",
+      { ...expire, GITHUB_REF: "refs/heads/x" },
+      stageAccount(),
+      1,
+      "stopped-expire",
+    ],
+    // Nothing runs and only the stage's own repository is left: green, and it says so.
+    [
+      "expire, only its repository left",
+      expire,
+      fakeAccount({
+        tags: { [`acct/${prefix}-mock`]: ["h1"] },
+        cloudflare: { pageSize: 5, emptyEnd: true, collectAfter: 1_000 },
+      }),
+      0,
+      "expire",
+    ],
+    // An expiry whose token may mint pull but not push: its deletes fail, and it says so.
+    [
+      "expire, push refused",
+      expire,
+      pushRefused(stageAccount({}, { lease: NOW - 1 })),
+      1,
+      "stopped-expire",
+    ],
+  ];
+  for (const [name, env, fake, code, file] of cases) {
+    const run = await runOf(env, fake.fetcher);
+    if (name === "expire, only its repository left") {
+      assert.equal(run.saved.expire.outcome, "repository-only");
+      assert.ok(
+        run.printed.includes(
+          `- nothing named ${prefix}-* runs; only its own image repository is left (3 entries), which the next deploy pushes to`,
+        ),
+        run.printed.join("\n"),
+      );
+      assert.equal(fake.calls.filter((call) => call.method === "DELETE").length, 0);
+    }
+    if (name === "expire, push refused") {
+      assert.match(
+        run.printed.join("\n"),
+        /remain after teardown: .*; failed: registry repository .*: Cloudflare POST containers\/registries failed \(403\)/u,
+      );
+      assert.equal(run.saved["stopped-expire"].registryDeletes[0].stopped, true);
+    }
+    assert.equal(run.code, code, `${name}: ${run.printed.join("\n")}`);
+    assert.ok(run.saved[file], `${name}: saved ${Object.keys(run.saved).join(", ")}`);
+    if (env === expire || env.EMULATED_MODE === "expire")
+      assert.ok(code === 1 || run.saved.expire, `${name}: no expire file`);
+    for (const value of Object.values(run.saved))
+      assert.doesNotMatch(JSON.stringify(value), /sha256:|acct\/|"h1"/u, name);
+  }
+});
+
+test("a teardown's deadline is its budget or its job's limit less a reserve, whichever is first", () => {
+  const at = Date.parse("2026-11-27T18:00:00Z");
+  assert.equal(teardownDeadline({}, at), at + teardownBudgetMs);
+  // A job that has run 50 of its 60 minutes leaves the teardown seven of them.
+  const started = at - 50 * 60_000;
+  assert.equal(
+    teardownDeadline(
+      { EMULATED_JOB_STARTED_MS: String(started), EMULATED_JOB_LIMIT_MINUTES: "60" },
+      at,
+    ),
+    started + 60 * 60_000 - jobReserveMs,
+  );
+  for (const env of [
+    { EMULATED_JOB_STARTED_MS: "x", EMULATED_JOB_LIMIT_MINUTES: "60" },
+    { EMULATED_JOB_STARTED_MS: String(started), EMULATED_JOB_LIMIT_MINUTES: "0" },
+  ])
+    assert.equal(teardownDeadline(env, at), at + teardownBudgetMs);
+});
+
+test("each teardown job states its own limit, and the budget with its reserve fits in it", () => {
+  const workflow = readFileSync(
+    new URL("../../.github/workflows/emulated-upstream.yml", import.meta.url),
+    "utf8",
+  );
+  for (const job of ["emulated", "expire"]) {
+    const body = workflow.split(`\n  ${job}:\n`)[1].split(/\n  [a-z]+:\n/u)[0];
+    const limit = Number(/\n    timeout-minutes: (\d+)/u.exec(body)?.[1]);
+    assert.equal(Number(/EMULATED_JOB_LIMIT_MINUTES: (\d+)/u.exec(body)?.[1]), limit, job);
+    // The start is noted second, before anything that could take time.
+    const steps = body.split("\n      - ").slice(1);
+    assert.match(
+      steps[1],
+      /^name: Note when the job started\n(?: {8}timeout-minutes: \d+\n)? {8}run: echo "EMULATED_JOB_STARTED_MS=\$\(date \+%s%3N\)" >> "\$GITHUB_ENV"/u,
+      job,
+    );
+    assert.ok(teardownBudgetMs + jobReserveMs + 60_000 <= limit * 60_000, job);
+  }
+  // Every step up to and including the mode has its own limit, and after the longest of each the
+  // teardown after a failed deploy still has ten minutes before the job's reserve.
+  const emulated = workflow.split("\n  emulated:\n")[1].split(/\n  [a-z]+:\n/u)[0];
+  const jobLimit = Number(/\n    timeout-minutes: (\d+)/u.exec(emulated)?.[1]);
+  const steps = emulated.split("\n      - ").slice(1);
+  const mode = steps.findIndex((step) => step.startsWith("name: Execute the mode\n"));
+  assert.ok(mode > 0);
+  let before = 0;
+  for (const step of steps.slice(0, mode + 1)) {
+    const limit = /\n {8}timeout-minutes: (\d+)/u.exec(step);
+    assert.ok(limit, `a step without its own limit: ${step.split("\n")[0]}`);
+    before += Number(limit[1]) * 60_000;
+  }
+  assert.ok(jobLimit * 60_000 - before - jobReserveMs >= 10 * 60_000, String(before));
+  // The expiry's busy window covers a dispatch that waits one job and then runs one.
+  assert.ok(busyFor >= 2 * jobLimit * 60_000 + 30 * 60_000);
+  // The reserve covers saving the record and uploading the artifact.
+  assert.ok(jobReserveMs >= 2 * 60_000);
+});
+
+test("a teardown whose job has no time left sends nothing, and says so", async () => {
+  const fake = fakeAccount({
+    tags: { [`acct/${prefix}-mock`]: ["h1"] },
+    cloudflare: { pageSize: 5 },
+  });
+  const printed = [];
+  const code = await main(
+    {
+      ...dispatch,
+      EMULATED_MODE: "destroy",
+      // 89 of the job's 90 minutes are gone: less than its reserve is left.
+      EMULATED_JOB_STARTED_MS: String(NOW - 89 * 60_000),
+      EMULATED_JOB_LIMIT_MINUTES: "90",
+    },
+    {
+      fetcher: fake.fetcher,
+      now: () => NOW,
+      error: (line) => printed.push(line),
+      summary: (line) => printed.push(line),
+      save: () => {},
+      deployEntry: () => {},
+    },
+  );
+  assert.equal(code, 1);
+  assert.equal(fake.calls.length, 0);
+  assert.match(printed.join("\n"), /time budget is spent/u);
+});
+
+test("an expiry spends at most its budget too", async () => {
+  const fake = fakeAccount({
+    tags: { [`acct/${prefix}-mock`]: ["h1", "h2", "h3"] },
+    cloudflare: { pageSize: 1, emptyEnd: true },
+  });
+  let clock = NOW;
+  const started = [];
+  const slow = async (url, init) => {
+    started.push(clock);
+    clock += 4 * 60_000;
+    return fake.fetcher(url, init);
+  };
+  const printed = [];
+  const code = await main(
+    { ...dispatch, GITHUB_EVENT_NAME: "schedule", EMULATED_MODE: "expire" },
+    {
+      fetcher: slow,
+      now: () => clock,
+      error: (line) => printed.push(line),
+      summary: (line) => printed.push(line),
+      save: () => {},
+      deployEntry: () => {},
+    },
+  );
+  assert.equal(code, 1, printed.join("\n"));
+  assert.match(printed.join("\n"), /time budget is spent/u);
+  assert.ok(
+    started.every((at) => at + 30_000 <= NOW + teardownBudgetMs),
+    started.join(","),
+  );
 });
 
 test("a refused guard prints only its token", async () => {

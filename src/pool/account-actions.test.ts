@@ -47,6 +47,7 @@ async function fixture(
   provider = "codex",
   audience: readonly string[] = [],
   grants = claudeGrants,
+  routeRefusals?: import("./account-actions.ts").RouteRefusals,
 ) {
   let now = Date.parse("2030-01-01T00:00:00Z");
   let disabled = false,
@@ -191,6 +192,7 @@ async function fixture(
     home: (path: string, init?: RequestInit) =>
       fetch(`http://127.0.0.1:${address.port}${path}`, init),
     now: () => new Date(now),
+    routeRefusals,
   };
   let control = new PoolControl(storage, deps);
   const token = await signPoolToken(signingKey, {
@@ -256,6 +258,53 @@ test("account actions authorize before contacting Home and cannot affect another
     [true, false],
   );
   assert.equal((await f.call("cooldown/clear")).status, 200);
+});
+
+test("a credential its plugin can't route can't be resumed while the route applies, even after the owner's own pause", async (t) => {
+  // The pool's lift right (the marker) and whether a route applies are separate.
+  const marked = new Set(["account"]);
+  let routed = true;
+  const asked: string[] = [];
+  const f = await fixture(t, "codex", [], claudeGrants, {
+    refusesUse: async (id, provider) => {
+      asked.push(provider);
+      return routed && id === "account";
+    },
+    refusedReferences: async () => marked,
+    markRefused: async (id, value) => void (value ? marked.add(id) : marked.delete(id)),
+  });
+  const refuse = async () => {
+    const resumed = await f.call("resume");
+    assert.equal(resumed.status, 409);
+    assert.equal(((await resumed.json()) as Json).error, "route_unsupported");
+  };
+  await refuse();
+  assert.ok(!f.calls.some((call) => call.path === "/credentials/status"));
+  // The owner's pause takes the lift right, never the refusal.
+  assert.equal((await f.call("pause")).status, 200);
+  assert.equal(marked.has("account"), false);
+  await refuse();
+  assert.deepEqual(asked, ["codex", "codex"]);
+  // Once no route applies, resuming is the owner's again.
+  routed = false;
+  assert.equal((await f.call("resume")).status, 200);
+});
+
+test("a route that takes effect while a resume is on its way switches the credential off again", async (t) => {
+  let checks = 0;
+  const f = await fixture(t, "codex", [], claudeGrants, {
+    // Free when the resume is checked, routed by the time Home has enabled it.
+    refusesUse: async () => ++checks > 1,
+    refusedReferences: async () => new Set(),
+    markRefused: async () => {},
+  });
+  const resumed = await f.call("resume");
+  assert.equal(resumed.status, 409);
+  assert.equal(((await resumed.json()) as Json).error, "route_unsupported");
+  assert.deepEqual(
+    f.calls.filter((call) => call.path === "/credentials/status").map((call) => call.body.disabled),
+    [false, true],
+  );
 });
 
 test("manual refresh collects a fresh idle account once, retaining the shared persisted cap", async (t) => {

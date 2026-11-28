@@ -4,6 +4,7 @@
 import { emulatedAccount } from "./cloudflare.mjs";
 import { plainReason, profileControlPath } from "./gateway.ts";
 import { refusalPath } from "./mock-start.ts";
+import { sendsPath } from "./sends.ts";
 import { profileCheck, profileFailures, profileSummary } from "./profile-check.mjs";
 import { isCloudflareApiError } from "../stage-cloudflare/api.mjs";
 import { publicMessage, StageError } from "./public-error.mjs";
@@ -16,11 +17,38 @@ const shortest = (long) => (long ? LONG_MIN_MS : 0);
 export const paced = (long, ms) => ms >= shortest(long);
 /** How long a deploy waits for the platform to start the mock, and how often it asks. */
 export const mockWaitBoundMs = 120_000;
+/**
+ * The longest a destroy or an expiry may spend on stage requests. Every request ends within it
+ * (request.mjs), and it is under the expiry job's 20-minute limit with its setup steps.
+ */
+export const teardownBudgetMs = 15 * 60_000;
+/** What a job keeps after its teardown's last request: the record's save and the artifact upload. */
+export const jobReserveMs = 3 * 60_000;
+
+/**
+ * When a teardown's last request must have ended: its own budget from now, or earlier when the job
+ * it runs in (`EMULATED_JOB_STARTED_MS`, `EMULATED_JOB_LIMIT_MINUTES`) would end first, less what
+ * the job keeps for itself after it.
+ */
+export function teardownDeadline(env, at) {
+  const own = at + teardownBudgetMs;
+  const started = Number(env.EMULATED_JOB_STARTED_MS);
+  const limit = Number(env.EMULATED_JOB_LIMIT_MINUTES);
+  if (!Number.isSafeInteger(started) || !Number.isSafeInteger(limit) || started <= 0 || limit <= 0)
+    return own;
+  return Math.min(own, started + limit * 60_000 - jobReserveMs);
+}
 export const mockWaitPauseMs = 5_000;
 const streamCount = Object.keys(paths).length * 2;
 const wholeCount = Object.keys(paths).length;
-/** Every route the Worker refuses without the right key, profile b's control included. */
-export const keyedRoutes = ["/v1/models", "/a/v1/models", "/b/v1/models", profileControlPath];
+/** Every route the Worker refuses without the right key, profile b's control and the send record included. */
+export const keyedRoutes = [
+  "/v1/models",
+  "/a/v1/models",
+  "/b/v1/models",
+  profileControlPath,
+  sendsPath,
+];
 const refusedCount = keyedRoutes.length * 2;
 
 const counts = (resources) =>
@@ -247,28 +275,68 @@ export function emulatedStage({
   }
 
   async function destroy() {
-    const { before, failures } = await api.destroy();
-    save("teardown", { before: counts(before), failures: failures.length });
+    const { before, failures, kept = [], gone = [], record } = await api.destroy();
+    // Closed values only: a kept entry's type is on kept-entries.mjs's list, its class one of two.
+    // The account proved each one in this run: refused as kept, and found again after.
+    const keptFacts = kept.map(({ type, class: refused }) => ({ type, class: refused }));
+    // Each repository whose every listed entry read 404 to the credential its list answered to.
+    const goneFacts = gone.map((row) => row.facts);
+    save("teardown", {
+      before: counts(before),
+      failures: failures.length,
+      kept: keptFacts,
+      listedWithoutManifest: goneFacts,
+      ...(record ? { record } : {}),
+    });
     summary(`- removed: ${api.describe(before) || "nothing was deployed"}`);
-    summary(
-      `- after teardown: no container application, Worker, Durable Object namespace or tagged image named ${prefix}-*`,
-    );
-    summary(
-      "- not checked: a registry manifest pushed by digest alone, never tagged (the registry lists only tags)",
-    );
+    if (keptFacts.length === 0)
+      summary(
+        `- after teardown: no container application, Worker, Durable Object namespace or tagged image named ${prefix}-*`,
+      );
+    else {
+      const classes = new Map();
+      for (const { type, class: refused } of keptFacts) {
+        const what = `${type}, delete refused ${refused}`;
+        classes.set(what, (classes.get(what) ?? 0) + 1);
+      }
+      summary(
+        `- after teardown: no container application, Worker, Durable Object namespace or tag named ${prefix}-* remains; ${keptFacts.length} ${keptFacts.length === 1 ? "entry is" : "entries are"} kept by the registry: ${[...classes].map(([what, count]) => `${count} × ${what}`).join("; ")}`,
+      );
+    }
+    if (goneFacts.length) {
+      const tags = goneFacts.reduce((sum, row) => sum + row.tags, 0);
+      const digests = goneFacts.reduce((sum, row) => sum + row.digests, 0);
+      summary(
+        `- listed without a manifest: ${tags} tags and ${digests} digest entries the registry's list still names, each read 404 by its own reference to the credential that list answered to`,
+      );
+    }
+    summary("- not checked: a manifest the registry's tag list does not name");
   }
 
   /** Destroys the stage once its lease has passed, or when a run left it without one. */
   async function expire() {
     const found = await api.inventory();
+    const facts = { found: api.counted(found), repositories: found.facts };
     if (api.empty(found)) {
+      save("expire", { outcome: "nothing", ...facts });
       summary(`- nothing named ${prefix}-* is deployed`);
       return "nothing";
+    }
+    // Nothing runs, and only the stage's own image repository is left: inert, and the next deploy
+    // pushes to it. A destroy now would only repeat a teardown its record already reports.
+    if (api.inert(found)) {
+      const left = api.repositoryLeft(found);
+      save("expire", { outcome: "repository-only", ...facts });
+      summary(
+        `- nothing named ${prefix}-* runs; only its own image repository is left (${left.entries} entries), which the next deploy pushes to`,
+      );
+      return "repository";
     }
     const deleteBy = found.scripts.some((row) => row.id === worker)
       ? await api.lease(worker)
       : undefined;
     if (deleteBy !== undefined && deleteBy > now()) {
+      save("expire", { outcome: "kept", ...facts });
       summary(`- lease ends ${new Date(deleteBy).toISOString()}; nothing to do`);
       return "kept";
     }
@@ -276,6 +344,7 @@ export function emulatedStage({
     summary(
       `- ${deleteBy === undefined ? "no lease" : `lease ended ${new Date(deleteBy).toISOString()}`}; destroying`,
     );
+    save("expire", { outcome: "destroying", ...facts });
     await destroy();
     return "destroyed";
   }
@@ -327,13 +396,29 @@ export function emulatedStage({
 
   async function deploy() {
     const existing = await api.inventory();
-    if (!api.empty(existing))
-      throw new StageError(
-        `The emulated upstream stage already exists (${api.describe(existing)}); run destroy first`,
+    // The stage exists when anything of it runs. Its own image repository alone is inert: the
+    // deploy pushes to that same repository.
+    if (!api.inert(existing))
+      throw Object.assign(
+        new StageError(
+          `The emulated upstream stage already exists (${api.describe(existing)}); run destroy first`,
+        ),
+        { record: Object.freeze({ found: api.counted(existing), repositories: existing.facts }) },
+      );
+    const left = api.repositoryLeft(existing);
+    if (left.repositories)
+      summary(
+        `- the stage's own image repository is left from an earlier run (${left.entries} entries); nothing runs, and the deploy pushes its image there`,
       );
     const deleteBy = now() + leaseHours * 60 * 60_000;
     // From here on a failed or cancelled run tears down what it may have created.
-    save("deploy-started", { stage, deleteBy: new Date(deleteBy).toISOString() });
+    save("deploy-started", {
+      stage,
+      deleteBy: new Date(deleteBy).toISOString(),
+      ...(left.repositories
+        ? { leftover: { found: api.counted(existing), repositories: existing.facts } }
+        : {}),
+    });
     deployEntry(deleteBy);
     await waitForMock();
     await check();
@@ -346,11 +431,16 @@ export function emulatedStage({
  * One run of the mode the environment names. Returns the exit code; prints only the guard's token
  * or this stage's own messages.
  */
-export async function main(env, { fetcher = fetch, now = Date.now, error = console.error, ...io }) {
+export async function main(
+  env,
+  { fetcher = fetch, now = Date.now, wait, error = console.error, ...io },
+) {
   const refused = guardRefusal(env, { credentialsLoaded: true });
   const mode = env.EMULATED_MODE ?? "";
   if (refused || !isMode(mode)) {
-    error(refused ?? "emulated_upstream_mode_expected_deploy_check_destroy_or_expire");
+    const token = refused ?? "emulated_upstream_mode_expected_deploy_check_destroy_or_expire";
+    error(token);
+    io.save?.(`stopped-${isMode(mode) ? mode : "run"}`, { guard: token });
     return 1;
   }
   try {
@@ -359,17 +449,34 @@ export async function main(env, { fetcher = fetch, now = Date.now, error = conso
       token: env.CLOUDFLARE_API_TOKEN,
       prefix,
       fetcher,
+      // A teardown's stage requests all end within its budget and before its job's own limit, so
+      // that limit never cuts one, whatever ran in the job before it.
+      ...(mode === "destroy" || mode === "expire"
+        ? { deadline: teardownDeadline(env, now()), now }
+        : {}),
+      ...(wait ? { wait } : {}),
     });
-    await emulatedStage({ api, key: env.EMULATED_UPSTREAM_KEY, fetcher, now, ...io })[mode]();
+    await emulatedStage({
+      api,
+      key: env.EMULATED_UPSTREAM_KEY,
+      fetcher,
+      now,
+      ...(wait ? { wait } : {}),
+      ...io,
+    })[mode]();
     return 0;
   } catch (caught) {
     error(publicMessage(caught));
-    // A stop of the account layer can carry a record of closed facts (tag-pages.mjs); it is kept
-    // before the run ends, per mode, so a teardown after a failed deploy keeps the deploy's.
-    if (isCloudflareApiError(caught) && Object.hasOwn(caught, "record")) {
-      io.summary?.(`- stop record: ${JSON.stringify(caught.record)}`);
-      io.save?.(`stopped-${mode}`, caught.record);
-    }
+    // Every stop leaves its file, per mode, so a teardown after a failed deploy keeps the deploy's.
+    // A stop of the account layer can carry a record of closed facts (tag-pages.mjs); any other
+    // error's own fields are never read, and its file says it had none.
+    const record =
+      (isCloudflareApiError(caught) || caught instanceof StageError) &&
+      Object.hasOwn(caught, "record")
+        ? caught.record
+        : undefined;
+    if (record !== undefined) io.summary?.(`- stop record: ${JSON.stringify(record)}`);
+    io.save?.(`stopped-${mode}`, record ?? { record: "none" });
     return 1;
   }
 }

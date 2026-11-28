@@ -18,6 +18,8 @@ export interface PoolStatus {
   /** The container's front layer is up and keeps resumable answers (#1642). */
   resume?: "v1";
   ready?: ReadySignals;
+  /** Home's count of token refreshes it started and hasn't written back; absent when unknown. */
+  refreshInFlight?: number;
 }
 
 /** A warm runtime lost readiness. The caller can retry after its protection recovers. */

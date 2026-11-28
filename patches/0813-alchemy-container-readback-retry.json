@@ -1,0 +1,11 @@
+{
+  "identity": "alchemy-container-readback-retry",
+  "file": "0813-alchemy-container-readback-retry.patch",
+  "content_sha256": "ce5c74aaa6be65ac2335471636c3d1fcb9b30cd0ea6bb7611151d17f7bd2189b",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "alchemy-dependency-upgrade",
+  "requires": "A pinned Alchemy release plans a just-created container application as an update while Cloudflare still reads it as not found; remove when the pinned release's Container diff waits out that window."
+}

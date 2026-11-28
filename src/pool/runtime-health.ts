@@ -62,6 +62,7 @@ function poolStatus(
   const tokenHash = response.headers.get(launchTokenHashHeader);
   const database = readinessDistance(status);
   const ready = readySignals(status);
+  const refreshing = refreshInFlight(status);
   return {
     boot_id: status.boot_id,
     started_at: status.started_at,
@@ -78,7 +79,25 @@ function poolStatus(
     ...(database ? { database } : {}),
     ...("resume" in status && status.resume === "v1" ? { resume: "v1" as const } : {}),
     ...(ready ? { ready } : {}),
+    ...(refreshing !== undefined ? { refreshInFlight: refreshing } : {}),
   };
+}
+
+/**
+ * Home's own count of refreshes in flight, which a container reports only while its reading is
+ * fresh and the root's image never does. Only a non-negative integer counts; anything else is
+ * unknown.
+ */
+export function refreshInFlight(body: unknown) {
+  if (typeof body !== "object" || body === null || !("refresh_in_flight" in body)) return undefined;
+  const count = body.refresh_in_flight;
+  return typeof count === "number" && Number.isSafeInteger(count) && count >= 0 ? count : undefined;
+}
+// Keeps the refusal's identity, as its ready signals do, so existing refusal handling is unchanged.
+const refusedRefresh = new WeakMap<object, number>();
+/** The refresh count a refused readiness answer reported, if it reported one. */
+export function refusalRefreshInFlight(error: unknown) {
+  return typeof error === "object" && error !== null ? refusedRefresh.get(error) : undefined;
 }
 
 /**
@@ -191,14 +210,19 @@ async function healthResponse(
       // Whatever the body does the refusal stays this refusal, and it waits at most refusalBodyMs
       // for the signals; the catch below cancels whatever is left of the body.
       let late: ReturnType<typeof setTimeout> | undefined;
-      const signals = await Promise.race([
-        body.then(readySignals, () => undefined),
+      const read = await Promise.race([
+        body.then(
+          (value) => ({ signals: readySignals(value), refreshing: refreshInFlight(value) }),
+          () => undefined,
+        ),
         new Promise<undefined>((resolve) => {
           late = setTimeout(resolve, refusalBodyMs, undefined);
         }),
       ]);
       clearTimeout(late);
-      throw withReadySignals(new PoolRuntimeUnhealthy(), signals);
+      const refusal = withReadySignals(new PoolRuntimeUnhealthy(), read?.signals);
+      if (read?.refreshing !== undefined) refusedRefresh.set(refusal, read.refreshing);
+      throw refusal;
     }
     const status = await body;
     return { response: received, status };

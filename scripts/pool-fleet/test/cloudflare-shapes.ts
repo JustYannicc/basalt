@@ -98,6 +98,17 @@ export const resolvedApplication = {
 
 export const envelope = (result: unknown) => ({ success: true, result, messages: [], errors: [] });
 
+/** An item of GET .../workers/scripts/{name}/deployments, the shape scripts/release reads. */
+export const workerDeployment = (createdOn: string) => ({
+  id: "<id>",
+  source: "api",
+  strategy: "percentage",
+  author_email: "someone@example.invalid",
+  annotations: { "workers/triggered_by": "deployment" },
+  versions: [{ version_id: "<id>", percentage: 100 }],
+  created_on: createdOn,
+});
+
 // The two container instance shapes production listed on 2026-11-22 under
 // GET .../containers/applications/{id}/instances-v2?state=active, ids, times and places replaced.
 

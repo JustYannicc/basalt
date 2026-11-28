@@ -1,5 +1,5 @@
 diff --git a/config.example.yaml b/config.example.yaml
-index 08651e46..fc127913 100644
+index 0fbb21d6..26f1af2e 100644
 --- a/config.example.yaml
 +++ b/config.example.yaml
 @@ -567,6 +567,12 @@ upstream:
@@ -91,22 +91,29 @@ index 77e37e73..3eb806d7 100644
  // when session-date-pin-days is not configured.
  const DefaultClaudeSessionDatePinDays = 7
 diff --git a/internal/config/config_yaml.go b/internal/config/config_yaml.go
-index 2a7ca46f..601bac9c 100644
+index 20359504..a5fef532 100644
 --- a/internal/config/config_yaml.go
 +++ b/internal/config/config_yaml.go
-@@ -469,7 +469,8 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
- 	}
- 
- 	// Pointer-backed booleans (such as cache-user-id, disable-cooling, and oauth-include-create-api-key): explicit values are meaningful and must be preserved.
--	if len(path) > 0 && (path[len(path)-1] == "cache-user-id" || path[len(path)-1] == "disable-cooling" || path[len(path)-1] == "oauth-include-create-api-key") && node != nil && node.Kind == yaml.ScalarNode && node.Tag == "!!bool" {
-+	// stream-bootstrap-hold defaults on, so an explicit false is its off switch.
-+	if len(path) > 0 && (path[len(path)-1] == "cache-user-id" || path[len(path)-1] == "disable-cooling" || path[len(path)-1] == "oauth-include-create-api-key" || path[len(path)-1] == "stream-bootstrap-hold") && node != nil && node.Kind == yaml.ScalarNode && node.Tag == "!!bool" {
+@@ -441,7 +441,7 @@ func isPreservedPointerBoolPath(path []string) bool {
  		return false
  	}
- 
-@@ -483,6 +484,9 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
- 		if scopeIdx := findMapKeyIndex(node, "oauth-include-create-api-key"); scopeIdx >= 0 {
- 			return false
+ 	switch path[len(path)-1] {
+-	case "cache-user-id", "disable-cooling", "oauth-include-create-api-key":
++	case "cache-user-id", "disable-cooling", "oauth-include-create-api-key", "stream-bootstrap-hold":
+ 		return true
+ 	case "openapi":
+ 		switch len(path) {
+@@ -503,6 +503,7 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
+ 	// oauth-include-create-api-key, openapi, interactions, and
+ 	// codex-api-key[].disable-codex-cloaking): explicit values are meaningful
+ 	// and must be preserved.
++	// stream-bootstrap-hold defaults on, so an explicit false is its off switch.
+ 	if isPreservedPointerBoolPath(path) && node != nil && node.Kind == yaml.ScalarNode && node.Tag == "!!bool" {
+ 		return false
+ 	}
+@@ -523,6 +524,9 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
+ 				return false
+ 			}
  		}
 +		if holdIdx := findMapKeyIndex(node, "stream-bootstrap-hold"); holdIdx >= 0 {
 +			return false
@@ -1980,10 +1987,10 @@ index 00000000..e96078e2
 +	}
 +}
 diff --git a/sdk/cliproxy/auth/conductor_execution.go b/sdk/cliproxy/auth/conductor_execution.go
-index 4ab432dc..cecf99c8 100644
+index f66124d2..357220ae 100644
 --- a/sdk/cliproxy/auth/conductor_execution.go
 +++ b/sdk/cliproxy/auth/conductor_execution.go
-@@ -1872,6 +1872,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+@@ -1877,6 +1877,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
  	homeSameAuthRetries := make(map[string]int)
  	lastHomeAuthID := ""
  	homeSameAuthRetryPending := false
@@ -1991,7 +1998,7 @@ index 4ab432dc..cecf99c8 100644
  	attempted := make(map[string]struct{})
  	lastAttemptedAuthID := ""
  	var lastErr error
-@@ -1911,6 +1912,15 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+@@ -1916,6 +1917,15 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
  		var errPick error
  		if homeMode {
  			selection, errPick = m.pickHomeDispatchSelection(ctx, routeModel, pickOpts)
@@ -2007,7 +2014,7 @@ index 4ab432dc..cecf99c8 100644
  			if selection != nil {
  				auth = selection.CloneAuthForRoute(routeModel)
  				executor = selection.Executor
-@@ -2057,7 +2067,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+@@ -2062,7 +2072,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
  				lastHomeAuthID = auth.ID
  				homeSameAuthRetryPending = false
  				releaseAttempt()
@@ -2016,7 +2023,7 @@ index 4ab432dc..cecf99c8 100644
  					return nil, errEnd
  				}
  			}
-@@ -2153,7 +2163,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+@@ -2160,7 +2170,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
  				roundTiming.Observe(errPrepare)
  			}
  			if selection != nil {
@@ -2025,7 +2032,7 @@ index 4ab432dc..cecf99c8 100644
  					return nil, errEnd
  				}
  			}
-@@ -2227,7 +2237,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+@@ -2225,7 +2235,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
  					lastHomeAuthID = auth.ID
  					homeSameAuthRetryPending = false
  					releaseAttempt()
@@ -2034,7 +2041,7 @@ index 4ab432dc..cecf99c8 100644
  						return nil, errEnd
  					}
  				}
-@@ -2260,7 +2270,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+@@ -2258,7 +2268,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
  			}
  			if selection != nil {
  				releaseAttempt()
@@ -2044,10 +2051,10 @@ index 4ab432dc..cecf99c8 100644
  				}
  			}
 diff --git a/sdk/cliproxy/auth/conductor_home.go b/sdk/cliproxy/auth/conductor_home.go
-index 42b739d7..efdddc8d 100644
+index 7c5ea418..2b4ca039 100644
 --- a/sdk/cliproxy/auth/conductor_home.go
 +++ b/sdk/cliproxy/auth/conductor_home.go
-@@ -609,7 +609,7 @@ func (m *Manager) retainedHomeSessionSelection(ctx context.Context, opts cliprox
+@@ -649,7 +649,7 @@ func (m *Manager) retainedHomeSessionSelection(ctx context.Context, opts cliprox
  	m.mu.Unlock()
  
  	for _, selection := range ended {
@@ -2056,7 +2063,7 @@ index 42b739d7..efdddc8d 100644
  			return nil, false, errWait
  		}
  	}
-@@ -676,24 +676,28 @@ func (m *Manager) endHomeSelectionBeforeRedispatch(ctx context.Context, selectio
+@@ -716,24 +716,28 @@ func (m *Manager) endHomeSelectionBeforeRedispatch(ctx context.Context, selectio
  		return nil
  	}
  
@@ -2094,7 +2101,7 @@ index 42b739d7..efdddc8d 100644
  	if m == nil || selection == nil || !selection.Retained() || !cliproxyexecutor.DownstreamWebsocket(ctx) {
  		return false
 diff --git a/sdk/cliproxy/auth/conductor_home_execution.go b/sdk/cliproxy/auth/conductor_home_execution.go
-index 400382c4..b77afa5c 100644
+index 64755687..a2d5b22d 100644
 --- a/sdk/cliproxy/auth/conductor_home_execution.go
 +++ b/sdk/cliproxy/auth/conductor_home_execution.go
 @@ -173,6 +173,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
@@ -2130,7 +2137,7 @@ index 400382c4..b77afa5c 100644
  				return cliproxyexecutor.Response{}, errEnd
  			}
  			noModelsErr := &Error{Code: "auth_not_found", Message: "no execution models available"}
-@@ -314,7 +324,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
+@@ -318,7 +328,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
  				selection.End("request_invalid")
  				return cliproxyexecutor.Response{}, errPrepare
  			}
