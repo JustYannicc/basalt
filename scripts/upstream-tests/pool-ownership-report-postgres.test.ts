@@ -340,7 +340,7 @@ test("an inventory whose own read fails names why and where, and the report stil
       // The report's line still comes last, and it is complete.
       assert.equal(lines.at(-1), line);
       assert.equal(line.complete, true);
-      assert.equal(line.counts.owned, 1);
+      assert.equal((line.counts as { owned: number }).owned, 1);
       return { reason: end.reason, failure: end.failure, section: end.section };
     };
     // A section over the inventory's own row cap.
