@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runPoolAcceptance } from "../pool-acceptance.ts";
+import { configFromEnvironment, runPoolAcceptance } from "../pool-acceptance.ts";
 import { PoolAcceptanceClient } from "./client.ts";
 import { observeRestart } from "./restart-observation.ts";
 
@@ -18,7 +18,9 @@ async function runFixture(options: { accounts?: string[]; unexpectedUsage?: bool
   const client = new PoolAcceptanceClient({
     origin: "https://fixture.invalid",
     now: () => now,
-    delay: async (ms) => { now += ms; },
+    delay: async (ms) => {
+      now += ms;
+    },
     usagePollWindowMs: 5_000,
     usagePollIntervalMs: 500,
     fetch: async (input, init) => {
@@ -26,16 +28,24 @@ async function runFixture(options: { accounts?: string[]; unexpectedUsage?: bool
       if (url.pathname === "/pool/v1/pool") {
         assert.equal(new Headers(init?.headers).get("authorization"), "Bearer pool-token-fixture");
         assert.equal(new Headers(init?.headers).get("x-signalbox-caller"), "acceptance");
-        return Response.json({ isOwner: true, accounts: (options.accounts ?? ["subscription-a", "subscription-b"]).map(id => ({ id })) });
+        return Response.json({
+          isOwner: true,
+          accounts: (options.accounts ?? ["subscription-a", "subscription-b"]).map((id) => ({
+            id,
+          })),
+        });
       }
       if (url.pathname === "/v1/models") {
         modelReads += 1;
         if (modelReads === 4) return new Response("rolling restart", { status: 503 });
         if (modelReads >= 3) now += 400;
         const boot = modelReads >= 5 ? "new-boot" : "old-boot";
-        return Response.json({ data: [{ id: model }] }, {
-          headers: { "X-Signalbox-Pool-Boot": boot },
-        });
+        return Response.json(
+          { data: [{ id: model }] },
+          {
+            headers: { "X-Signalbox-Pool-Boot": boot },
+          },
+        );
       }
       if (url.pathname === "/v1/chat/completions") {
         streamReads += 1;
@@ -47,12 +57,20 @@ async function runFixture(options: { accounts?: string[]; unexpectedUsage?: bool
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
         assert.equal(body.model, model);
         assert.equal(body.prompt_cache_key, undefined);
-        assert.deepEqual([...headers.keys()].sort(), ["accept", "authorization", "content-type", "x-session-id"]);
+        assert.deepEqual([...headers.keys()].sort(), [
+          "accept",
+          "authorization",
+          "content-type",
+          "x-session-id",
+        ]);
         assert.equal(body.stream, true);
         const turns = (sessionTurns.get(sessionId) ?? 0) + 1;
         sessionTurns.set(sessionId, turns);
         if (!sessionCredential.has(sessionId)) {
-          sessionCredential.set(sessionId, sessionCredential.size % 2 === 0 ? "subscription-a" : "subscription-b");
+          sessionCredential.set(
+            sessionId,
+            sessionCredential.size % 2 === 0 ? "subscription-a" : "subscription-b",
+          );
         }
         const wireBoot = streamReads === 8 ? "new-boot" : "old-boot";
         const event = `data: ${JSON.stringify({ choices: [{ delta: { content: "OK" } }] })}\n\ndata: [DONE]\n\n`;
@@ -95,33 +113,39 @@ async function runFixture(options: { accounts?: string[]; unexpectedUsage?: bool
     },
   });
 
-  await runPoolAcceptance({
-    apiKey: "acceptance-fixture",
-    poolAccess: { token: "pool-token-fixture", owner: "acceptance" },
-    mode: "full",
-    model,
-  }, {
-    client,
-    hooks: {
-      waitForIdle: async () => {
-        assert.equal(options.accounts?.length ?? 2, 2);
-        assert.equal(streamReads, 0);
-        return 3_600;
-      },
-      log: (message) => logs.push(message),
-      restart: (input) => observeRestart({
-        ...input,
-        options: {
-          ...input.options,
-          now: () => now,
-          delay: async (ms) => { now += ms; },
-          windowMs: 10_000,
-          pollDelayMs: 2_000,
-          probeTimeoutMs: 1_000,
-        },
-      }),
+  await runPoolAcceptance(
+    {
+      apiKey: "acceptance-fixture",
+      poolAccess: { token: "pool-token-fixture", owner: "acceptance" },
+      mode: "full",
+      model,
     },
-  });
+    {
+      client,
+      hooks: {
+        waitForIdle: async () => {
+          assert.equal(options.accounts?.length ?? 2, 2);
+          assert.equal(streamReads, 0);
+          return 3_600;
+        },
+        log: (message) => logs.push(message),
+        restart: (input) =>
+          observeRestart({
+            ...input,
+            options: {
+              ...input.options,
+              now: () => now,
+              delay: async (ms) => {
+                now += ms;
+              },
+              windowMs: 10_000,
+              pollDelayMs: 2_000,
+              probeTimeoutMs: 1_000,
+            },
+          }),
+      },
+    },
+  );
 
   return { modelReads, streamReads, usageReads, sessionTurns, logs };
 }
@@ -133,16 +157,50 @@ test("public runner uses wire session IDs, scoped records, and a changed boot wi
   assert.equal(usageReads.size, 5);
   assert.ok([...sessionTurns.values()].includes(2));
   assert.ok(logs.includes("usage_records status=200 matched=7 exact_session_filters=5"));
-  assert.ok(logs.includes("affinity status=passed repeated_conversations=2 new_conversations=2 subscriptions=2"));
+  assert.ok(
+    logs.includes(
+      "affinity status=passed repeated_conversations=2 new_conversations=2 subscriptions=2",
+    ),
+  );
   assert.ok(logs.some((line) => line.includes("deployment_assumption=otherwise_quiet")));
   assert.ok(logs.includes("acceptance status=passed mode=full"));
 });
 
-
 test("full acceptance rejects extra test-pool accounts before waiting or model turns", async () => {
-  await assert.rejects(runFixture({ accounts: ["subscription-a", "subscription-b", "subscription-c"] }), /exactly two distinct accounts/);
+  await assert.rejects(
+    runFixture({ accounts: ["subscription-a", "subscription-b", "subscription-c"] }),
+    /exactly two distinct accounts/,
+  );
 });
 
 test("full acceptance rejects two usage accounts that differ from the pool accounts", async () => {
   await assert.rejects(runFixture({ unexpectedUsage: true }), /outside the dedicated test pool/);
+});
+
+test("full mode signs an owner token only for a pool app's id, and refuses any other pool first", async () => {
+  const minted: unknown[] = [];
+  const mint = async (_key: string, claims: unknown) => {
+    minted.push(claims);
+    return "pool-token";
+  };
+  const env = (pool: string) => ({
+    POOL_ACCEPTANCE_KEY: "home-key-fixture",
+    POOL_ACCEPTANCE_TEST_KEY_CONFIRMED: "true",
+    POOL_ACCEPTANCE_MODE: "full",
+    POOL_ACCEPTANCE_POOL: pool,
+    POOL_APP_SIGNING_KEY: "ab".repeat(32),
+  });
+  // The old acceptance-<run> name, a person's pool named some other way, and none at all.
+  for (const pool of ["acceptance-run-7", "pool-of-a-person", "app_", " "])
+    await assert.rejects(
+      configFromEnvironment(env(pool), mint as never),
+      /test pool's app id/u,
+      pool,
+    );
+  assert.deepEqual(minted, [], "nothing is signed for a pool that is not a pool app");
+  const config = await configFromEnvironment(env("app_acceptance0load1"), mint as never);
+  assert.deepEqual(minted, [
+    { pool: "app_acceptance0load1", owner: "acceptance", organization: "acceptance" },
+  ]);
+  assert.deepEqual(config.poolAccess, { token: "pool-token", owner: "acceptance" });
 });

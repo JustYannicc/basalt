@@ -18,7 +18,7 @@ on:
         type: string
         default: ""
       pool:
-        description: Dedicated acceptance-<run> pool containing the two test subscriptions and scoped POOL_ACCEPTANCE_KEY; required for full mode
+        description: The test pool's app id (app_...) containing the two test subscriptions and scoped POOL_ACCEPTANCE_KEY; required for full mode
         required: false
         type: string
         default: ""
@@ -93,6 +93,10 @@ jobs:
     if: github.ref == 'refs/heads/main' && inputs.mode == 'load'
     runs-on: ubuntu-latest
     timeout-minutes: 150
+    # The test device's ids and the emulated upstream's origin and key are environment secrets here.
+    environment:
+      name: emulated-upstream
+      deployment: false
     steps:
       - name: Refuse every ref but main
         run: test "$GITHUB_REF" = refs/heads/main
@@ -121,9 +125,9 @@ jobs:
         run: node scripts/pool-acceptance.ts
         env:
           POOL_ACCEPTANCE_MODE: load
-          # Each call signs a fresh assertion for this registered device; the run refuses a device
-          # whose pool is not a dedicated acceptance pool, and never mints an owner token.
-          POOL_ACCEPTANCE_DEVICE: ${{ secrets.POOL_ACCEPTANCE_DEVICE }}
+          # Each call signs a fresh assertion for the test pool's device, of the acceptance identity;
+          # the release's device never reaches this job, and the run never mints an owner token.
+          POOL_ACCEPTANCE_TEST_DEVICE: ${{ secrets.POOL_ACCEPTANCE_TEST_DEVICE }}
           POOL_APP_SIGNING_KEY: ${{ secrets.POOL_APP_SIGNING_KEY }}
           POOL_APP_SIGNING_KEY_PREVIOUS: ${{ secrets.POOL_APP_SIGNING_KEY_PREVIOUS }}
           POOL_LOAD_GO: ${{ inputs.go }}
@@ -142,8 +146,8 @@ jobs:
           if [ -f "$SUMMARY" ]; then
             { echo '```'; cat "$SUMMARY"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           fi
-      # Every call record and the mock's send records: boots, request and trace ids, statuses and
-      # timings. No body text.
+      # Every call record and the mock's send records: runtimes by ordinal, request and trace ids,
+      # statuses and timings. No boot id, no body text.
       - uses: actions/upload-artifact@v4
         if: always()
         with:
