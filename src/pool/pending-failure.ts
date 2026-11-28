@@ -1,6 +1,10 @@
 import { Schema } from "effect";
 import { runtimeFailureDiagnostic, runtimeRouteDiagnostic } from "./runtime-route-diagnostic.ts";
-import { ProviderObservationRefused } from "./runtime-provider/read.ts";
+import {
+  ProviderObservationRefused,
+  type ObservationRead,
+  type ObservationRefusal,
+} from "./runtime-provider/read.ts";
 import { PoolDependencyFailure } from "./dependency-failure.ts";
 import { ControlFailure, poolFailureDiagnostic } from "./json.ts";
 import { RemoteRuntimeDefect } from "./runtime-slots/request-error.ts";
@@ -18,9 +22,32 @@ export function errorClass(error: unknown) {
   return error instanceof Error ? "Error" : "other";
 }
 
-/** A provider refusal's own closed code, which its class alone doesn't say. */
-export const providerFields = (error: unknown) =>
-  error instanceof ProviderObservationRefused ? { provider: error.code } : {};
+/** Each one is absent for any error but a provider refusal. */
+interface ProviderFields {
+  provider?: ProviderObservationRefused["code"];
+  read?: ObservationRead | null;
+  reason?: ObservationRefusal["reason"];
+  status?: number;
+  field?: Extract<ObservationRefusal, { field: unknown }>["field"];
+  state?: Extract<ObservationRefusal, { state: unknown }>["state"];
+}
+/**
+ * A provider refusal's own closed fields, which its class alone doesn't say: its code, the read it
+ * refused, and why, with the status, pin or sibling state behind that. Spread after a derived
+ * reason, its reason replaces one that for a provider refusal only ever says transport.
+ */
+export function providerFields(error: unknown): ProviderFields {
+  if (!(error instanceof ProviderObservationRefused)) return {};
+  const refusal = error.refusal;
+  return {
+    provider: error.code,
+    read: error.read ?? null,
+    reason: refusal.reason,
+    ...("status" in refusal ? { status: refusal.status } : {}),
+    ...("field" in refusal ? { field: refusal.field } : {}),
+    ...("state" in refusal ? { state: refusal.state } : {}),
+  };
+}
 
 /**
  * Closed fields for a line that reports a failed background pass, never the error's text: a pass

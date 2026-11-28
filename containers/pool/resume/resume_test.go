@@ -192,6 +192,7 @@ func TestResumeAfterTheReaderIsCutDeliversIdenticalBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = conn.Close()
+	x.waitDetached(id)
 	x.feeds.get(id).parts <- answer[3000:]
 	close(x.feeds.get(id).parts)
 	x.waitEnd(id, int64(len(answer)))
@@ -217,6 +218,9 @@ func TestResumeOfARunningAnswerFollowsTheUpstreamLive(t *testing.T) {
 	head := make([]byte, 5)
 	_, _ = io.ReadFull(resp.Body, head)
 	_ = conn.Close()
+	// The client can read the bytes before the layer counts them as sent; a resume from there
+	// before the count is gone. The layer has counted them once it has seen the reader go.
+	x.waitDetached(id)
 	resumed := x.resume(id, 5, testBoot)
 	if resumed.Header.Get(resumeStateHeader) != "live" {
 		t.Fatalf("state %q", resumed.Header.Get(resumeStateHeader))

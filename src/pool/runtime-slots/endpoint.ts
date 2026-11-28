@@ -61,6 +61,7 @@ import { admitRuntimeRestart, confirmedStopped } from "./restart-admission.ts";
 import { RuntimeForcedStop, stopGracefully } from "./forced-stop.ts";
 import { leakedStreamsMs } from "./forced-restart-timing.ts";
 import { RuntimeStartupStop } from "./startup-stop.ts";
+import { RuntimeAbandonedStop } from "./abandoned-stop.ts";
 import { endedForGood, lastContainerEnd, markStopSent } from "./container-end.ts";
 import type { StartupStopIntent } from "./startup-abort-contract.ts";
 
@@ -103,6 +104,7 @@ export class RuntimeEndpoint {
   private refusals = new RuntimeHealthRefusalLog();
   private maintenance: RuntimeMaintenance;
   private startupStop: RuntimeStartupStop;
+  private abandonedStop: RuntimeAbandonedStop;
   private modelLifetimes: RuntimeModelLifetimes;
   private leaseProofs = new Map<string, number>();
   private settleFailures = new Map<string, number>();
@@ -127,6 +129,7 @@ export class RuntimeEndpoint {
       role === "runtime" ? options.ownStorage : undefined,
     );
     this.startupStop = new RuntimeStartupStop(ctx, this.store);
+    this.abandonedStop = new RuntimeAbandonedStop(ctx, this.store, role);
     this.channel = new RuntimeChannel(ctx, env);
     this.activity = new RuntimeActivity(ctx.storage);
     this.maintenance = new RuntimeMaintenance({
@@ -144,7 +147,7 @@ export class RuntimeEndpoint {
       ctx,
       store: this.store,
       activity: this.activity,
-      health: (identity, signal) => this.health(identity, signal),
+      alive: (identity, signal) => this.alive(identity, signal),
       readiness: (configuration, signal) => this.channel.health(configuration, signal),
     });
   }
@@ -346,7 +349,32 @@ export class RuntimeEndpoint {
     this.bound(intent.target);
     return this.startupStop.inspect(intent);
   }
+  /**
+   * This boot's readiness answer, however late inside `signal`: the health read's identity checks
+   * without its lease window. A forced stop reads it to tell a slow runtime from a dead one.
+   */
+  private async alive(identity: SlotIdentity, signal: AbortSignal) {
+    this.bound(identity);
+    const { record, configuration } = await this.store.read(identity);
+    if (!sameIdentity(record.identity, identity)) throw new SlotRefused("identity");
+    const status = await this.channel.alive(configuration, signal);
+    this.identified(record, status);
+    return status;
+  }
   private checked(record: WitnessRecord, status: PoolStatus) {
+    this.identified(record, status);
+    if (!status.policyLeaseUntil || status.policyLeaseUntil <= performance.now())
+      throw new SlotRefused("unhealthy");
+    return {
+      identity: { ...record.authorization.target, bootId: status.boot_id },
+      leaseMs: Math.floor(status.policyLeaseUntil - performance.now()),
+      // The whole grant, so the caller counts its own send as the start and the read only once.
+      ...(status.policyLeaseMs ? { grantMs: status.policyLeaseMs } : {}),
+      ...(status.database ? { database: status.database } : {}),
+    };
+  }
+  /** The answer is this record's boot and launch, whatever its lease. */
+  private identified(record: WitnessRecord, status: PoolStatus) {
     if (record.identity && status.boot_id !== record.identity.bootId)
       throw new SlotRefused("identity");
     if (isLaunchAuthorization(record.authorization)) {
@@ -360,15 +388,6 @@ export class RuntimeEndpoint {
       )
         throw new SlotRefused("identity");
     }
-    if (!status.policyLeaseUntil || status.policyLeaseUntil <= performance.now())
-      throw new SlotRefused("unhealthy");
-    return {
-      identity: { ...record.authorization.target, bootId: status.boot_id },
-      leaseMs: Math.floor(status.policyLeaseUntil - performance.now()),
-      // The whole grant, so the caller counts its own send as the start and the read only once.
-      ...(status.policyLeaseMs ? { grantMs: status.policyLeaseMs } : {}),
-      ...(status.database ? { database: status.database } : {}),
-    };
   }
   private async complete(target: SlotTarget, signal: AbortSignal) {
     const { record, configuration } = await this.store.read(target);
@@ -579,12 +598,15 @@ export class RuntimeEndpoint {
   /**
    * Fences a fleet start its controller abandoned. Queued behind any start already running here, it
    * is durable before it answers, and from then on this slot is never admitted or started again, so
-   * a container it finds stopped can't come back.
+   * a container it finds stopped can't come back. With `stop`, a container that a first start which
+   * never attested left running is then stopped, once (`RuntimeAbandonedStop`).
    */
-  abandonStart(target: SlotTarget) {
+  abandonStart(target: SlotTarget, stop = false) {
     return this.serialize(async () => {
       this.bound(target);
       await this.store.abandon(target);
+      // Only behind the fence, which refuses every later start and attestation for this slot.
+      if (stop) await this.abandonedStop.stop(target);
       return { stopped: !this.ctx.container!.running };
     });
   }

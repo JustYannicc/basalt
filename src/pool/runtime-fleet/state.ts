@@ -188,11 +188,21 @@ export class RuntimeFleetState {
   async inspect(storage: SlotStorage = this.storage) {
     return this.rows(await storage.get(key));
   }
+  /** Every target that holds a physical place: each live row, and the root's own physical boots. */
+  private async physical(storage: SlotStorage) {
+    return [
+      ...(await this.inspect(storage))
+        .filter((row) => row.phase !== "retired")
+        .map((row) => row.target),
+      ...(await physicalPrimaryTargets(storage)),
+    ];
+  }
   async physicalCount(storage: SlotStorage = this.storage) {
-    return (
-      (await this.inspect(storage)).filter((row) => row.phase !== "retired").length +
-      (await physicalPrimaryTargets(storage)).length
-    );
+    return (await this.physical(storage)).length;
+  }
+  /** The instances whose places the ledger holds, each until its own absence is proven. */
+  async counted(storage: SlotStorage = this.storage) {
+    return new Set((await this.physical(storage)).map((target) => target.instanceId));
   }
   async replacements(storage: SlotStorage = this.storage) {
     const count = Schema.decodeUnknownSync(Count)((await storage.get(replacementKey)) ?? 0);
@@ -337,6 +347,7 @@ export class RuntimeFleetState {
     const identity = Schema.decodeUnknownSync(SlotIdentity)(value);
     return this.change(async (rows, transaction) => {
       const row = this.row(rows, identity);
+      // A quarantined row never becomes ready, so a start admitted after its bound fired is refused.
       if (
         !["warming", "uncertain", "ready"].includes(row.phase) ||
         (row.identity && !sameIdentity(row.identity, identity))

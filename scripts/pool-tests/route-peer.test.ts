@@ -528,8 +528,14 @@ test("routed credentials and sign-ins leave only through their route, refused ro
     assert.deepEqual(seen.tunnels, []);
 
     // Refused tunnel (I2 1008) and a gateway with its route down (I1 0x02): nothing reaches the provider.
+    // The node answers with its refusal, which names the listener, or, when its own retry has
+    // already cooled the credential down after the refused attempts, with auth_unavailable, which
+    // names no proxy. Either way every attempt went to the route and nothing was sent.
     const refusals: Record<string, string> = {};
-    for (const model of ["refused-model", "down-model"]) {
+    for (const [model, modelRoute] of [
+      ["refused-model", refused],
+      ["down-model", down],
+    ] as const) {
       await reset();
       const request = new Request(`${node}/v1/chat/completions`, { method: "POST" });
       const raw = await chat(model);
@@ -537,15 +543,29 @@ test("routed credentials and sign-ins leave only through their route, refused ro
       const body = await raw.text();
       const answer = await routeDownAnswer(request, new Response(body, { status: raw.status }));
       const shown = await answer.text();
-      refusals[model] = body.includes(routePeerAddress) ? "marker" : "no_marker";
+      const marker = body.includes(routePeerAddress);
+      const cooled = !marker && body.includes("auth_unavailable");
+      refusals[model] = marker ? "marker" : cooled ? "cooled" : "no_marker";
       assert.ok(!shown.includes(routePeerAddress) && !shown.includes("models.example.test"), shown);
-      // The rewrite is proven only if the node's text names the listener; it must.
-      assert.ok(body.includes(routePeerAddress), `${model}: the node's refusal changed shape`);
-      assert.equal(answer.headers.get("X-Signalbox-Route-Refused"), "route_down");
+      assert.ok(marker || cooled, `${model}: the node's refusal changed shape: ${body}`);
+      // The rewrite is proven only where the node's text names the listener.
+      if (marker) assert.equal(answer.headers.get("X-Signalbox-Route-Refused"), "route_down");
       seen = await records();
       assert.deepEqual(seen.provider, [], `${model} reached the provider`);
       assert.ok(!seen.dns.includes("models.example.test"), `${model} fell back to a direct lookup`);
+      // Its attempts went only to its own route, and the route refused each.
+      assert.ok(seen.tunnels.length > 0, `${model} never tried its route`);
+      assert.ok(
+        seen.tunnels.every((tunnel) => tunnel === modelRoute),
+        JSON.stringify(seen.tunnels),
+      );
+      assert.ok(
+        seen.connects.every((item) => item.route === modelRoute && item.refused),
+        JSON.stringify(seen.connects),
+      );
     }
+    // At least one answer is the node's own refusal, so the listener's text is proven to name it.
+    assert.ok(Object.values(refusals).includes("marker"), JSON.stringify(refusals));
 
     // Home refreshes an OAuth credential as soon as it holds it. The routed one's refresh reaches
     // the gateway as a CONNECT and is never looked up; the direct one's is a lookup (the control).

@@ -6,7 +6,9 @@ import type { RuntimeActivity } from "./activity.ts";
 import type { ControllerState } from "./runtime-state.ts";
 import type { RuntimeConfiguration } from "./configuration.ts";
 import type { PoolStatus } from "../lifecycle.ts";
+import { refusalRefreshInFlight } from "../runtime-health.ts";
 import {
+  aliveRefusingMs,
   exitConfirmationMs,
   forcedStopGraceMs,
   forcedStopsPerHour,
@@ -17,6 +19,9 @@ import {
 
 const stopsKey = "runtime-endpoint-v1:forced-stops";
 const Stops = Schema.Array(Schema.Number);
+/** When a stop first waited on a refresh in flight, for the boot it waited on. */
+const refreshWaitKey = "runtime-endpoint-v1:refresh-wait";
+const RefreshWait = Schema.Struct({ bootId: Schema.String, since: Schema.Number });
 const hourMs = 3_600_000;
 const pause = (milliseconds: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
@@ -26,19 +31,19 @@ export const runtimeStopTiming = {
   confirmExit: () => pause(exitConfirmationMs),
   /** How long SIGTERM gets before `destroy()`. */
   stopGrace: () => pause(forcedStopGraceMs),
-  /**
-   * Whether Home is mid token refresh. Images with carry 0695 report `refresh_in_flight` on
-   * readiness; the Worker doesn't read it yet.
-   */
-  refreshInFlight: async (): Promise<boolean> => false,
 };
+interface Liveness {
+  status?: PoolStatus;
+  askedAt: number;
+  refreshInFlight?: number;
+}
 type StopPath = "graceful_exit" | "destroy_after_grace" | "no_signal" | "stop_failed";
 interface Dependencies {
   ctx: ControllerState;
   store: RuntimeWitnessStore;
   activity: RuntimeActivity;
-  /** The endpoint's own health read; a runtime that answers it is serving and is never stopped. */
-  health(identity: SlotIdentity, signal: AbortSignal): Promise<unknown>;
+  /** The selected boot's readiness answer, however late inside `signal` (`RuntimeEndpoint.alive`). */
+  alive(identity: SlotIdentity, signal: AbortSignal): Promise<PoolStatus>;
   /** The container's readiness answer, whoever's boot it is. */
   readiness(configuration: RuntimeConfiguration, signal: AbortSignal): Promise<PoolStatus>;
 }
@@ -61,11 +66,12 @@ export class RuntimeForcedStop {
     if (!(await this.ownsRunningBoot(record, configuration, identity, signal)))
       throw new SlotRefused("identity");
     if (!container.running) return { stopped: true, hard: false };
-    if (await this.serving(identity, signal)) throw new SlotRefused("selection");
+    const answer = await this.liveness(identity, signal);
+    if (this.spared(identity, refusingSince, answer)) throw new SlotRefused("selection");
     const held = await this.heldBy(identity, refusingSince);
     if (held && Date.now() - held.stillSince < leakedStreamsMs)
       return { stopped: false, hard: false, waiting: held };
-    if (await runtimeStopTiming.refreshInFlight()) throw new SlotRefused("draining");
+    if (await this.refreshing(identity, answer.refreshInFlight)) throw new SlotRefused("draining");
     const now = Date.now();
     const recent = Schema.decodeUnknownSync(Stops)((await ctx.storage.get(stopsKey)) ?? []).filter(
       (at) => at > now - hourMs,
@@ -137,16 +143,68 @@ export class RuntimeForcedStop {
       return "stop_failed";
     }
   }
-  private async serving(identity: SlotIdentity, signal: AbortSignal) {
+  /**
+   * One readiness answer, however late inside `servingReadMs`. A refusal, another boot or no answer
+   * in time leaves no status; a refusal may still report Home's refreshes in flight.
+   */
+  private async liveness(identity: SlotIdentity, signal: AbortSignal): Promise<Liveness> {
+    const askedAt = performance.now();
+    let answer: Liveness;
     try {
-      await this.deps.health(
+      const status = await this.deps.alive(
         identity,
         AbortSignal.any([signal, AbortSignal.timeout(servingReadMs)]),
       );
-      return true;
-    } catch {
-      return false;
+      answer = {
+        status,
+        askedAt,
+        ...(status.refreshInFlight !== undefined
+          ? { refreshInFlight: status.refreshInFlight }
+          : {}),
+      };
+    } catch (error) {
+      const refreshInFlight = refusalRefreshInFlight(error);
+      answer = { askedAt, ...(refreshInFlight !== undefined ? { refreshInFlight } : {}) };
     }
+    // A caller that gave up has decided nothing; its stop isn't this read's.
+    signal.throwIfAborted();
+    return answer;
+  }
+  /**
+   * A runtime that answers ready in time to admit a call serves, and is never stopped. One that
+   * answers ready later, inside `servingReadMs`, is slow, not dead: its stop waits until it has
+   * refused for `aliveRefusingMs`. A refusal, another boot, or no answer in time is neither.
+   */
+  private spared(identity: SlotIdentity, refusingSince: number, { status, askedAt }: Liveness) {
+    if (!status) return false;
+    const serving = (status.policyLeaseUntil ?? 0) > performance.now();
+    const refusingMs = Date.now() - refusingSince;
+    if (!serving && refusingMs >= aliveRefusingMs) return false;
+    console.info(
+      "POOL_RUNTIME_STOP_SPARED",
+      JSON.stringify({
+        slot: identity.slotId,
+        serving,
+        answeredMs: Math.round(performance.now() - askedAt),
+        refusingMs,
+      }),
+    );
+    return true;
+  }
+  /**
+   * A stop waits while Home reports a refresh in flight, for at most one stop grace from the first
+   * such answer for this boot. SIGTERM still gives Home its drain, so a Home that always reports one
+   * is stopped then instead of never. The first wait is durable, so a replaced object counts from it.
+   */
+  private async refreshing(identity: SlotIdentity, count: number | undefined) {
+    if (count === undefined || count <= 0) return false;
+    const { storage } = this.deps.ctx;
+    const now = Date.now();
+    const stored = Schema.decodeUnknownOption(RefreshWait)(await storage.get(refreshWaitKey));
+    if (stored._tag === "Some" && stored.value.bootId === identity.bootId)
+      return now - stored.value.since < forcedStopGraceMs;
+    await storage.put(refreshWaitKey, { bootId: identity.bootId, since: now });
+    return true;
   }
 }
 

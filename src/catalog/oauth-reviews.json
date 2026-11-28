@@ -978,7 +978,8 @@
           "kind": "automatic",
           "protocol": "cimd",
           "metadata": "https://mcp.cloudflare.com/.well-known/oauth-authorization-server",
-          "metadataSha256": "d3d40fdfe4c2c544a49020b7469907eeb3c861276248be4dfec3f2dff86013ff"
+          "metadataSha256": "d3d40fdfe4c2c544a49020b7469907eeb3c861276248be4dfec3f2dff86013ff",
+          "scopeRequest": "issuer-list"
         }
       },
       "sourceSha256": "e8608e001491d8765449f0696ab1e5ddc5ce2f8daa225295e4e40370f309055f"
@@ -1502,7 +1503,7 @@
           "kind": "automatic",
           "protocol": "cimd",
           "metadata": "https://api.us.elevenlabs.io/.well-known/oauth-authorization-server",
-          "metadataSha256": "3fd293b754ff6af2006043e8f4f053769fb8223c57cc18e69ab4c057cbf32599"
+          "metadataSha256": "e0584bd446a34b5ffbc1974b1fcb245b25cb51580fc20aa3c47ef2ae34d9d271"
         }
       }
     },
@@ -1891,6 +1892,16 @@
         "oauth": {
           "kind": "deferred",
           "message": "Signalbox has not verified one-click sign-in for GetResponse yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "gitcafe",
+      "package": "@executor.sh/gitcafe",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for GitCafe yet. You can connect with your own OAuth app."
         }
       }
     },
@@ -4852,7 +4863,7 @@
           "kind": "automatic",
           "protocol": "cimd",
           "metadata": "https://vercel.com/.well-known/oauth-authorization-server",
-          "metadataSha256": "930d42443e3c1075b7fb53f9983e117d83c46e751365373fd7638c324cc4d4b6"
+          "metadataSha256": "f0f4dbdac6196a5bfc65f1e2a44013b606bafa4dddc4eda0530560423cbde68c"
         }
       }
     },

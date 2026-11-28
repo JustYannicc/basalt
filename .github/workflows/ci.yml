@@ -30,7 +30,13 @@ jobs:
       contents: read
       actions: write
       checks: read
-    runs-on: ubuntu-latest
+    # The light runners on the first attempt of a push to main (scripts/ci/light-lane.ts). It
+    # can't read its own output, so it repeats that rule over the variable; hosted otherwise.
+    runs-on: ${{ github.run_attempt == 1 && endsWith(vars.BASALT_CI_LIGHT_LABEL, '-light') && !contains(vars.BASALT_CI_LIGHT_LABEL, ' ') && !contains(vars.BASALT_CI_LIGHT_LABEL, ',') && github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.BASALT_CI_LIGHT_LABEL || 'ubuntu-latest' }}
+    # A light runner that hangs under it would hold main's Check for GitHub's 6 h default: past this,
+    # GitHub cancels the job and box-rerun re-runs main's Check hosted (scripts/ci/box-rerun.ts). The
+    # longest run of 26 Nov took 268 s.
+    timeout-minutes: 15
     outputs:
       reused: ${{ steps.reuse.outputs.reused }}
       evidence: ${{ steps.reuse.outputs.evidence }}
@@ -44,6 +50,11 @@ jobs:
       jobs: ${{ steps.reuse.outputs.reused == 'true' && '[]' || steps.jobs.outputs.jobs }}
       box_jobs: ${{ steps.reuse.outputs.reused == 'true' && '[]' || steps.jobs.outputs.box_jobs }}
       box_label: ${{ steps.jobs.outputs.box_label }}
+      # The light runners' labels, or empty for hosted: light_label for long-started and
+      # cpa-pipeline on main's push, check_label for the aggregate on main's and a batch's. Their
+      # step runs on every path, so a reused Check's later jobs take the light runners too.
+      light_label: ${{ steps.light.outputs.light_label }}
+      check_label: ${{ steps.light.outputs.check_label }}
       box_floor: ${{ steps.jobs.outputs.box_floor }}
       box_plan: ${{ steps.jobs.outputs.box_plan }}
       matrices: ${{ steps.jobs.outputs.matrices }}
@@ -62,6 +73,13 @@ jobs:
         run: node scripts/ci/reuse.ts
         env:
           GITHUB_TOKEN: ${{ github.token }}
+      # No reuse condition: a reused Check's later light jobs take the light runners too.
+      - name: Pick the light runners for this Check's seconds-long jobs
+        id: light
+        env:
+          LIGHT_LABEL: ${{ vars.BASALT_CI_LIGHT_LABEL }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+        run: node scripts/ci/light-lane.ts
       - uses: ./.github/actions/setup-bun
         if: steps.reuse.outputs.reused != 'true'
         with:
@@ -84,14 +102,17 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           base="$BASE_SHA"
-          if [ "$PULL_REQUEST" = true ] || [ "$BATCH_PUSH" = true ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+          if [ -n "${RECORDED_BASE:-}" ]; then
+            # A re-run whose select carried over compares with the commit select recorded.
+            base="$RECORDED_BASE"
+          elif [ "$PULL_REQUEST" = true ] || [ "$BATCH_PUSH" = true ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
             target="${BASE_REF:-main}"
             git fetch --no-tags origin "+refs/heads/$target:refs/remotes/origin/$target"
             base="$(git merge-base "$HEAD_SHA" "refs/remotes/origin/$target")"
           fi
           base="$(git rev-parse --verify "$base^{commit}")"
           echo "base_sha=$base" >> "$GITHUB_OUTPUT"
-      - name: Select the full suite, the jobs this change reaches, or the fast lane
+      - name: Select the full suite or the fast lane
         if: steps.reuse.outputs.reused != 'true'
         id: jobs
         env:
@@ -104,16 +125,14 @@ jobs:
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           GITHUB_TOKEN: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && github.token || '' }}
           FULL_SUITE: ${{ github.event_name != 'pull_request' || (startsWith(github.head_ref, 'batch/') && github.event.pull_request.head.repo.full_name != github.repository) || (!startsWith(github.head_ref, 'batch/') && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'release-update'))) }}
-          # This repository's pull requests run the jobs their changes reach. A batch branch's push
-          # already runs the full suite on the same head, and forks keep the fast lane.
-          AFFECTED_LANE: ${{ github.event.pull_request.head.repo.full_name == github.repository && !startsWith(github.head_ref, 'batch/') }}
           HEAD_BRANCH: ${{ github.head_ref }}
         run: |
           node scripts/ci/cancel-superseded.ts
+          # A pull request runs the fast lane unless it is labelled for the full suite: every one
+          # merges through a batch, whose push runs the full Check (2026-11-26: per-PR heavy jobs
+          # held about a third of the 40 hosted job slots while batches waited).
           if [ "$FULL_SUITE" = true ]; then
             node scripts/ci/select-jobs.ts --all
-          elif [ "$AFFECTED_LANE" = true ]; then
-            node scripts/ci/select-jobs.ts
           else
             node scripts/ci/select-jobs.ts --fast
           fi
@@ -180,13 +199,16 @@ jobs:
     needs: select
     if: needs.select.outputs.reused != 'true'
     permissions: {}
-    runs-on: ubuntu-latest
+    # A re-run reuses attempt 1's outputs, so it runs hosted.
+    runs-on: ${{ github.run_attempt == 1 && needs.select.outputs.light_label || 'ubuntu-latest' }}
     timeout-minutes: 2
     steps:
       - run: "true"
   cpa-pipeline:
     needs: select
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.run_attempt == 1 && needs.select.outputs.light_label || 'ubuntu-latest' }}
+    # Light job: see select's timeout. The longest run of 26 Nov took 234 s.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -679,8 +701,12 @@ jobs:
         uses: ./.github/actions/setup-browser
       - name: Verify the pool accounts-ready measurement contract
         run: node --test scripts/pool-ui-tests/accounts-ready.test.mjs scripts/pool-ui-tests/history-coverage.test.mjs scripts/pool-ui-tests/history-activity.test.mjs scripts/pool-ui-tests/history-backend.test.mjs
+      - name: Verify a default name that arrives in a focused field is replaced by typing
+        run: node --test scripts/pool-ui-tests/name-default-replaced.test.ts
       - name: Verify tool search and incomplete catalogs
         run: node --test scripts/pool-ui-tests/tool-router-failures.test.ts scripts/pool-ui-tests/tool-search.test.ts
+      - name: Verify a row menu's opening click chooses none of its items
+        run: node --test scripts/pool-ui-tests/account-row-menu.test.ts
       - name: Verify app query phase diagnostics
         working-directory: .upstream
         run: >-
@@ -1951,6 +1977,16 @@ jobs:
           name: dashboard-batch-profile
           path: ${{ runner.temp }}/dashboard-batch-profile
           if-no-files-found: warn
+      - name: Collect bounded E2E evidence
+        if: failure()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: dashboard-batch-e2e
+          path: ${{ runner.temp }}/basalt-e2e-evidence
+          include-hidden-files: true
+          if-no-files-found: warn
   aws-connectors:
     needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'aws-connectors')
@@ -2323,6 +2359,10 @@ jobs:
   fast:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # actions: read lets a re-run read whether select ran again in its attempt.
+    permissions:
+      actions: read
+      contents: read
     env:
       # Bytecode inside the pool context changes its reviewed publication identity.
       PYTHONDONTWRITEBYTECODE: "1"
@@ -2342,9 +2382,30 @@ jobs:
       - uses: ./.github/actions/desktop-release-assets
         with:
           warm: "true"
+      # A re-run that carries select over compares with the commit select recorded; main may have
+      # moved the merge-base since (scripts/ci/rerun-selection.ts). Only then is there a record to
+      # download, so other re-runs show no missing-artifact error.
+      - name: Check whether select carries over into this re-run
+        id: carried
+        if: github.run_attempt > 1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci/rerun-selection.ts
+      - name: Download the selection select recorded
+        if: github.run_attempt > 1 && steps.carried.outputs.carried == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-selection
+          path: ${{ runner.temp }}/ci-selection
+      - name: Take select's comparison commit
+        id: rerun
+        if: github.run_attempt > 1 && steps.carried.outputs.carried == 'true'
+        run: node scripts/ci/rerun-selection.ts base
       - name: Resolve the comparison commit
         id: comparison
         env:
+          RECORDED_BASE: ${{ steps.rerun.outputs.base_sha }}
           PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
           BASE_REF: ${{ github.base_ref || 'main' }}
           BATCH_PUSH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/batch/') }}
@@ -2352,13 +2413,22 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           base="$BASE_SHA"
-          if [ "$PULL_REQUEST" = true ] || [ "$BATCH_PUSH" = true ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+          if [ -n "${RECORDED_BASE:-}" ]; then
+            # A re-run whose select carried over compares with the commit select recorded.
+            base="$RECORDED_BASE"
+          elif [ "$PULL_REQUEST" = true ] || [ "$BATCH_PUSH" = true ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
             target="${BASE_REF:-main}"
             git fetch --no-tags origin "+refs/heads/$target:refs/remotes/origin/$target"
             base="$(git merge-base "$HEAD_SHA" "refs/remotes/origin/$target")"
           fi
           base="$(git rev-parse --verify "$base^{commit}")"
           echo "base_sha=$base" >> "$GITHUB_OUTPUT"
+      # First, so no earlier failure keeps it from reading what the push added.
+      - name: Refuse secrets and generated files in the new commits
+        env:
+          BASE_SHA: ${{ steps.comparison.outputs.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node scripts/check-git-secrets.ts
       - name: Check container Python names and imports
         run: |
           python3 -m venv "$RUNNER_TEMP/container-python-lint"
@@ -2373,7 +2443,6 @@ jobs:
           BASE_SHA: ${{ steps.comparison.outputs.base_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           FULL_SUITE: ${{ github.event_name != 'pull_request' || (startsWith(github.head_ref, 'batch/') && github.event.pull_request.head.repo.full_name != github.repository) || (!startsWith(github.head_ref, 'batch/') && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'release-update'))) }}
-          AFFECTED_LANE: ${{ github.event.pull_request.head.repo.full_name == github.repository && !startsWith(github.head_ref, 'batch/') }}
         run: node scripts/ci/lane.ts
       - name: Verify every adopted test declares its plan and CI job
         run: bun scripts/ci/check-plans.ts
@@ -2438,10 +2507,10 @@ jobs:
         run: |
           bun run --cwd .upstream patches:check
           bun run --cwd .upstream auth:security
-      # Specs whose plans name only this job run here: in the full suite, or when the lane's
-      # change reaches one of these configs. All four take about 20 seconds together.
+      # Specs whose plans name only this job run here, in every Check: all four take about half a
+      # minute inside a job that runs anyway, so a pull request's change to one fails on the pull
+      # request rather than in its batch.
       - name: Verify Cloud startup diagnostics and app listeners
-        if: steps.lane.outputs.full_suite == 'true' || steps.lane.outputs.fast_configs != '[]'
         working-directory: .upstream
         run: |
           bunx vitest run --config e2e/alchemy-dev-output.config.ts
@@ -2498,6 +2567,26 @@ jobs:
       - name: Typecheck the patched upstream the way upstream checks itself
         if: steps.lane.outputs.full_suite == 'true'
         run: npm run typecheck:upstream
+      # Every Check builds the budgeted Workers here, after framework:build above, so a pull request
+      # learns what it added before a release fails on a budget. About 20 seconds on a laptop.
+      - name: Restore the comparison commit's Worker upload sizes
+        uses: ./.github/actions/worker-upload-base
+        with:
+          mode: restore
+          base: ${{ steps.comparison.outputs.base_sha }}
+      - name: Build every budgeted Worker as the deploy does
+        id: worker-build
+        run: node scripts/worker-build.ts --base .generated/worker-uploads-base
+      - name: Fail a Worker left under its upload floor
+        run: node scripts/worker-floors.ts --base .generated/worker-uploads-base
+      # After the floor check, which reads the base from the same path, and even when it failed: a
+      # main commit under a floor must still leave its sizes, or every later change would compare
+      # with nothing and fail as if it had grown the Worker.
+      - name: Keep main's Worker upload sizes for later changes to compare with
+        if: ${{ !cancelled() && steps.worker-build.outcome == 'success' }}
+        uses: ./.github/actions/worker-upload-base
+        with:
+          mode: save
 
   # The owned unit tests fast's lane selects, split by scripts/ci/unit-tests.ts into one leg per
   # matrix row: each test file runs in exactly one leg. The suite took 6.8 of fast's 12.9 hosted
@@ -2505,6 +2594,10 @@ jobs:
   fast-units:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # actions: read lets a re-run read whether select ran again in its attempt.
+    permissions:
+      actions: read
+      contents: read
     env:
       PYTHONDONTWRITEBYTECODE: "1"
     # One output per leg: a matrix job's legs merge outputs by name (unitLegs in scripts/ci/gate.ts).
@@ -2525,9 +2618,27 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Check whether select carries over into this re-run
+        id: carried
+        if: github.run_attempt > 1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci/rerun-selection.ts
+      - name: Download the selection select recorded
+        if: github.run_attempt > 1 && steps.carried.outputs.carried == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-selection
+          path: ${{ runner.temp }}/ci-selection
+      - name: Take select's comparison commit
+        id: rerun
+        if: github.run_attempt > 1 && steps.carried.outputs.carried == 'true'
+        run: node scripts/ci/rerun-selection.ts base
       - name: Resolve the comparison commit
         id: comparison
         env:
+          RECORDED_BASE: ${{ steps.rerun.outputs.base_sha }}
           PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
           BASE_REF: ${{ github.base_ref || 'main' }}
           BATCH_PUSH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/batch/') }}
@@ -2535,7 +2646,10 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           base="$BASE_SHA"
-          if [ "$PULL_REQUEST" = true ] || [ "$BATCH_PUSH" = true ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+          if [ -n "${RECORDED_BASE:-}" ]; then
+            # A re-run whose select carried over compares with the commit select recorded.
+            base="$RECORDED_BASE"
+          elif [ "$PULL_REQUEST" = true ] || [ "$BATCH_PUSH" = true ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
             target="${BASE_REF:-main}"
             git fetch --no-tags origin "+refs/heads/$target:refs/remotes/origin/$target"
             base="$(git merge-base "$HEAD_SHA" "refs/remotes/origin/$target")"
@@ -2549,7 +2663,6 @@ jobs:
           BASE_SHA: ${{ steps.comparison.outputs.base_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           FULL_SUITE: ${{ github.event_name != 'pull_request' || (startsWith(github.head_ref, 'batch/') && github.event.pull_request.head.repo.full_name != github.repository) || (!startsWith(github.head_ref, 'batch/') && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'release-update'))) }}
-          AFFECTED_LANE: ${{ github.event.pull_request.head.repo.full_name == github.repository && !startsWith(github.head_ref, 'batch/') }}
         run: node scripts/ci/lane.ts
       - name: Run focused owned unit tests
         timeout-minutes: 15
@@ -2642,6 +2755,8 @@ jobs:
         run: |
           sudo iptables -I INPUT 1 -i docker0 -p tcp -j ACCEPT
           sudo iptables -I INPUT 1 -i br+ -p tcp -j ACCEPT
+      - name: Verify the container-to-host probe's time limit and failures
+        run: node --test scripts/ci/check-docker-host.test.mjs
       - name: Verify containers can reach the host fixture listeners
         run: node scripts/ci/check-docker-host.mjs basalt-1409-pool:test
       - name: Start the isolated transaction pooler
@@ -2889,7 +3004,16 @@ jobs:
     outputs:
       reused_run_id: ${{ steps.gate.outputs.reused_run_id }}
       reused_head_sha: ${{ steps.gate.outputs.reused_head_sha }}
-    runs-on: ubuntu-latest
+    # The light runners on the first attempt of main's or a batch's push (scripts/ci/light-lane.ts).
+    # always() starts it after a cancel too; with a need cancelled it runs hosted, so a run a down
+    # box held still ends and can be re-run.
+    runs-on: ${{ github.run_attempt == 1 && !contains(needs.*.result, 'cancelled') && needs.select.outputs.check_label || 'ubuntu-latest' }}
+    # A light runner that hangs under it would hold the Check for GitHub's 6 h default. 25, not 15:
+    # its own steps may take 17 minutes on a full Check (the flake note, the retry-count artifact
+    # steps); the gate itself took 25 s at most on 26 Nov. A batch's on a light runner gets 3, so a
+    # hang costs the batch minutes: main's took 30 s on a light runner, a batch's 11 s hosted. Past
+    # it the Check ends cancelled, and box-rerun re-runs it hosted (scripts/ci/box-rerun.ts).
+    timeout-minutes: ${{ github.run_attempt == 1 && !contains(needs.*.result, 'cancelled') && needs.select.outputs.check_label && startsWith(github.ref, 'refs/heads/batch/') && 3 || 25 }}
     # actions: read lets a re-run attempt find the flake-rerun.yml run that started it.
     permissions:
       actions: read
@@ -3083,6 +3207,9 @@ jobs:
         run: bun run e2e:prepare
       - name: Install Chromium for the account tests
         uses: ./.github/actions/setup-browser
+      - name: Prove a released query hold leaves no request unanswered
+        working-directory: .upstream
+        run: bunx vitest run --config e2e/query-hold.config.ts
       - name: Verify account usage rows and cells
         working-directory: .upstream
         run: >-

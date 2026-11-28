@@ -10,6 +10,7 @@ import {
   jobName,
   latestStart,
   watchDecision,
+  watchedJob,
   type Planned,
   type WatchedJob,
 } from "./ci/box-watch.ts";
@@ -135,6 +136,138 @@ test("a second-wave job behind this Check's own running box jobs is never cut of
   assert.deepEqual(stalled.verdict.stuck, [3]);
 });
 
+test("a box job GitHub cancelled with no runner, while the run goes on, gets the run cancelled for box-rerun", () => {
+  // Handed to a runner in the seconds it went offline, it waited for that runner until GitHub
+  // cancelled it, about 13 minutes on: even a second-wave job behind this Check's own running ones.
+  const lost = job({ id: 2, status: "completed", lost: true, cancelled: true });
+  const jobs = [
+    job({ id: 1, status: "in_progress" }),
+    lost,
+    job({ id: 3, onBox: false, status: "in_progress" }),
+  ];
+  const planned = { "job-1": first, "job-2": { minutes: 4, wave: 2 } as Planned };
+  // A box job of this Check still queued is left out of the verdict: it may have started since.
+  const queued = job({ id: 4 });
+  const decision = watch([...jobs, queued], 3, 0, { ...planned, "job-4": first });
+  assert.ok(decision.action === "cancel");
+  assert.deepEqual(decision.verdict.stuck, [2]);
+  assert.deepEqual(decision.verdict.cutOff, [1, 3]);
+  // box-rerun takes that verdict: its stuck job never got a runner.
+  assert.deepEqual(
+    rerunDecision(
+      { id: 7, attempt: 1, conclusion: "cancelled" },
+      JSON.stringify(decision.verdict),
+      [
+        {
+          id: 1,
+          name: "job-1",
+          conclusion: "cancelled",
+          labels: ["basalt-box"],
+          runnerName: "b-3",
+        },
+        { id: 2, name: "job-2", conclusion: "cancelled", labels: ["basalt-box"], runnerName: "" },
+        {
+          id: 3,
+          name: "job-3",
+          conclusion: "cancelled",
+          labels: ["ubuntu-latest"],
+          runnerName: "h",
+        },
+      ],
+      "basalt-box",
+    ),
+    { action: "rerun", stuck: [2] },
+  );
+  // A cancel of the whole run cancels hosted jobs too: that one was a person's, and box-watch,
+  // cancelled with it, leaves it.
+  const all = [
+    job({ id: 1, status: "completed", cancelled: true }),
+    lost,
+    job({ id: 3, onBox: false, status: "completed", cancelled: true }),
+  ];
+  assert.notEqual(watch(all, 3, 0, planned).action, "cancel");
+  // A box job that ran and was then cancelled is not lost.
+  const ran = [
+    job({ id: 1, status: "in_progress" }),
+    job({ id: 2, status: "completed", cancelled: true }),
+  ];
+  assert.notEqual(watch(ran, 3, 0, planned).action, "cancel");
+});
+
+test("a box job GitHub cancelled before any runner took it reads as lost, from its live shape", () => {
+  // Run 44984450320's declared-cloud-11 (22 Nov): handed to a runner as it went offline, cancelled
+  // by GitHub 13 minutes later, never started.
+  const lost = {
+    id: 137092036033,
+    name: "declared-cloud-11",
+    status: "completed",
+    conclusion: "cancelled",
+    runner_id: 0,
+    runner_name: "",
+    labels: ["basalt-box"],
+    created_at: "2026-11-22T04:19:08Z",
+    started_at: "2026-11-22T04:19:08Z",
+    completed_at: "2026-11-22T04:32:04Z",
+  };
+  assert.deepEqual(watchedJob(lost, "basalt-box"), {
+    id: 137092036033,
+    name: "declared-cloud-11",
+    status: "completed",
+    onBox: true,
+    createdAt: Date.parse("2026-11-22T04:19:08Z"),
+    lost: true,
+    cancelled: true,
+    ran: false,
+  });
+  // One that ran and was cancelled has a runner, and isn't lost.
+  assert.equal(
+    watchedJob({ ...lost, runner_id: 3, runner_name: "basalt-box-3" }, "basalt-box").lost,
+    false,
+  );
+  // Nor is one that ended any other way.
+  assert.equal(watchedJob({ ...lost, conclusion: "failure" }, "basalt-box").lost, false);
+});
+
+test("a box job shown in progress before GitHub names its runner keeps box-watch watching, unnamed", () => {
+  // Read from GitHub, an in-progress job with no runner has not started on any runner.
+  const unseated = watchedJob(
+    { id: 5, name: "job-5", status: "in_progress", runner_name: "", labels: ["basalt-box"] },
+    "basalt-box",
+  );
+  // It keeps box-watch from finishing, but no verdict names it: it may have been taken.
+  assert.deepEqual(watch([unseated], 60), { action: "wait" });
+  assert.equal(watch([unseated], 60, 60).action, "wait");
+  const seated = watchedJob(
+    {
+      id: 5,
+      name: "job-5",
+      status: "in_progress",
+      runner_name: "basalt-box-3",
+      labels: ["basalt-box"],
+    },
+    "basalt-box",
+  );
+  assert.deepEqual(watch([seated], 60), { action: "done" });
+});
+
+test("a job waiting for a saturated hosted queue waits behind this Check's box jobs, then by that queue's wait", () => {
+  // Planned because hosted jobs were waiting 17 minutes for a runner.
+  const planned = { "job-1": first, "job-2": { minutes: 6, wave: 2, by: 17 } as Planned };
+  assert.equal(latestStart(planned["job-2"], 20), 17 + holdingMinutes);
+  // Behind this Check's own running box job it waits, however long: cancelling the run then would
+  // restart every job it runs.
+  const behind = [job({ id: 1, status: "in_progress" }), job({ id: 2 })];
+  assert.deepEqual(watch(behind, 60, 0, planned), { action: "wait" });
+  // Once none of them runs, it must start within that wait plus the margin, or the run is cancelled
+  // and box-rerun re-runs it hosted.
+  const alone = [job({ id: 1, status: "completed" }), job({ id: 2 })];
+  assert.deepEqual(watch(alone, 21.9, 0, planned), { action: "wait" });
+  const late = watch(alone, 22, 0, planned);
+  assert.ok(late.action === "cancel");
+  assert.equal(late.verdict.reason, "held-past-deadline");
+  assert.deepEqual(late.verdict.stuck, [2]);
+});
+
 test("each job's deadline counts from when GitHub queued it, not from select", () => {
   // The jobs a box job needs took ten minutes to get a hosted runner: its clock starts then.
   const queued = start + 10 * minute;
@@ -182,7 +315,8 @@ const decide = (text: string | undefined, list = jobs, at = run) =>
   rerunDecision(at, text, list, "basalt-box");
 
 test("box-rerun acts only on box-watch's own verdict for that very run's first attempt", () => {
-  // A Check a person cancelled, or a superseded run force-cancelled: no verdict, nothing happens.
+  // A Check a person cancelled, or a superseded run force-cancelled: no verdict and no light job
+  // held, nothing happens.
   assert.equal(decide(undefined).action, "none");
   for (const text of [
     "",
@@ -297,19 +431,24 @@ test("box-watch watches a routed first attempt, keeps its verdict before it canc
   assert.ok(conditionalJobs.includes("box-watch"));
 });
 
-test("box-rerun runs the default branch's file after a cancelled Check, with nothing but its script", () => {
+test("box-rerun runs the default branch's file after a cancelled Check or a failed main or batch push, with nothing but its script", () => {
   const rerun = read(".github/workflows/box-rerun.yml");
   assert.deepEqual(rerun.on, { workflow_run: { workflows: ["Check"], types: ["completed"] } });
   assert.deepEqual(rerun.permissions, {});
   const job = rerun.jobs.rerun;
-  // Only this repository's own first attempt: a fork's or a re-run's cancel never acts.
+  // Only this repository's own first attempt: a fork's or a re-run's cancel never acts, and a
+  // failure only on main's or a batch's push, the light lane's users.
   assert.equal(
     job.if,
-    "github.event.workflow_run.conclusion == 'cancelled' && " +
+    "(github.event.workflow_run.conclusion == 'cancelled' || " +
+      "(github.event.workflow_run.conclusion == 'failure' && " +
+      "github.event.workflow_run.event == 'push' && " +
+      "(github.event.workflow_run.head_branch == 'main' || " +
+      "startsWith(github.event.workflow_run.head_branch, 'batch/')))) && " +
       "github.event.workflow_run.run_attempt == 1 && " +
       "github.event.workflow_run.head_repository.full_name == github.repository",
   );
-  assert.deepEqual(job.permissions, { actions: "write", contents: "read" });
+  assert.deepEqual(job.permissions, { actions: "write", checks: "read", contents: "read" });
   const download = job.steps.find((step: { uses?: string }) =>
     step.uses?.startsWith("actions/download-artifact"),
   );

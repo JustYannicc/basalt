@@ -25,7 +25,7 @@ test("bulk storage uses one precheck and never rechecks rows it inserted", async
       assert.deepEqual(await insertBulkRequests(measured, incoming), expected);
       assert.equal(calls.length, queries);
       assert.equal(calls.filter(({ text }) => text.includes("AS conflict")).length, 1);
-      const insert = calls.find(({ text }) => text.startsWith("INSERT"));
+      const insert = calls.find(({ text }) => text.includes("INSERT INTO basalt_model_requests"));
       if (insert) assert.equal(JSON.parse(String(insert.values![0])).length, expected.inserted);
     }
   });

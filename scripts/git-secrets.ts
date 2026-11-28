@@ -3,6 +3,18 @@ import { execFileSync } from "node:child_process";
 const secretName = /(?:^|_)(?:KEY|SECRET|TOKEN|PASSWORD|CREDENTIALS?)(?:_|$)/i;
 const measurementPath = /(?:^|\/)cloud\/(?:scripts|\.local)\/basalt-worker-sizes\.ts$/;
 const carriedPath = /^diff --git a\/(\S+) b\/(\S+)$/gm;
+/**
+ * The only dot-directories the repository tracks, each at the root. Any other one, a dot-directory
+ * inside these included, holds a tool's local state, and once pushed to a public repository it
+ * stays in history, so a file under it is refused here.
+ */
+const trackedDotDirectories = [".github/"];
+const dotDirectory = /(?:^|\/)\.[^/]+\//;
+const untrackedDotPath = (file: string) =>
+  dotDirectory.test(file) &&
+  !trackedDotDirectories.some(
+    (tracked) => file.startsWith(tracked) && !dotDirectory.test(file.slice(tracked.length)),
+  );
 
 interface Finding {
   readonly file: string;
@@ -30,6 +42,8 @@ export function checkGitSecrets(input: {
     if (/^0+$/.test(oid)) return;
     if (measurementPath.test(file))
       findings.push({ file, source, reason: "generated Worker measurement file" });
+    if (untrackedDotPath(file))
+      findings.push({ file, source, reason: "file under a dot-directory other than .github" });
     let reasons = inspected.get(oid);
     if (reasons === undefined) {
       const content = git(["cat-file", "blob", oid]);
@@ -54,8 +68,9 @@ export function checkGitSecrets(input: {
   };
   inspectDiff(["diff", "--cached", "--raw", "--no-abbrev", "--no-renames", "-z"], "staged");
   const head = input.head || "HEAD";
-  if (input.base) {
-    const commits = git(["rev-list", "--reverse", `${input.base}..${head}`])
+  const base = input.base || pushBase(input.root);
+  if (base) {
+    const commits = git(["rev-list", "--reverse", `${base}..${head}`])
       .toString("utf8")
       .trim()
       .split("\n")
@@ -85,6 +100,29 @@ export function checkGitSecrets(input: {
     }
   }
   return findings;
+}
+
+/**
+ * The base for a run that was given none, as a local preflight is: origin/main itself, so the run
+ * reads exactly the commits a push would add, one whose file a later commit removed included. A
+ * merge base would read more on a branch with several. With no origin/main there is none, and the
+ * check reads the whole tree instead.
+ */
+function pushBase(root: string) {
+  try {
+    const base = execFileSync(
+      "git",
+      ["rev-parse", "--verify", "-q", "refs/remotes/origin/main^{commit}"],
+      {
+        cwd: root,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    ).trim();
+    return base || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export const gitSecretReport = (findings: readonly Finding[]) =>

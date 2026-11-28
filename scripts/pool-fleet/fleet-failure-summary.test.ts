@@ -37,15 +37,26 @@ const refused = {
   // A key no decoder writes, as a row from a damaged store could hold: it never prints.
   ready: {
     lastLapse: { step: "plugin_probe", ms: 2_100, at: signalledAt, note: "planted-row-text" },
+    lastStall: {
+      lateMs: 1_640,
+      cpuMs: 2,
+      stealMs: 0,
+      throttledMs: 1_210,
+      cpus: 2,
+      at: signalledAt,
+    },
     lapses: 4,
+    stalls: 3,
   },
 };
 // What the lane prints for it: every field, null where the read had none.
 const printedReady = {
   lastLapse: { step: "plugin_probe", ms: 2_100, at: signalledAt },
   lastFlip: null,
+  lastStall: { lateMs: 1_640, cpuMs: 2, stealMs: 0, throttledMs: 1_210, cpus: 2, at: signalledAt },
   lapses: 4,
   flips: null,
+  stalls: 3,
 };
 const { ready: _signals, ...unsignalled } = refused;
 const timeout = { ...unsignalled, at: refused.at + 6_000, cause: "timeout", roundTripMs: 2_001 };

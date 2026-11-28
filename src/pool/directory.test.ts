@@ -322,6 +322,26 @@ test("native pool deletion stays denied after setup tombstones expire", async ()
   assert.equal((await f.context(member)).status, 403);
 });
 
+test("deleting a native pool removes its bound computers and revokes their Home keys", async () => {
+  const f = fixture();
+  assert.equal(
+    (
+      await f.access({
+        action: "audience",
+        pools: [{ ...pool, authorization: "executor-app-v1", managers: [owner] }],
+      })
+    ).status,
+    200,
+  );
+  await f.create();
+  assert.equal(f.server.keys.length, 1);
+  // The directory acts on the deletion alone, so a pool whose membership is still reserved and
+  // unconfirmed loses its computers too.
+  assert.equal((await f.access({ action: "pool-deleted", pool: pool.pool })).status, 200);
+  assert.equal(f.server.keys.length, 0);
+  assert.equal((await f.context(member)).status, 403);
+});
+
 test("native managers set caps only with use access and demotion survives restart", async () => {
   const writes: unknown[][] = [];
   const f = fixture({
