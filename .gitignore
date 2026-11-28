@@ -9,6 +9,7 @@ node_modules
 !.env.example
 .DS_Store
 .t3/
+.wrangler/
 
 /scripts/architecture/gen/
 # Copied from the pinned tools service when the pool app is bundled.
@@ -33,3 +34,7 @@ clients/mobile/dist-ios/
 clients/mobile/dist-android/
 
 scripts/scale-test/sources.generated.ts
+
+# Python bytecode from local test runs.
+__pycache__/
+*.pyc

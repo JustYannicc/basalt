@@ -24,6 +24,7 @@ import { verifyNativeDisplay } from "./native-display.mjs";
 import { verifyNativeApps } from "./native-apps.mjs";
 import { verifyNativeSearch } from "./native-search.mjs";
 import { verifyNativeLocalHeaders } from "./native-local-headers.mjs";
+import { verifyNativeStatelessTools } from "./native-stateless-tools.mjs";
 import { proofSigningKey, setupIntentFor } from "./native-intent.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -204,6 +205,7 @@ const program = Effect.gen(function* () {
       } finally {
         await client.close();
       }
+      const statelessTools = await verifyNativeStatelessTools({ origin, headers });
       const socket = new WebSocket(origin.replace("http:", "ws:") + "/v1/responses", { headers });
       await once(socket, "open");
       for (const [value, binary] of [
@@ -276,6 +278,7 @@ const program = Effect.gen(function* () {
         modelSearch,
         localModelHeaders,
         tunneledBackpressure: backpressure,
+        statelessTools,
         syntheticModelAndPrivatePoolPeers: true,
         shortenedExternalLifetimeHint: true,
         credentialStorage: storage,

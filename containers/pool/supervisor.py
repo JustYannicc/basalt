@@ -16,6 +16,7 @@ from typing import Any
 
 from .home_identity import HomeIdentity
 from .home_peer import HomePeers
+from .route_peer import RoutePeers
 from .child_signals import (
     NativePolicyFuseParser,
     NativePolicyProbeParser,
@@ -26,7 +27,7 @@ from .child_signals import (
 )
 from .output import OUTPUT, emit
 from .crash_tail import MAX_INPUT_CHARS, HomeCrashTail
-from .policy_monitor import PolicyHealthMonitor
+from .policy_monitor import FirstReady, PolicyHealthMonitor
 from .pool_contract import (
     ROOT,
     StartupError,
@@ -359,6 +360,7 @@ def main(stop: threading.Event | None = None) -> int:
     readiness = None
     policy_monitor_thread = None
     home_peers = None
+    route_peers = None
     resume: ResumeLayer | None = None
     stop = threading.Event() if stop is None else stop
     original_signals: dict[int, Any] = {}
@@ -384,6 +386,7 @@ def main(stop: threading.Event | None = None) -> int:
         )
         ready_server = start_ready_server(readiness)
         policy_monitor = PolicyHealthMonitor(readiness, management_key)
+        first_ready = FirstReady(readiness)
         policy_monitor_thread = threading.Thread(
             target=policy_monitor.run,
             args=(stop,),
@@ -404,6 +407,13 @@ def main(stop: threading.Event | None = None) -> int:
         if home_identity.ordinal is not None:
             home_peers = HomePeers(home_identity.ordinal)
             home_peers.start()
+        # Routed credentials reach their route only through this loopback listener. Without it
+        # their tunnels are refused anyway, so it never fails the boot.
+        try:
+            route_peers = RoutePeers()
+            route_peers.start()
+        except OSError:
+            route_peers = None
 
         def startup_failure() -> str | None:
             if not selected:
@@ -530,8 +540,12 @@ def main(stop: threading.Event | None = None) -> int:
                         raise StartupError("Policy fused during recovery")
                     audit_revision = readiness.service_audit_revision()
                     services_ready = check_services(management_key, node_id)
-                    readiness.set_ready(services_ready, audit_revision=audit_revision)
-                    if services_ready and readiness.snapshot()[0]:
+                    # The process's first ready waits until the supervisor is scheduled on time.
+                    if first_ready.set_ready(
+                        services_ready,
+                        audit_revision=audit_revision,
+                        remaining_s=deadline - time.monotonic(),
+                    ):
                         successful_audit_revision = audit_revision
                         break
                     stop.wait(operation_timeout(0.5))
@@ -676,6 +690,8 @@ def main(stop: threading.Event | None = None) -> int:
         stop.set()
         if home_peers is not None:
             home_peers.close()
+        if route_peers is not None:
+            route_peers.close()
         if not recovery_cleanup_done and policy_monitor_thread is not None:
             policy_monitor_thread.join(timeout=1)
         try:

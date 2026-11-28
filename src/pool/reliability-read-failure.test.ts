@@ -21,6 +21,14 @@ function idlePool(fail?: (text: string) => unknown) {
       const failure = fail?.(text);
       if (failure) throw failure;
       if (text.includes("FROM selected")) return { rows: [], rowCount: 0 };
+      // Nothing waits past the capture cursor.
+      if (reliabilityStep(text) === "lagging")
+        return {
+          rows: [
+            { pending: "0", overdue: "0", scanned: "0", bound_overdue: false, oldest_at: null },
+          ],
+          rowCount: 1,
+        };
       return {
         rows: [
           {

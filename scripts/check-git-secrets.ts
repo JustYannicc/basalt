@@ -11,5 +11,5 @@ if (findings.length) {
   console.error(gitSecretReport(findings));
   process.exitCode = 1;
 } else {
-  console.log("Git secret and generated-file check passed.");
+  console.log("Git secret, generated-file and dot-directory check passed.");
 }

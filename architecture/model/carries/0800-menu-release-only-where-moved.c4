@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "A dropdown menu item is chosen by a pointer's release or click only when that pointer pressed the item or travelled more than ten pixels from the press that opened the menu, as Radix's Select does. Radix chooses an item released over without a press, which keeps press, drag and release working, but a menu opening under a pointer that has not moved can slide its first item beneath it during the opening animation, and the same click or tap would then choose that item and close the menu. Keyboard choices, a click or tap on an item, press, drag and release, and menus opened without a pointer are unchanged, and nothing about the menu's look changes."
+    }
+  }
+}

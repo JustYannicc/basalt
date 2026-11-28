@@ -266,7 +266,7 @@ model {
   containerRegistry = adapter "Container registry" {
     #external
     technology "Docker Hub · Google's Docker Hub mirror · Cloudflare"
-    metadata { hosts "registry-1.docker.io|mirror.gcr.io|registry.cloudflare.com" }
+    metadata { hosts "registry-1.docker.io|mirror.gcr.io|registry.cloudflare.com|ghcr.io" }
   }
   packageSource = adapter "Package source" {
     #external

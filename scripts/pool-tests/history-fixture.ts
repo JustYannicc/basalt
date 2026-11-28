@@ -19,7 +19,7 @@ export async function homeMetadataFixture(db: HistoryDatabase) {
     await db.query(`CREATE TABLE billing_charge (id text,usage_id bigint,amount numeric,matched_price_rule text,
       price_snapshot jsonb,api_key_id bigint,user_id bigint)`);
     await db.query(
-      "CREATE TABLE api_key (id bigint,diagnostic_fingerprint text,user_id bigint,display_name text)",
+      "CREATE TABLE api_key (id bigint,diagnostic_fingerprint text,user_id bigint,display_name text,created_at timestamptz DEFAULT now(),deleted_at timestamptz)",
     );
     await db.query('CREATE TABLE "user" (id bigint,username text)');
     await db.query(

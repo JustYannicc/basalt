@@ -121,6 +121,11 @@ export type ActiveJobs = {
   boxJobs?: readonly string[];
   /** Other Checks that started selecting before this one and may still place box jobs. */
   selecting?: number;
+  /**
+   * Minutes a hosted job now waits for a runner: the median wait of other Checks' Linux hosted jobs
+   * that started in the last 10 minutes, or 0 with fewer than 3 of them.
+   */
+  hostedWait?: number;
 };
 export type BoxObserver = { heartbeat(): Promise<Heartbeat>; active(): Promise<ActiveJobs> };
 export type BoxInput = {
@@ -208,23 +213,48 @@ export const waveSlowdown = boxSlowdown;
 export const fullCheckFloor = 20;
 /** At most this many jobs per free slot, counted over all slots: some start at once, the rest wait. */
 export const boxWaves = 2;
+/**
+ * The hosted queue counts as saturated once Linux hosted jobs that started in the last few minutes
+ * waited this long for a runner, at the median. Unsaturated, a hosted job starts within about a
+ * minute (select waited 2–80 s on 25 Nov), so five minutes means every hosted runner is busy.
+ */
+export const saturatedWait = 5;
+/** The hosted wait is read from jobs that started this recently, and needs this many of them. */
+const recentStart = 10 * 60_000;
+const waitSamples = 3;
+
+/** What the box offers one Check beyond its free slots. */
+export type BoxRoom = {
+  /** The CI memory left for this Check's box jobs. */
+  memoryGiB?: number;
+  /** Minutes a hosted job now waits for a runner (the recent median), or 0. */
+  hostedWait?: number;
+};
 
 /**
  * Box jobs for `free` slots, longest first. Each free slot takes a job at once; a second wave waits
  * on the box for whichever slot frees first, but only when it still ends by `floor` minutes at the
- * keep rule's pace. The box starts a waiting job only when its own budget has room for it.
+ * keep rule's pace, or, while the hosted queue is saturated, when the box starts it no later than a
+ * hosted runner would (its `by`, the hosted queue's measured wait). The box starts a waiting job
+ * only when its own budget has room for it.
  */
 export function planBox(
   shards: readonly BoxShard[],
   free: number,
   floor: number,
-  memoryGiB = Number.POSITIVE_INFINITY,
+  room: BoxRoom = {},
 ) {
+  const { memoryGiB = Number.POSITIVE_INFINITY } = room;
+  // Whole minutes, the same figure box-watch is handed as the bound.
+  const hostedWait = Math.floor(room.hostedWait ?? 0);
+  // Like the floor rule, a saturated queue lets jobs wait only on a known plan with a floor: a
+  // Check without the box's own heartbeat runner (floor 0) takes no waiting row.
+  const saturated = floor > 0 && hostedWait >= saturatedWait;
   const slots: number[] = Array.from({ length: Math.max(0, free) }, () => 0);
   // The box starts a waiting job as soon as its own budget has room, not when a slot frees, so
   // every planned job may run at once: together they fit the memory.
   let memory = 0;
-  const planned: { id: string; minutes: number; wave: 1 | 2 }[] = [];
+  const planned: { id: string; minutes: number; wave: 1 | 2; by?: number }[] = [];
   const fitting = shards
     .filter(fitsTimeout)
     .sort((a, b) => b.minutes - a.minutes || (a.id < b.id ? -1 : 1));
@@ -233,13 +263,20 @@ export function planBox(
     const slot = slots.indexOf(Math.min(...slots));
     const start = slots[slot]!;
     const end = start + shard.minutes * waveSlowdown;
-    // A waiting job is taken only on a known plan: no planned minutes or no floor runs it hosted.
-    if (start > 0 && !(shard.minutes > 0 && end <= floor)) continue;
+    // A waiting job is taken only on a known plan: no planned minutes runs it hosted.
+    const byFloor = shard.minutes > 0 && end <= floor;
+    const byQueue = saturated && shard.minutes > 0 && start <= hostedWait;
+    if (start > 0 && !byFloor && !byQueue) continue;
     const price = memoryPrice(shard.id);
     if (memory + price > memoryGiB) continue;
     memory += price;
     slots[slot] = end;
-    planned.push({ id: shard.id, minutes: shard.minutes, wave: start > 0 ? 2 : 1 });
+    planned.push({
+      id: shard.id,
+      minutes: shard.minutes,
+      wave: start > 0 ? 2 : 1,
+      ...(start > 0 && !byFloor ? { by: hostedWait } : {}),
+    });
   }
   return planned;
 }
@@ -349,7 +386,7 @@ export async function routeBox(
 ) {
   const none = (why: string) => ({
     jobs: [] as string[],
-    plan: {} as Record<string, { minutes: number; wave: 1 | 2 }>,
+    plan: {} as Record<string, { minutes: number; wave: 1 | 2; by?: number }>,
     label: "",
     floor: 0,
     summary: `Box routing: every job runs hosted, because ${why}.`,
@@ -397,7 +434,8 @@ export async function routeBox(
     const ownRunner =
       heartbeatRunnerLabel(input.heartbeatLabel) !== "" &&
       input.heartbeatLabel?.toLowerCase() !== settings.label.toLowerCase();
-    const planned = planBox(plan.shards, free, ownRunner ? floor : 0, memoryGiB);
+    const hostedWait = active.hostedWait ?? 0;
+    const planned = planBox(plan.shards, free, ownRunner ? floor : 0, { memoryGiB, hostedWait });
     if (!planned.length)
       return none(
         plan.shards.some(fitsTimeout)
@@ -406,14 +444,27 @@ export async function routeBox(
       );
     const jobs = planned.map((job) => job.id);
     const waiting = planned.filter((job) => job.wave === 2).length;
+    const queued = planned.filter((job) => job.by !== undefined).length;
     const hosted = plan.shards.length - jobs.length;
-    const wave = waiting
-      ? `; ${waiting} of these jobs wait on the box for a slot that frees by the ${floor.toFixed(0)}-minute floor`
-      : "";
+    const byFloor = waiting - queued;
+    const wave = [
+      byFloor
+        ? `${byFloor} wait on the box for a slot that frees by the ${floor.toFixed(0)}-minute floor`
+        : "",
+      queued
+        ? `${queued} wait on the box because the hosted queue is saturated (hosted jobs now wait ${Math.floor(hostedWait)} minutes for a runner), each to start within that`
+        : "",
+    ]
+      .filter(Boolean)
+      .map((text) => `; of these jobs, ${text}`)
+      .join("");
     return {
       jobs,
       plan: Object.fromEntries(
-        planned.map((job) => [job.id, { minutes: job.minutes, wave: job.wave }]),
+        planned.map((job) => [
+          job.id,
+          { minutes: job.minutes, wave: job.wave, ...(job.by === undefined ? {} : { by: job.by }) },
+        ]),
       ),
       label: settings.label,
       floor,
@@ -502,6 +553,8 @@ export function githubObserver(
     heartbeatRunnerLabel(heartbeatLabel) !== "" &&
     Array.isArray(job.labels) &&
     job.labels.some((label) => String(label).toLowerCase() === heartbeatLabel);
+  const onUbuntu = (job: Record<string, unknown>) =>
+    Array.isArray(job.labels) && job.labels.some((label) => /^ubuntu-/i.test(String(label)));
   const onBox = (job: Record<string, unknown>) =>
     Array.isArray(job.labels) &&
     job.labels.some((label) => String(label).toLowerCase() === boxLabel);
@@ -557,6 +610,8 @@ export function githubObserver(
     boxJobs: string[];
     selecting: boolean;
     unsettled: boolean;
+    /** How long its Linux hosted jobs that started recently waited for a runner, in minutes. */
+    waits: number[];
   };
   let shares: Map<number, Share> | undefined;
   const share = async (
@@ -564,8 +619,20 @@ export function githubObserver(
     run: Record<string, unknown>,
     jobs: Record<string, unknown>[],
   ): Promise<Share> => {
-    const held: Share = { run, hosted: 0, boxJobs: [], selecting: false, unsettled: false };
+    const held: Share = {
+      run,
+      hosted: 0,
+      boxJobs: [],
+      selecting: false,
+      unsettled: false,
+      waits: [],
+    };
     for (const job of jobs) {
+      // The wait a hosted job really had: only Linux runners, which the box stands in for, and
+      // only starts recent enough to say what a job queued now would get.
+      const startedAt = Date.parse(String(job.started_at));
+      if (onUbuntu(job) && now() - startedAt <= recentStart && runner(job) === "hosted")
+        held.waits.push(Math.max(0, startedAt - Date.parse(String(job.created_at))) / 60_000);
       if (job.status !== "queued" && job.status !== "in_progress") continue;
       const kind = runner(job);
       if (kind === "box") held.boxJobs.push(String(job.name));
@@ -679,11 +746,15 @@ export function githubObserver(
       }
       const all = [...shares.values()];
       const boxJobs = all.flatMap((held) => held.boxJobs);
+      // The hosted queue's wait, measured from the job lists already read: no further call.
+      const waits = all.flatMap((held) => held.waits).sort((a, b) => a - b);
+      const median = waits.length >= waitSamples ? waits[Math.floor(waits.length / 2)]! : 0;
       return {
         hosted: all.reduce((sum, held) => sum + held.hosted, 0),
         box: boxJobs.length,
         boxJobs,
         selecting: all.filter((held) => held.selecting).length,
+        hostedWait: Number.isFinite(median) ? median : 0,
       };
     },
   };

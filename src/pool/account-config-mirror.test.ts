@@ -7,6 +7,7 @@ import {
   accountMirrorPrefix,
 } from "./account-key-mirror.ts";
 import { signEnvelope } from "./token.ts";
+import { mirrorHomeConfig, readHomeConfigProxies } from "./account-config-mirror.ts";
 
 const signingKey = "ab".repeat(32);
 const first = "12345678-abcd-4000-8000-000000000001";
@@ -196,4 +197,46 @@ test("default normalization still refuses changed IDs, keys, endpoints, proxies 
     const f = homeExportFixture("codex", changed);
     assert.equal((await invoke(f.home, first, "upsert", f.config)).status, 503);
   }
+});
+
+test("a claude key at a custom address must name its models, or Home would serve real Claude names", async () => {
+  const f = homeExportFixture("claude");
+  const gateway = { "base-url": "https://gateway.example.test" };
+  for (const group of [gateway, { ...gateway, models: [] }]) {
+    assert.equal((await invoke(f.home, first, "upsert", { ...f.config, group })).status, 503);
+  }
+  assert.equal(f.writes(), 0);
+  const named = { ...gateway, models: [{ name: "emulated-model", alias: "emulated-model" }] };
+  assert.equal((await invoke(f.home, first, "upsert", { ...f.config, group: named })).status, 200);
+  assert.equal(f.writes(), 1);
+});
+
+test("a routed custom endpoint key is written with its route like any other key; an unnamed one is refused routed too", async () => {
+  // Answers each family's read from what was written to it, as Home's config store does.
+  const stored = new Map<string, unknown[]>();
+  let writes = 0;
+  const home = new HomeClient(async (path, init) => {
+    const family = path.replace("/v8/management/config/api-keys/", "");
+    if (init?.method === "PUT") {
+      writes++;
+      stored.set(family, JSON.parse(String(init.body)));
+      return Response.json({ status: "ok" });
+    }
+    return Response.json(stored.get(family) ?? []);
+  });
+  const route = "socks5://rt_routed@127.0.0.1:20990";
+  const config = { type: "config", family: "claude", token: "synthetic-key" };
+  const gateway = { "base-url": "https://gateway.example.test" };
+  const signal = () => AbortSignal.timeout(5_000);
+  await assert.rejects(
+    mirrorHomeConfig(home, first, "upsert", { ...config, group: gateway }, signal(), route),
+  );
+  assert.equal(writes, 0);
+  const named = { ...gateway, models: [{ name: "emulated-model", alias: "emulated-model" }] };
+  await mirrorHomeConfig(home, first, "upsert", { ...config, group: named }, signal(), route);
+  assert.equal(writes, 1);
+  assert.deepEqual((await readHomeConfigProxies(home, signal())).get(first), {
+    family: "claude",
+    proxy: route,
+  });
 });

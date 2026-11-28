@@ -1,0 +1,207 @@
+diff --git a/packages/ui/src/implementation/components/dropdown-menu.tsx b/packages/ui/src/implementation/components/dropdown-menu.tsx
+--- a/packages/ui/src/implementation/components/dropdown-menu.tsx
++++ b/packages/ui/src/implementation/components/dropdown-menu.tsx
+@@ -6,9 +6,68 @@
+ import { ArrowRight01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+ import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
+ 
++interface Point {
++  readonly x: number;
++  readonly y: number;
++}
++/**
++ * Where the pointer pressed to open this menu, and where that same pointer lifted when the button
++ * received its release (a touch's release goes to the element it pressed). Its items read both.
++ */
++interface OpeningPressRecord {
++  readonly record: (pointer: number, touch: boolean, x: number, y: number) => void;
++  readonly release: (pointer: number, x: number, y: number) => void;
++  /** The opening gesture is over: a new press started inside the open menu. */
++  readonly end: () => void;
++  readonly at: () => Point | null;
++  readonly released: () => Point | null;
++}
++const OpeningPress = React.createContext<OpeningPressRecord | null>(null);
++
+ /** Dropdown Menu primitive; accepts native props and composes caller styles. */
+-function DropdownMenu({ ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
+-  return <DropdownMenuPrimitive.Root data-slot="dropdown-menu" {...props} />;
++function DropdownMenu({
++  onOpenChange,
++  ...props
++}: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
++  const press = React.useRef<{
++    pointer: number;
++    touch: boolean;
++    at: Point;
++    released: Point | null;
++  } | null>(null);
++  const opening = React.useMemo<OpeningPressRecord>(
++    () => ({
++      record: (pointer, touch, x, y) => {
++        press.current = { pointer, touch, at: { x, y }, released: null };
++      },
++      release: (pointer, x, y) => {
++        if (press.current?.pointer === pointer) press.current.released = { x, y };
++      },
++      end: () => {
++        press.current = null;
++      },
++      at: () => press.current?.at ?? null,
++      // A touch whose release the button never received is measured from where it pressed.
++      released: () =>
++        press.current === null
++          ? null
++          : (press.current.released ?? (press.current.touch ? press.current.at : null)),
++    }),
++    [],
++  );
++  return (
++    <OpeningPress.Provider value={opening}>
++      <DropdownMenuPrimitive.Root
++        data-slot="dropdown-menu"
++        onOpenChange={(open) => {
++          // A press belongs to the opening it caused; a later opening from the keyboard has none.
++          if (!open) press.current = null;
++          onOpenChange?.(open);
++        }}
++        {...props}
++      />
++    </OpeningPress.Provider>
++  );
+ }
+ 
+ /** Dropdown Menu Portal primitive; accepts native props and composes caller styles. */
+@@ -20,22 +79,52 @@
+ 
+ /** Dropdown Menu Trigger primitive; accepts native props and composes caller styles. */
+ function DropdownMenuTrigger({
++  onPointerDown,
++  onPointerUp,
+   ...props
+ }: React.ComponentProps<typeof DropdownMenuPrimitive.Trigger>) {
+-  return <DropdownMenuPrimitive.Trigger data-slot="dropdown-menu-trigger" {...props} />;
++  const opening = React.useContext(OpeningPress);
++  return (
++    <DropdownMenuPrimitive.Trigger
++      data-slot="dropdown-menu-trigger"
++      onPointerDown={(event) => {
++        // The presses Radix opens a menu on.
++        if (event.button === 0 && !event.ctrlKey)
++          opening?.record(
++            event.pointerId,
++            event.pointerType === "touch",
++            event.clientX,
++            event.clientY,
++          );
++        onPointerDown?.(event);
++      }}
++      onPointerUp={(event) => {
++        opening?.release(event.pointerId, event.clientX, event.clientY);
++        onPointerUp?.(event);
++      }}
++      {...props}
++    />
++  );
+ }
+ 
+ /** Dropdown Menu Content primitive; accepts native props and composes caller styles. */
+ function DropdownMenuContent({
+   className,
+   sideOffset = 4,
++  onPointerDownCapture,
+   ...props
+ }: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
++  const opening = React.useContext(OpeningPress);
+   return (
+     <DropdownMenuPrimitive.Portal>
+       <DropdownMenuPrimitive.Content
+         data-slot="dropdown-menu-content"
+         sideOffset={sideOffset}
++        onPointerDownCapture={(event) => {
++          // A new press inside the open menu starts its own gesture; the opening one is over.
++          opening?.end();
++          onPointerDownCapture?.(event);
++        }}
+         className={cn(
+           "z-50 max-h-(--radix-dropdown-menu-content-available-height) min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
+           className,
+@@ -49,6 +138,54 @@
+ /** Dropdown Menu Group primitive; accepts native props and composes caller styles. */
+ function DropdownMenuGroup({ ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.Group>) {
+   return <DropdownMenuPrimitive.Group data-slot="dropdown-menu-group" {...props} />;
++}
++
++/** How far the pointer must travel from the press that opened a menu before a release counts. */
++const releaseTravel = 10;
++
++/**
++ * Radix chooses an item that a pointer is released over without having pressed it, so pressing the
++ * button, dragging and releasing works. While the menu opens, though, its first item can slide
++ * under a pointer that has not moved, and the same press would choose it: through Radix on release,
++ * or through the click a touch sends to what lies under it. So a pointer's release or click chooses
++ * an item only if the item itself was pressed or the pointer left the opening press, as Radix's
++ * Select does. Keyboard clicks carry no click count, and a menu no pointer opened records no press.
++ *
++ * A tap's click is measured from where the finger lifted, not from the click's own point: touch
++ * adjustment moves a tap's click onto a nearby item, so its coordinates can sit past the travel
++ * limit while the finger barely moved.
++ */
++function useReleaseAfterTravel<E extends Element>({
++  onPointerDown,
++  onPointerUp,
++  onClickCapture,
++}: Pick<React.DOMAttributes<E>, "onPointerDown" | "onPointerUp" | "onClickCapture">) {
++  const opening = React.useContext(OpeningPress);
++  const pressedHere = React.useRef(false);
++  const atOpeningPress = (point: Point) => {
++    const start = opening?.at();
++    return (
++      !pressedHere.current &&
++      start != null &&
++      Math.hypot(point.x - start.x, point.y - start.y) <= releaseTravel
++    );
++  };
++  return {
++    onPointerDown: (event: React.PointerEvent<E>) => {
++      pressedHere.current = true;
++      onPointerDown?.(event);
++    },
++    onPointerUp: (event: React.PointerEvent<E>) => {
++      onPointerUp?.(event);
++      if (atOpeningPress({ x: event.clientX, y: event.clientY })) event.preventDefault();
++    },
++    // Captured, so an item rendered as a link sees the refusal before its own click handler.
++    onClickCapture: (event: React.MouseEvent<E>) => {
++      onClickCapture?.(event);
++      const lifted = opening?.released() ?? { x: event.clientX, y: event.clientY };
++      if (event.detail !== 0 && atOpeningPress(lifted)) event.preventDefault();
++    },
++  };
+ }
+ 
+ /** Dropdown Menu Item primitive; accepts native props and composes caller styles. */
+@@ -71,6 +208,7 @@
+         className,
+       )}
+       {...props}
++      {...useReleaseAfterTravel(props)}
+     />
+   );
+ }
+@@ -89,6 +227,7 @@
+         className,
+       )}
+       {...props}
++      {...useReleaseAfterTravel(props)}
+     >
+       <span
+         data-slot="dropdown-menu-item-indicator"
+@@ -124,6 +263,7 @@
+         className,
+       )}
+       {...props}
++      {...useReleaseAfterTravel(props)}
+     >
+       <span
+         data-slot="dropdown-menu-item-indicator"

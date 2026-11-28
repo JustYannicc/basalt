@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { runPoolFleet, type DispatchInput } from "./dispatch.ts";
 import { controllerSettleMs } from "./operations.ts";
+import { fakeClock } from "./test/fake-clock.ts";
 import { harness } from "./test/harness.ts";
 import { SlotRefused } from "../../src/pool/runtime-slots/contract.ts";
 import { runtimeErrorResponse } from "../../src/pool/runtime-slots/request-error.ts";
@@ -13,20 +14,6 @@ const dispatch = (mode: string): DispatchInput => ({
   ref: "refs/heads/main",
   event: "workflow_dispatch",
 });
-/** A clock the lane's waits move, so a 300 s bound runs in no real time; signed commands stay fresh. */
-const fakeClock = () => {
-  const clock = { start: Date.now(), at: Date.now(), sleeps: [] as number[] };
-  return {
-    clock,
-    deps: {
-      now: () => clock.at,
-      sleep: async (ms: number) => {
-        clock.sleeps.push(ms);
-        clock.at += ms;
-      },
-    },
-  };
-};
 const cause = (result: Awaited<ReturnType<typeof runPoolFleet>>) =>
   String("cause" in result ? result.cause : "");
 
@@ -44,7 +31,10 @@ test("a controller read that keeps throwing waits out the handover, then refuses
     assert.equal(result.ok, false);
     assert.match(
       cause(result),
-      /^controller-not-ready: Error at step inspect, still after 300 s; nothing was sent\./u,
+      new RegExp(
+        `^controller-not-ready: Error at step inspect, still after ${controllerSettleMs / 1000} s; nothing was sent\\.`,
+        "u",
+      ),
     );
     assert.ok(clock.at - clock.start >= controllerSettleMs);
     assert.ok(clock.sleeps.every((ms) => ms === 10_000));
@@ -74,6 +64,21 @@ test("bindings that lag behind the settings for a while are waited for, and the 
   }
 });
 
+test("bindings the platform hands the controller just after its 300 s reset are still waited for", async () => {
+  const { clock, deps } = fakeClock();
+  const lane = await harness({ bindingsLag: () => clock.at - clock.start < 302_000 });
+  try {
+    const result = await runPoolFleet(dispatch("configure-and-accept"), {
+      ...lane.deps(),
+      ...deps,
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal((await lane.configuration.inspect())?.enabled, true);
+  } finally {
+    await lane.close();
+  }
+});
+
 test("bindings that never match refuse at the bound as controller-bindings-differ, with nothing sent", async () => {
   const { clock, deps } = fakeClock();
   const lane = await harness({ bindingsLag: () => true });
@@ -85,7 +90,10 @@ test("bindings that never match refuse at the bound as controller-bindings-diffe
     assert.equal(result.ok, false);
     assert.match(
       cause(result),
-      /^controller-bindings-differ: fleet-inspect bindings still lack blue .* after 300 s/u,
+      new RegExp(
+        `^controller-bindings-differ: fleet-inspect bindings still lack blue .* after ${controllerSettleMs / 1000} s`,
+        "u",
+      ),
     );
     assert.ok(clock.at - clock.start >= controllerSettleMs);
     assert.ok(!lane.actions.includes("fleet-configure"));
@@ -104,7 +112,7 @@ test("a send the bridge answers without the Worker names the step and the answer
     assert.equal(result.ok, false);
     assert.match(
       cause(result),
-      /handoff\.command\.action=fleet-configure handoff\.response\.http=503 handoff\.response\.step=unclassified .*\) at step send$/u,
+      /handoff\.command\.action=fleet-configure handoff\.response\.http=503 handoff\.response\.origin=unmarked handoff\.response\.step=unclassified .*\) at step send$/u,
     );
   } finally {
     await lane.close();
@@ -119,7 +127,10 @@ test("a refused inspect prints the answer's status, so a non-Worker answer shows
   try {
     const result = await runPoolFleet(dispatch("inspect"), lane.deps());
     assert.equal(result.ok, false);
-    assert.match(cause(result), /handoff\.command\.action=inspect handoff\.response\.http=502/u);
+    assert.match(
+      cause(result),
+      /handoff\.command\.action=inspect handoff\.response\.http=502 handoff\.response\.origin=unmarked /u,
+    );
   } finally {
     await lane.close();
   }

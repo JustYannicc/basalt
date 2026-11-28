@@ -40,6 +40,8 @@ const reasons = [
   "slot_unhealthy",
   "slot_draining",
   "slot_uncertain",
+  // A caller on older code doesn't know it: it reads no diagnostic and refuses as uncertain.
+  "slot_controller_code",
   "fleet_capacity",
   "fleet_identity",
   "fleet_uncertain",
@@ -78,7 +80,7 @@ const reasonHeader = "X-Signalbox-Runtime-Failure-Reason";
 const causeHeader = "X-Signalbox-Runtime-Failure-Cause";
 // The readiness answer's signals as the sender decoded them; the receiver decodes them again.
 const readyHeader = "X-Signalbox-Runtime-Failure-Ready";
-// Every closed value together fits in 257 characters; anything much longer was never ours.
+// Every closed value together fits in 462 characters; anything much longer was never ours.
 const readyHeaderLength = 1_024;
 // Preserve exception identity and existing refusal/replay handling; only closed metadata crosses the binding.
 const observed = new WeakMap<object, RuntimeRouteDiagnostic>();

@@ -202,3 +202,38 @@ test("a deployment compiler deadline retries after requirements succeeded", asyn
     }),
   );
 });
+
+test("a sweep failure other than a source failure logs no reason", async () => {
+  await withScenario({ memoryFailures: 0, busy: true }, (scenario) =>
+    Effect.gen(function* () {
+      yield* scenario.execute;
+      const failed = scenario.logs.filter(
+        (message) =>
+          Array.isArray(message) && message[0] === "Catalog app update failed; the job will retry",
+      );
+      assert.ok(failed.length > 0, JSON.stringify(scenario.logs));
+      for (const message of failed) {
+        const fields = (message as unknown[])[1] as Record<string, unknown>;
+        assert.notEqual(fields.cause, "SourceError");
+        assert.ok(!("reason" in fields), JSON.stringify(fields));
+      }
+    }),
+  );
+});
+
+test("a sweep's source failure logs its reason word with the app's error class", async () => {
+  await withScenario({ memoryFailures: 0, sourceFailure: "git" }, (scenario) =>
+    Effect.gen(function* () {
+      yield* scenario.execute;
+      const failed = scenario.logs.filter(
+        (message) =>
+          Array.isArray(message) && message[0] === "Catalog app update failed; the job will retry",
+      );
+      assert.equal(failed.length, 1, JSON.stringify(scenario.logs));
+      const fields = (failed[0] as unknown[])[1] as Record<string, unknown>;
+      assert.equal(fields.cause, "SourceError");
+      assert.equal(fields.reason, "git");
+      assert.equal((yield* scenario.row)[0]!.status, "queued", "the job retries");
+    }),
+  );
+});

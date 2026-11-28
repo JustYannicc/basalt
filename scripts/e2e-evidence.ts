@@ -16,6 +16,7 @@ const diagnosticFiles = new Set([
   "runtime-preboot.json",
   "runtime-launches.ndjson",
   "runtime-switches.ndjson",
+  "cloud-forwarding-errors.ndjson",
   "compiler-cache-host.log",
   "compiler-cache-production.json",
   "physical-state-digests.ndjson",

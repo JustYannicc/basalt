@@ -17,7 +17,9 @@ import {
   equalMembershipAccounts as equal,
   membershipPolicy as publicPolicy,
   membershipReadDue,
+  type MembershipIdentity,
   type MembershipState as State,
+  type NativeAccountIdentities,
 } from "./membership-state.ts";
 interface Storage {
   get<T>(key: string): Promise<T | undefined>;
@@ -37,6 +39,23 @@ interface Dependencies {
   now?: () => number;
 }
 const storageKey = "native-pool-memberships-v1";
+/** Each resolved Home reference with its saved account, in a stable order. */
+const identitiesOf = (accounts: NativeMembershipSnapshot["accounts"]): MembershipIdentity[] =>
+  accounts
+    .flatMap(({ account, homeReference }) =>
+      homeReference === null
+        ? []
+        : homeReferences(homeReference).map((reference) => ({ reference, account })),
+    )
+    .sort((a, b) => {
+      const [left, right] = [`${a.reference}\0${a.account}`, `${b.reference}\0${b.account}`];
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
+const sameIdentities = (
+  left: readonly MembershipIdentity[] | undefined,
+  right: MembershipIdentity[],
+) => left !== undefined && JSON.stringify(left) === JSON.stringify(right);
+
 const confirmedNative = (state: State | undefined) =>
   state?.nativeConfirmed ??
   Boolean(state?.native && state.checkedAt > 0 && state.installedRevision > 0);
@@ -261,6 +280,22 @@ export class NativeMemberships {
       ),
     );
   }
+  /**
+   * The saved account behind each Home reference, as the last host read found them, for the pool
+   * view: it annotates from this instead of reading membership again in the same request. Undefined
+   * for a pool with no state or one written before the mapping was kept.
+   */
+  async identities(pool: string): Promise<NativeAccountIdentities | undefined> {
+    const policy = (await this.deps.storage.get<Record<string, State>>(storageKey))?.[pool];
+    if (!policy?.identities) return undefined;
+    return {
+      native: policy.native,
+      accounts: policy.identities.map(({ reference, account }) => ({
+        account,
+        homeReference: reference,
+      })),
+    };
+  }
   async inspect(pool: string) {
     const state = await this.deps.storage.get<Record<string, State>>(storageKey);
     const policy = state?.[pool];
@@ -476,6 +511,7 @@ export class NativeMemberships {
         ),
       ].sort();
       this.noteUnresolved(pool, snapshot.accounts);
+      const identities = identitiesOf(snapshot.accounts);
       // An account without a Home reference is left out of the policy, so the others keep serving.
       // A pool none of whose linked accounts resolve stays refused: reconciling it to no accounts
       // would remove every Home link at once when a release briefly unresolves them all.
@@ -492,16 +528,18 @@ export class NativeMemberships {
           (!valid && !current.dirty);
         // Home repair can fail after the host confirms native ownership; deletion must still retire it.
         if (!changed) {
-          if (!snapshot.native || current.nativeConfirmed === true) return current;
-          const confirmed = { ...current, nativeConfirmed: true };
-          state[pool] = confirmed;
+          const confirm = snapshot.native && current.nativeConfirmed !== true;
+          if (!confirm && sameIdentities(current.identities, identities)) return current;
+          const kept = { ...current, identities, ...(confirm ? { nativeConfirmed: true } : {}) };
+          state[pool] = kept;
           await this.save(state);
-          return confirmed;
+          return kept;
         }
         // An observed selection change must veto old authority before fallible Home repair.
         const next: State = {
           ...current,
           accounts,
+          identities,
           native: snapshot.native,
           nativeConfirmed: snapshot.native,
           dirty: true,

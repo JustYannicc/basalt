@@ -89,6 +89,46 @@ test("a new commit that exposed a value still fails after a later commit removes
   }
 });
 
+test("a run given no base reads the commits since origin/main, so a file a later commit removed still fails", () => {
+  const f = fixture();
+  try {
+    f.git("update-ref", "refs/remotes/origin/main", f.base);
+    const path = "apps/hosted/cloud/scripts/basalt-worker-sizes.ts";
+    f.write(path, "export {};\n");
+    const added = f.commit();
+    f.git("rm", "-q", path);
+    f.commit();
+    assert.deepEqual(checkGitSecrets({ root: f.root, environment: {} }), [
+      {
+        file: path,
+        source: `commit ${added.slice(0, 12)}`,
+        reason: "generated Worker measurement file",
+      },
+    ]);
+    // Without origin/main the run reads HEAD's tree, which no longer holds it.
+    f.git("update-ref", "-d", "refs/remotes/origin/main");
+    assert.deepEqual(checkGitSecrets({ root: f.root, environment: {} }), []);
+  } finally {
+    f.close();
+  }
+});
+
+test("a run given no base doesn't read again what origin/main already holds", () => {
+  const f = fixture();
+  try {
+    const path = "apps/hosted/cloud/scripts/basalt-worker-sizes.ts";
+    f.write(path, "export {};\n");
+    f.commit();
+    f.git("rm", "-q", path);
+    f.git("update-ref", "refs/remotes/origin/main", f.commit());
+    f.write("notes.md", "fixture\n");
+    f.commit();
+    assert.deepEqual(checkGitSecrets({ root: f.root, environment: {} }), []);
+  } finally {
+    f.close();
+  }
+});
+
 test("generated measurement scripts fail when staged directly or inside a committed carry", () => {
   const f = fixture();
   try {
@@ -144,6 +184,73 @@ test("unstaged and ignored local output are outside staged and new-commit conten
       "apps/hosted/cloud/.local/basalt-worker-sizes.ts",
     );
     assert.deepEqual(checkGitSecrets({ ...f, environment: { API_TOKEN: value } }), []);
+  } finally {
+    f.close();
+  }
+});
+
+const dotReason = "file under a dot-directory other than .github";
+
+test("a file under a dot-directory other than .github fails in a new commit, even once a later one removes it", () => {
+  const f = fixture();
+  try {
+    f.write("src/pool/.tool-cache/state.json", "{}\n");
+    const added = f.commit();
+    f.git("rm", "-q", "src/pool/.tool-cache/state.json");
+    f.commit();
+    assert.deepEqual(checkGitSecrets({ ...f, environment: {} }), [
+      {
+        file: "src/pool/.tool-cache/state.json",
+        source: `commit ${added.slice(0, 12)}`,
+        reason: dotReason,
+      },
+    ]);
+  } finally {
+    f.close();
+  }
+});
+
+test("a tree holding a file under a dot-directory fails when staged, and with no base at all", () => {
+  const f = fixture();
+  try {
+    f.write(".tool/settings.json", "{}\n");
+    f.git("add", ".tool/settings.json");
+    assert.deepEqual(checkGitSecrets({ ...f, environment: {} }), [
+      { file: ".tool/settings.json", source: "staged", reason: dotReason },
+    ]);
+    f.commit();
+    assert.deepEqual(checkGitSecrets({ root: f.root, environment: {} }), [
+      { file: ".tool/settings.json", source: "HEAD", reason: dotReason },
+    ]);
+  } finally {
+    f.close();
+  }
+});
+
+test("files under .github and dot-files anywhere pass; a dot-directory inside .github, a look-alike or a .github below the root does not", () => {
+  const f = fixture();
+  try {
+    const refused = [
+      ".github/.cache/state.json",
+      ".github/workflows/.tool/state.json",
+      ".githubx/settings.json",
+      "docs/.github/workflows/nested.yml",
+    ];
+    for (const file of [
+      ".github/workflows/fixture.yml",
+      ".github/dependabot.yml",
+      ".gitignore",
+      "src/.oxfmtrc.json",
+      "docs/v2.1/notes.md",
+      ...refused,
+    ])
+      f.write(file, "fixture\n");
+    const added = f.commit();
+    const findings = checkGitSecrets({ ...f, environment: {} });
+    assert.deepEqual(
+      findings.toSorted((left, right) => (left.file < right.file ? -1 : 1)),
+      refused.map((file) => ({ file, source: `commit ${added.slice(0, 12)}`, reason: dotReason })),
+    );
   } finally {
     f.close();
   }

@@ -1,0 +1,369 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/invocation-database.ts b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
+--- a/apps/hosted/cloud/src/infrastructure/invocation-database.ts
++++ b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
+@@ -42,11 +42,13 @@ export const cloudInvocationDatabase = Layer.effect(
+   InvocationDatabase,
+   Effect.gen(function* () {
+     const connection = yield* cloudDatabaseConnection;
+-    const statementGroups = yield* InvocationStatementGroups;
++    const workerGroups = yield* InvocationStatementGroups;
+     return yield* makeBatchExecutionMemo(
+       Effect.gen(function* () {
+         const object = yield* Effect.serviceOption(ObjectDatabase);
+         if (Option.isSome(object)) return yield* object.value.sql;
++        // A Worker groups every event's statements, or one route asks for it for its own events.
++        const statementGroups = workerGroups || (yield* InvocationStatementGroups);
+         const url = yield* connection.connectionString;
+         // Forked before the pool, so it closes after the pool has shut down with the event.
+         const reservations = yield* Scope.fork(yield* Effect.scope, "sequential");
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -1,3 +1,6 @@
++import { PgPool } from "@effect/sql-pg";
++import * as PgConnection from "@effect/sql-pg/PgConnection";
++import { InvocationStatementGroups } from "./infrastructure/invocation-database.ts";
+ import { makeMcpGrantRpc } from "./infrastructure/mcp-grant-server.ts";
+ import { cloudChangeRevisions } from "./infrastructure/change-revisions.ts";
+ import {
+@@ -70,7 +73,7 @@ import {
+   localRemovalStalls,
+   removalStallBindings,
+ } from "./infrastructure/organization-removal-stalls.ts";
+-import { HostedExecutor, lazyHostedApiDocument } from "@executor-js/hosted-server";
++import { HostedExecutor, lazyHostedApiDocument, StatementBatch } from "@executor-js/hosted-server";
+ import {
+   poolMembershipReadPath,
+   readNativePoolMembership,
+@@ -745,9 +748,23 @@ export default Api.make(
+       HttpRouter.add("POST", poolMembershipReadPath, readNativePoolMembership).pipe(
+         HttpRouter.provideRequest(executor),
+       ),
+-      HttpRouter.add("POST", poolOrganizationReadPath, readPoolOrganization).pipe(
+-        HttpRouter.provideRequest(executor),
+-      ),
++      HttpRouter.add(
++        "POST",
++        poolOrganizationReadPath,
++        // The ownership observation's settings, shape and rule leave in one write: the
++        // event's pool groups statements and the batch is one read-only transaction.
++        readPoolOrganization.pipe(
++          Effect.provideService(InvocationStatementGroups, true),
++          Effect.provideService(StatementBatch, (leaves, { outside }) =>
++            PgPool.held(
++              PgConnection.pipelined(leaves, {
++                outside,
++                begin: "ISOLATION LEVEL REPEATABLE READ READ ONLY",
++              }),
++            ),
++          ),
++        ),
++      ).pipe(HttpRouter.provideRequest(executor)),
+       HttpRouter.add("POST", poolUsageImportAdmissionPath, readPoolUsageImportAdmission).pipe(
+         HttpRouter.provideRequest(executor),
+       ),
+diff --git a/apps/hosted/server/src/implementation/pool-membership-reconcile.ts b/apps/hosted/server/src/implementation/pool-membership-reconcile.ts
+--- a/apps/hosted/server/src/implementation/pool-membership-reconcile.ts
++++ b/apps/hosted/server/src/implementation/pool-membership-reconcile.ts
+@@ -24,6 +24,10 @@ const poolRegistrations = (organization: string, pool: AppId) =>
+     return yield* Schema.decodeUnknownEffect(Schema.Array(Registration))(rows);
+   });
+ 
++/** The organization owns the pool by the registration rule, whatever kind of record names it. */
++export const organizationOwnsPool = (organization: string, pool: AppId) =>
++  Effect.map(poolRegistrations(organization, pool), (registrations) => registrations.length > 0);
++
+ const handoff = (pool: AppId) =>
+   Effect.gen(function* () {
+     const lifecycle = yield* AccessLifecycle;
+diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/hosted/server/src/implementation/pool-organization.ts
+--- a/apps/hosted/server/src/implementation/pool-organization.ts
++++ b/apps/hosted/server/src/implementation/pool-organization.ts
+@@ -1,10 +1,13 @@
+ import { AppId } from "@executor-js/sdk/core";
+-import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
++import { Cause, Clock, Config, Effect, Exit, Fiber, Option, Redacted, Schema } from "effect";
+ import { HttpServerRequest, HttpServerResponse } from "effect/http";
+-import { OrganizationId } from "../contracts/organization.ts";
++import { SqlClient } from "effect/sql";
++import { StatementBatch } from "../contracts/executor.ts";
++import { OrganizationId, organizationOwner } from "../contracts/organization.ts";
+ import { OrganizationTombstones } from "../contracts/organization-removal.ts";
+ import { policyDatabase } from "./resource-policy.ts";
+ import { openEnvelope } from "./pool-token.ts";
++import { organizationOwnsPool } from "./pool-membership-reconcile.ts";
+ 
+ export const poolOrganizationReadPath = "/api/internal/pool-organization";
+ const Read = Schema.Struct({
+@@ -14,6 +17,263 @@ const Read = Schema.Struct({
+   expiresAt: Schema.Finite,
+ });
+ 
++type Refusal =
++  | "deleted-pool"
++  | "cleared-association"
++  | "foreign-owner"
++  | "no-record"
++  | "other-organization"
++  | "invalid-metadata";
++const Facts = Schema.Array(
++  Schema.Struct({
++    metadata: Schema.NullOr(Schema.String),
++    valid: Schema.NullOr(Schema.Boolean),
++    owner: Schema.NullOr(Schema.String),
++  }),
++);
++
++/** How long the database lets one observation read run or wait for a lock before it ends it. */
++const readBound = "250ms";
++/**
++ * One read in its own read-only transaction that the database ends after `readBound`, so a read
++ * stuck behind a lock never keeps its connection, whether or not a cancel reaches it. The settings
++ * last only for the transaction, and its first statement sets all three.
++ */
++const boundedRead = <A, E, R>(sql: SqlClient.SqlClient, read: Effect.Effect<A, E, R>) =>
++  sql.withTransaction(
++    sql`select set_config('transaction_read_only', 'on', true),
++      set_config('statement_timeout', ${readBound}, true),
++      set_config('lock_timeout', ${readBound}, true)`.pipe(Effect.andThen(read)),
++  );
++
++/** Whether a read failed because the database ended it at `readBound`. */
++const endedByDatabase = (cause: Cause.Cause<unknown>) =>
++  Option.exists(
++    Cause.findErrorOption(cause),
++    (error) =>
++      isRecord(error) &&
++      isRecord(error.reason) &&
++      (error.reason._tag === "StatementTimeoutError" || error.reason._tag === "LockTimeoutError"),
++  );
++const Metadata = Schema.fromJsonString(Schema.Unknown);
++const isRecord = (value: unknown): value is Record<string, unknown> =>
++  typeof value === "object" && value !== null && !Array.isArray(value);
++
++/** The pools an organization records, read as the ownership rule reads them; undefined where it fails. */
++const recordedPools = (metadata: string | null) => {
++  if (metadata === null) return {};
++  const parsed = Schema.decodeUnknownOption(Metadata)(metadata);
++  if (Option.isNone(parsed)) return undefined;
++  if (!isRecord(parsed.value) || parsed.value.basaltPools === undefined) return {};
++  return isRecord(parsed.value.basaltPools) ? parsed.value.basaltPools : undefined;
++};
++
++/** What the shape of a refusal is read from: the organization's records and the pool's owner. */
++const factsOf = (sql: SqlClient.SqlClient, organization: OrganizationId, pool: AppId) =>
++  // Whether the database's JSON type takes the metadata is the database's own answer.
++  sql`select o.metadata, pg_input_is_valid(o.metadata, 'jsonb') as valid,
++      (select app.owner from executor_apps app where app.id = ${pool}) as owner
++    from organization o where o.id = ${organization}`.pipe(
++    Effect.flatMap(Schema.decodeUnknownEffect(Facts)),
++    Effect.map(([facts]) => facts),
++  );
++
++/** Why the ownership rule would refuse an existing organization; undefined when nothing says why. */
++const shapeOf = (
++  facts: (typeof Facts.Type)[number] | undefined,
++  organization: OrganizationId,
++  pool: AppId,
++  ruleFailed: boolean,
++): Refusal | undefined => {
++  if (facts === undefined) return undefined;
++  const pools = facts.valid === false ? undefined : recordedPools(facts.metadata);
++  if (pools === undefined) return "invalid-metadata";
++  // A transient failure of the rule's read says nothing about ownership.
++  if (ruleFailed) return undefined;
++  const recorded = Object.values(pools).some((record) => isRecord(record) && record.app === pool);
++  const ours = facts.owner === organizationOwner(organization);
++  return recorded
++    ? facts.owner === null
++      ? "deleted-pool"
++      : ours
++        ? undefined
++        : "foreign-owner"
++    : facts.owner === null
++      ? "cleared-association"
++      : ours
++        ? "no-record"
++        : "other-organization";
++};
++
++/** The longest the observation may hold an answer back; past it the answer goes unobserved. */
++const observationBoundMs = 300;
++/**
++ * How long a read past the bound may run on before it is interrupted. Interrupting a statement
++ * makes the driver cancel it and wait for that cancel's own socket, up to 5 s when nothing answers,
++ * before it rolls back, and the connection sits aborted meanwhile. The database ends each read at
++ * `readBound`, far sooner, so only a read whose connection no longer answers is ever interrupted.
++ */
++const interruptGraceMs = 2_000;
++type Unobserved = "timeout" | "read-failed" | "changed" | "unexplained";
++/** What one observation saw: a refusal's shape, why it saw nothing, or nothing to report. */
++type Seen = { readonly shape: Refusal } | { readonly unobserved: Unobserved } | undefined;
++
++/** A read the observation could not finish, so a quiet log is not taken for a clean one. */
++const notObserved = (organization: OrganizationId, pool: AppId, reason: Unobserved) =>
++  Effect.logWarning("Pool organization ownership not observed", { pool, organization, reason });
++const report = (seen: Seen, organization: OrganizationId, pool: AppId) =>
++  seen === undefined
++    ? Effect.void
++    : "shape" in seen
++      ? Effect.logWarning("Pool organization would be refused", {
++          pool,
++          organization,
++          shape: seen.shape,
++        })
++      : notObserved(organization, pool, seen.unobserved);
++
++/**
++ * The ownership rule answers nothing yet: it only reports, once per read, an existing organization it
++ * would refuse, so live pools prove the rule before it decides. Nothing it does can change the answer.
++ * It is awaited at most `observationBoundMs`; past it the answer goes on and the line says so, and
++ * the late read runs on to the end the database gives it, writing nothing.
++ */
++const observeOwnership = (sql: SqlClient.SqlClient, organization: OrganizationId, pool: AppId) =>
++  Effect.gen(function* () {
++    const fiber = yield* Effect.forkDetach(observation(sql, organization, pool));
++    yield* Effect.forkDetach(
++      Fiber.await(fiber).pipe(
++        Effect.timeoutOption(observationBoundMs + interruptGraceMs),
++        Effect.flatMap((ended) => (Option.isNone(ended) ? Fiber.interrupt(fiber) : Effect.void)),
++      ),
++    );
++    // Timing out the join leaves the observation itself running.
++    const seen = yield* Fiber.join(fiber).pipe(Effect.timeoutOption(observationBoundMs));
++    yield* Option.isSome(seen)
++      ? report(seen.value, organization, pool)
++      : notObserved(organization, pool, "timeout");
++  }).pipe(Effect.catchCause(() => Effect.void));
++
++/** Whether the event's client leases one connection at a time and sends a batch in one write. */
++const sendsBatches = (sql: SqlClient.SqlClient) => {
++  const config: unknown = Reflect.get(sql, "config");
++  return isRecord(config) && config.multiplex === true && config.multiplexConcurrency === 1;
++};
++
++type Batch = (
++  leaves: ReadonlyArray<Effect.Effect<unknown>>,
++  options: { readonly outside: number },
++) => Effect.Effect<Array<Exit.Exit<unknown, unknown>>>;
++
++/** One leaf of a batch: its own exit, kept where the batch's exit would lose its type. */
++const leaf = <A, E>(read: Effect.Effect<A, E>) => {
++  let exit: Exit.Exit<A, E> = Exit.die("not sent");
++  const effect = read.pipe(
++    Effect.exit,
++    Effect.tap((ended) => Effect.sync(() => (exit = ended))),
++  );
++  return { effect, exit: () => exit };
++};
++
++/**
++ * The settings, the rule and the shape read in one write and one read-only transaction (Cloud's
++ * grouped event pool): one round trip. The rule goes first, so a shape read that fails (a database
++ * without `pg_input_is_valid`) never blinds a healthy check. A rule that fails for a reason other
++ * than the database's timeouts aborts the transaction, so only then is its shape read again, in a
++ * second flight.
++ */
++const inOneFlight = (
++  batch: Batch,
++  sql: SqlClient.SqlClient,
++  organization: OrganizationId,
++  pool: AppId,
++): Effect.Effect<Seen> =>
++  Effect.gen(function* () {
++    const settings = () =>
++      leaf(
++        sql`select set_config('transaction_read_only', 'on', true),
++          set_config('statement_timeout', ${readBound}, true),
++          set_config('lock_timeout', ${readBound}, true)`,
++      );
++    const bounded = settings();
++    const rule = leaf(
++      organizationOwnsPool(organization, pool).pipe(
++        Effect.provideService(SqlClient.SqlClient, sql),
++      ),
++    );
++    const facts = leaf(factsOf(sql, organization, pool));
++    yield* batch([bounded.effect, rule.effect, facts.effect], { outside: 0 });
++    const [set, owns, read] = [bounded.exit(), rule.exit(), facts.exit()];
++    if (Exit.isSuccess(owns) && owns.value) return undefined;
++    const causes: Array<Cause.Cause<unknown>> = [];
++    if (Exit.isFailure(set)) causes.push(set.cause);
++    if (Exit.isFailure(owns)) causes.push(owns.cause);
++    if (Exit.isFailure(read)) causes.push(read.cause);
++    if (causes.some(endedByDatabase)) return { unobserved: "timeout" as const };
++    if (Exit.isFailure(set)) return { unobserved: "read-failed" as const };
++    if (Exit.isFailure(owns)) {
++      // The failed rule aborted the batch's transaction, the shape read with it: read it again in
++      // a second flight of its own.
++      const boundedAgain = settings();
++      const again = leaf(factsOf(sql, organization, pool));
++      yield* batch([boundedAgain.effect, again.effect], { outside: 0 });
++      const [setAgain, readAgain] = [boundedAgain.exit(), again.exit()];
++      if (Exit.isFailure(setAgain) || Exit.isFailure(readAgain))
++        return { unobserved: "read-failed" as const };
++      const shape = shapeOf(readAgain.value, organization, pool, true);
++      return shape !== undefined ? { shape } : { unobserved: "read-failed" as const };
++    }
++    if (Exit.isFailure(read)) return { unobserved: "read-failed" as const };
++    const shape = shapeOf(read.value, organization, pool, false);
++    if (shape !== undefined) return { shape };
++    // The rule and the shape read saw one snapshot, so no write landed between them: the rule
++    // refused and the shape read found nothing to say why. A write before the flight, such as the
++    // organization removed after the existence read, can still lead here.
++    return { unobserved: "unexplained" as const };
++  }).pipe(Effect.catchCause(() => Effect.succeed({ unobserved: "read-failed" as const })));
++
++const observation = (sql: SqlClient.SqlClient, organization: OrganizationId, pool: AppId) =>
++  Effect.gen(function* () {
++    const batch = yield* StatementBatch;
++    return batch !== undefined && sendsBatches(sql)
++      ? yield* inOneFlight(batch, sql, organization, pool)
++      : yield* inTransactions(sql, organization, pool);
++  });
++
++/** The rule and its shape in bounded transactions, for a client that cannot send them in one write. */
++const inTransactions = (
++  sql: SqlClient.SqlClient,
++  organization: OrganizationId,
++  pool: AppId,
++): Effect.Effect<Seen> =>
++  Effect.gen(function* () {
++    // The rule and, when it refuses, what says why, in one bounded transaction.
++    const first = yield* Effect.exit(
++      boundedRead(
++        sql,
++        Effect.gen(function* () {
++          if (yield* organizationOwnsPool(organization, pool)) return { owns: true as const };
++          return { owns: false as const, facts: yield* factsOf(sql, organization, pool) };
++        }),
++      ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
++    );
++    if (Exit.isSuccess(first) && first.value.owns) return undefined;
++    // A read the database ended would end again: the observation saw nothing, and says so.
++    if (Exit.isFailure(first) && endedByDatabase(first.cause))
++      return { unobserved: "timeout" as const };
++    // A failed read ends its transaction, so what says why is read again in a new one.
++    const ruleFailed = Exit.isFailure(first);
++    const facts = Exit.isSuccess(first)
++      ? first.value.facts
++      : yield* boundedRead(sql, factsOf(sql, organization, pool));
++    const shape = shapeOf(facts, organization, pool, ruleFailed);
++    if (shape !== undefined) return { shape };
++    if (ruleFailed) return { unobserved: "read-failed" as const };
++    // The rule refused, but the read after it found ownership or no organization: a write landed
++    // between the two, so this read cannot say why.
++    return { unobserved: "changed" as const };
++  }).pipe(Effect.catchCause(() => Effect.succeed({ unobserved: "read-failed" as const })));
++
+ /** No positive cache: an unexpired pool credential cannot outlive organization removal. */
+ export const readPoolOrganization = Effect.gen(function* () {
+   const key = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
+@@ -32,6 +292,7 @@ export const readPoolOrganization = Effect.gen(function* () {
+   if (yield* removed(value.organization)) return HttpServerResponse.empty({ status: 403 });
+   const sql = yield* policyDatabase;
+   const rows = yield* sql`select id from organization where id = ${value.organization}`;
++  if (rows.length === 1) yield* observeOwnership(sql, value.organization, value.pool);
+   return HttpServerResponse.empty({
+     status: rows.length === 1 ? 204 : 403,
+     headers: { "cache-control": "no-store" },

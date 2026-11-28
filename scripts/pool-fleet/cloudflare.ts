@@ -131,6 +131,33 @@ export const workerPlainBindings = (access: CloudflareAccess, worker: string) =>
     ) as Record<string, string>;
   });
 
+const Deployments = Schema.Struct({
+  deployments: Schema.Array(Schema.Struct({ created_on: Schema.String })),
+});
+
+/** When the PoolWorker's latest deployment was made, in ms: the controller's code handover starts there. */
+export const latestDeploymentAt = (access: CloudflareAccess, worker: string) =>
+  Effect.gen(function* () {
+    const { deployments } = yield* field(
+      Deployments,
+      yield* read(
+        access,
+        `/workers/scripts/${encodeURIComponent(worker)}/deployments`,
+        "worker-deployments",
+      ),
+      "worker-deployments-shape",
+      "GET workers/scripts/{PoolWorker}/deployments result.deployments is not an array of {created_on}.",
+    );
+    const times = deployments.map((deployment) => Date.parse(deployment.created_on));
+    if (!times.length || !times.every(Number.isFinite))
+      return yield* refuse(
+        "worker-deployments-shape",
+        `GET workers/scripts/{PoolWorker}/deployments listed ${times.length} deployments, not each with a time.`,
+        "Capture the live shape and update scripts/pool-fleet/cloudflare.ts.",
+      );
+    return Math.max(...times);
+  });
+
 export const requireBinding = (
   bindings: Record<string, string>,
   name: string,

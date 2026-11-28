@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-name-default-selected",
+  "file": "0810-name-default-selected.patch",
+  "content_sha256": "2093a35899ed01aea5381665a9c2bffdc0b9e31b2e442392eaa4cff3751871fd",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

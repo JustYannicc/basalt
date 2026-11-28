@@ -232,7 +232,10 @@ test("workflow skips every suite job only through the verified reuse decision", 
     steps.slice(0, decision).map((step) => step.uses),
     ["actions/checkout@v4", "./.github/actions/setup-node"],
   );
-  for (const step of steps.slice(decision + 1))
+  // The light lane's label is the one exception: it selects nothing and holds on a reused Check.
+  assert.equal(steps[decision + 1]!.id, "light");
+  assert.equal(steps[decision + 1]!.if, undefined);
+  for (const step of steps.slice(decision + 2))
     assert.equal(step.if, "steps.reuse.outputs.reused != 'true'", step.id ?? step.uses ?? "");
   for (const output of ["reused", "evidence", "run_id", "head_sha"])
     assert.equal(select.outputs[output], `\${{ steps.reuse.outputs.${output} }}`, output);

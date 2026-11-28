@@ -63,7 +63,6 @@ test("malformed commands, admission proofs and identity headers are typed identi
     JSON.stringify({ envelope: "bad-signature" }),
     await signed({ expiresAt: now - 1 }),
     await signed({ action: "invalid" }),
-    await signed({ controllerCode: { ...runtimeFixtureCode, candidate: "f".repeat(40) } }),
     await signed({ action: "stage", proof: "bad-proof" }),
   ];
   for (const body of invalidCommands) {
@@ -73,6 +72,15 @@ test("malformed commands, admission proofs and identity headers are typed identi
     assert.equal(response.status, 409);
     assert.equal((await response.json()).reason, "runtime_endpoint_route_slot_identity");
   }
+  // Signed for other controller code, as by a lane built from another release: its own reason.
+  const otherCode = await f.worker.runtimeHandoff(
+    new Request("http://operations/runtime-handoff", {
+      method: "POST",
+      body: await signed({ controllerCode: { ...runtimeFixtureCode, candidate: "f".repeat(40) } }),
+    }),
+  );
+  assert.equal(otherCode.status, 409);
+  assert.equal((await otherCode.json()).reason, "runtime_endpoint_route_slot_controller_code");
   for (const request of [
     new Request("http://runtime/v1/models", { headers: { "X-Signalbox-Runtime-Identity": "" } }),
     new Request("http://runtime/admit", { method: "POST", body: "{" }),
@@ -165,7 +173,7 @@ test("recognized refusal classes keep closed reasons and defects never echo arbi
     ],
     [new FleetRefused("capacity"), "runtime_endpoint_route_fleet_capacity"],
     [new ProtectionRefusal("boot_changed"), "runtime_endpoint_route_protection_boot_changed"],
-    [new ProviderObservationRefused("provider_fetch_failed"), "provider_fetch_failed"],
+    [new ProviderObservationRefused({ reason: "fetch_failed" }), "provider_fetch_failed"],
   ] as const) {
     failure = error;
     const response = await f.command("inspect");

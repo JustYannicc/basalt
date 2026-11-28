@@ -1,0 +1,34 @@
+diff --git a/e2e/support/released-retirement-proof.ts b/e2e/support/released-retirement-proof.ts
+--- a/e2e/support/released-retirement-proof.ts
++++ b/e2e/support/released-retirement-proof.ts
+@@ -257,8 +257,6 @@
+   });
+   yield* p.backend("present");
+   const other = yield* otherOrganization;
+-  // Built and activated once before the pause, so the pause only spans an activation of a cached
+-  // build: the paused apply's transaction may sit idle for ten seconds at most.
+   const elsewhere = yield* other.deploy("Same provider beside a repair", p.poolFiles);
+   expect(elsewhere.requirements.accounts.subscriptions?.provider).toBe(p.selection.provider);
+   yield* p.database.hold({
+@@ -284,9 +282,19 @@
+       return yield* Fiber.join(applying);
+     });
+   // Another organization deploying an app that declares the same provider changes nothing in
+-  // that row, so it writes nothing, and the apply still meets the held connection row.
++  // that row, so it writes no new version of it.
+   const unchanged = yield* providerVersion(p.database, p.selection.provider);
+-  const busy = yield* besideApply(other.redeploy(elsewhere.id, p.poolFiles));
++  yield* other.redeploy(elsewhere.id, p.poolFiles);
++  expect(yield* providerVersion(p.database, p.selection.provider)).toBe(unchanged);
++  // What that deploy leaves on the row is a committed row lock. Taken in the same place, it still
++  // lets the apply meet the held connection row. The deploy itself can't run there: the paused
++  // transaction ends itself after ten idle seconds, and a deploy can take longer on a busy runner.
++  const busy = yield* besideApply(
++    p.database.run({
++      sql: "select id from executor_providers where id = $1 for no key update",
++      params: [p.selection.provider],
++    }),
++  );
+   expect(busy.status, JSON.stringify(busy.body)).toBe(409);
+   expect(busy.body, JSON.stringify(busy.body)).toMatchObject({
+     error: "operation_busy",

@@ -1,11 +1,11 @@
 import type { PoolView } from "../../apps/pool/contract.ts";
-import type { NativeMembershipSnapshot } from "./membership-contract.ts";
+import type { NativeAccountIdentities } from "./membership-state.ts";
 import { homeReferences } from "./home-references.ts";
 
 /** Identity annotation never changes membership or routing, even when the source is ambiguous. */
 export function nativeAccountView(
   view: PoolView,
-  membership: NativeMembershipSnapshot | undefined,
+  membership: NativeAccountIdentities | undefined,
 ): PoolView {
   if (membership?.native === false) return view;
   const identities = new Map<string, Set<string>>();

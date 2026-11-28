@@ -126,9 +126,16 @@ export class PoolControl implements ControlAttribution {
       },
       deps.previousSigningKey,
       () => this.now(),
+      deps.signInRoutes,
     );
     this.collection = new QuotaCollection(storage, this.client, { now: () => this.now() });
-    this.actions = new AccountActions(this.client, storage, this.collection, () => this.now());
+    this.actions = new AccountActions(
+      this.client,
+      storage,
+      this.collection,
+      () => this.now(),
+      deps.routeRefusals,
+    );
   }
   private now(): number {
     return this.deps.now?.().getTime() ?? Date.now();
@@ -140,6 +147,7 @@ export class PoolControl implements ControlAttribution {
       signingKey: this.deps.signingKey,
       previousSigningKey: this.deps.previousSigningKey,
       now: () => this.now(),
+      refusals: this.deps.routeRefusals,
     });
     if (health !== undefined) return health;
     const result = await this.run(() => this.acquisitions.handle(request));

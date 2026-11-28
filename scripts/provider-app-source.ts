@@ -17,6 +17,7 @@ export const providerAppLabs = [
   "jev",
   "cloudflare",
   "openrouter",
+  "custom",
 ] as const;
 
 /** Copy the canonical declaration unchanged so apps, saved accounts and pools share an identity. */

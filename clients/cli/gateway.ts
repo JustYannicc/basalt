@@ -142,7 +142,19 @@ export async function startGateway(options: GatewayOptions) {
       if (response.headersSent || response.destroyed) response.destroy();
       else if (error instanceof LocalRequestRefused) {
         response.setHeader("x-should-retry", "false");
-        return answer(response, 502, { error: "The local request was refused before dispatch." });
+        const message = `The local request was refused before dispatch. ${error.message}`;
+        // An MCP client reads JSON-RPC errors; a model client reads the plain error body.
+        return answer(
+          response,
+          502,
+          capability === "models"
+            ? { error: message }
+            : {
+                jsonrpc: "2.0",
+                id: null,
+                error: { code: -32600, message, data: { retryable: false } },
+              },
+        );
       } else if (!dispatched || error instanceof ModelRequestNotSent) {
         if (needsSignIn())
           return answer(response, 401, { error: "Sign in again before using this device." });

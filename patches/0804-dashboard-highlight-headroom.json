@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-dashboard-highlight-headroom",
+  "file": "0804-dashboard-highlight-headroom.patch",
+  "content_sha256": "e5d901db9b278d673babbdebbf29072263542670b9bd4548d6da949ca2833099",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

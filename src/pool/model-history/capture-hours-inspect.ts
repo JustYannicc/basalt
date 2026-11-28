@@ -79,11 +79,15 @@ export function captureHoursInspect(state: CaptureHoursAutoState) {
     stalestCheckedAt: iso(state.stalestCheckedAt),
     planMs: milliseconds(state.planMs),
     byPool: byPool(state),
-    recountPosition:
-      typeof state.recountPosition?.pool === "string" &&
-      hex16.test(state.recountPosition.pool) &&
-      iso(state.recountPosition.block)
-        ? { pool: state.recountPosition.pool, block: iso(state.recountPosition.block)! }
+    // When Home last remapped pools' keys or users, which made their counts be counted again, and
+    // how many pools are still being counted again.
+    lastRemap:
+      iso(state.lastRemap?.at) && count(state.lastRemap?.pools) !== null
+        ? { at: iso(state.lastRemap!.at)!, pools: count(state.lastRemap!.pools)! }
         : null,
+    recountingPools:
+      typeof state.recount === "object" && state.recount !== null
+        ? Object.keys(state.recount).length
+        : 0,
   };
 }

@@ -104,3 +104,25 @@ test("signed routing read maps only inspected accounts and members cannot mutate
   assert.equal(f.calls.length, before);
   assert.equal((await invoke("accountRouting", { canEdit: true, accounts: [] })).status, 400);
 });
+
+test("a routed owner's plugin-provider row reads blocked with route_unsupported", async () => {
+  const f = fixture();
+  const routing = await poolCreditRouting(f.home, "pool", new Set(["unknown-home-id"]));
+  assert.deepEqual(routing.accounts["unknown-home-id"], {
+    use: "blocked",
+    eligible: false,
+    reason: "route_unsupported",
+    policy: "last_resort",
+  });
+  // Every other row is Home's own decision, unchanged.
+  assert.deepEqual(routing.accounts["private-home-id"], {
+    use: "credits",
+    eligible: true,
+    reason: "credits_only",
+    policy: "last_resort",
+  });
+  assert.deepEqual(
+    (await poolCreditRouting(f.home, "pool")).accounts["unknown-home-id"]?.reason,
+    "usage_unknown",
+  );
+});

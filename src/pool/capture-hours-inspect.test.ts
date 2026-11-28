@@ -17,7 +17,8 @@ test("the capture-hour counts' inspect is closed: stored fields only, 16-hex poo
     pendingHours: 96,
     stalestCheckedAt: "2026-11-20T01:00:00.123Z",
     planMs: 812.04,
-    recountPosition: { pool: "0123456789abcdef", block: "2026-08-01T00:00:00Z", host: "x" },
+    lastRemap: { at: "2026-11-23T09:00:00.000Z", pools: 2, host: "x" },
+    recount: { "0123456789abcdef": { before: "2026-11-23T09:00:00.000000Z" } },
     split: [{ pool: "0123456789abcdef", from: "2026-08-01T00:00:00Z", to: "x" }],
     slow: [
       {
@@ -88,7 +89,8 @@ test("the capture-hour counts' inspect is closed: stored fields only, 16-hex poo
     lastHourReadMs: 1_000,
     stalestCheckedAt: "2026-11-20T01:00:00.123Z",
     planMs: 812,
-    recountPosition: { pool: "0123456789abcdef", block: "2026-08-01T00:00:00Z" },
+    lastRemap: { at: "2026-11-23T09:00:00.000Z", pools: 2 },
+    recountingPools: 1,
     // Each pool by its place in the order of its id, never the id; a pool name never passes.
     byPool: [
       {
@@ -130,7 +132,7 @@ test("the capture-hour counts' inspect is closed: stored fields only, 16-hex poo
       pendingHours: 1.5,
       pendingBlocks: "3",
       planMs: "fast",
-      recountPosition: { pool: "fixture-pool-name", block: "2026-08-01T00:00:00Z" },
+      lastRemap: { at: "2026-11-23T09:00:00.000Z", pools: -1 },
       stuck: [{ pool: "0123456789abcdef", reason: "drop", retryAt: "soon" }],
     } as unknown as CaptureHoursAutoState),
     {
@@ -145,15 +147,16 @@ test("the capture-hour counts' inspect is closed: stored fields only, 16-hex poo
       lastHourReadMs: null,
       stalestCheckedAt: null,
       planMs: null,
-      recountPosition: null,
+      lastRemap: null,
+      recountingPools: 0,
       byPool: [],
     },
   );
-  // A position on a pool id but with free text for its block names nothing.
-  assert.equal(
-    captureHoursInspect({ recountPosition: { pool: "0123456789abcdef", block: "soon" } })
-      .recountPosition,
-    null,
+  // A remap with free text for its time names nothing.
+  assert.equal(captureHoursInspect({ lastRemap: { at: "soon", pools: 1 } }).lastRemap, null);
+  assert.deepEqual(
+    captureHoursInspect({ lastRemap: { at: "2026-11-23T09:00:00.000Z", pools: 2 } }).lastRemap,
+    { at: "2026-11-23T09:00:00.000Z", pools: 2 },
   );
   assert.deepEqual(captureHoursInspect({}).stuck, []);
 });

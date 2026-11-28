@@ -1,0 +1,54 @@
+{
+  "scenarios": {
+    "dashboardCodeHighlighting": {
+      "fixtures": "actors",
+      "title": "A server-rendered code block highlights after hydration without moving at desktop width",
+      "targets": {
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Only the Cloud dashboard's server build swaps in the three-grammar engine; self-host builds its own site."
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no organization members to share an app's skills with."
+        }
+      }
+    },
+    "dashboardCodeHighlightingMobile": {
+      "fixtures": "actors",
+      "title": "A server-rendered code block highlights after hydration without moving at phone width",
+      "targets": {
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Only the Cloud dashboard's server build swaps in the three-grammar engine; self-host builds its own site."
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no organization members to share an app's skills with."
+        }
+      }
+    }
+  },
+  "runs": {
+    "dashboardCodeHighlighting": ["declared:cloud"],
+    "dashboardCodeHighlightingMobile": ["declared:cloud"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/web/server-highlight.ts",
+    ".upstream/apps/hosted/cloud/web/vite.config.ts",
+    ".upstream/packages/dashboard-start/src/implementation/registry.tsx",
+    ".upstream/packages/ui/src/contracts/highlight.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/app-skills.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/code.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/markdown.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/skill-content.tsx",
+    ".upstream/packages/ui/src/implementation/highlight-engine.ts",
+    ".upstream/packages/ui/src/implementation/server-highlight-engine.ts"
+  ]
+}

@@ -7,7 +7,8 @@ import { providerApps } from "./provider-apps/index.ts";
 import { handleCatalog } from "./worker.ts";
 import type { Feed } from "./feed.ts";
 import { AppIcons } from "apps/contracts";
-import { Schema } from "effect";
+import { Effect, Exit, Schema } from "effect";
+import { CatalogConnectionGuidance } from "../../.upstream/packages/catalog/src/contracts/connection-guidance.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -46,4 +47,30 @@ test("Supported providers publish installable sources with the canonical saved-a
     );
   }
   assert.equal(providerApps.length, providerAppLabs.length);
+});
+
+test("every provider app's connection guidance decodes with the host's catalog schema", () => {
+  // The host refuses the whole feed when one entry's guidance is malformed, not just that entry.
+  const decode = Schema.decodeUnknownEffect(Schema.Array(CatalogConnectionGuidance));
+  for (const app of providerApps)
+    if (app.entry.connectionGuidance !== undefined)
+      assert.ok(
+        Exit.isSuccess(Effect.runSyncExit(decode(app.entry.connectionGuidance))),
+        app.entry.id,
+      );
+  assert.ok(
+    providerApps.some((app) => app.entry.id === "provider-custom" && app.entry.connectionGuidance),
+  );
+  // Help binds by exact requirement and method name, so a misspelling silently drops it from the form.
+  for (const app of providerApps) {
+    const guidance = (app.entry.connectionGuidance ?? []) as {
+      requirement: string;
+      method: string;
+    }[];
+    const methods = (app.entry.auth as { method: string }[]).map((auth) => auth.method);
+    for (const entry of guidance) {
+      assert.equal(`provider-${entry.requirement}`, app.entry.id, app.entry.id);
+      assert.ok(methods.includes(entry.method), `${app.entry.id} ${entry.method}`);
+    }
+  }
 });

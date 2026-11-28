@@ -19,7 +19,7 @@ export const historyCaptureHoursStatements = [
     pool varchar(16) NOT NULL, hour timestamptz NOT NULL, usage_requests integer NOT NULL,
     uncaptured_requests integer NOT NULL, checked_at timestamptz NOT NULL,
     PRIMARY KEY (pool, hour))`,
-  // The recount reads the counts taken longest ago in one ordered read of this index.
+  // The oldest count, for the tick's inspect, in one read of this index.
   `CREATE INDEX basalt_model_capture_hours_checked ON basalt_model_capture_hours (checked_at)`,
 ];
 
@@ -36,7 +36,7 @@ export const captureSettledAfter = (row: string) =>
 
 /**
  * How far back from the settle horizon the counts reach: 400 days. An hour older than that is
- * never complete to the summary and its stored count is pruned, so the recount's work stays bounded.
+ * never complete to the summary and its stored count is pruned, so the counts stay bounded.
  */
 export const captureHoursLookbackHours = 400 * 24;
 

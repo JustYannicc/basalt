@@ -2,7 +2,7 @@
 
 Use `npm run ci:fast -- --base origin/main` when the candidate is committed and the checkout is clean. It catches the format, lint and type errors checked by the ordinary pull request fast job before they consume a remote CI cycle.
 
-Prepare the checkout with `HEAVY_SLOTS=6 heavy-slot npm run prepare:upstream` first. Use the exact Node and Bun versions declared by the `fast` job. Fetch the intended target before choosing `--base`; the command resolves the target and candidate to immutable commits without fetching or changing branches.
+Prepare the checkout with `HEAVY_SLOTS=6 heavy-slot npm run prepare:upstream` first. The fast job's Cloud startup and listener configs start a local Postgres container, so the command needs a running Docker daemon and network access to pull its pinned image. Use the exact Node and Bun versions declared by the `fast` job. Fetch the intended target before choosing `--base`; the command resolves the target and candidate to immutable commits without fetching or changing branches.
 
 The complete command automatically enters `heavy-slot` before running any checks, using six machine-wide slots by default. It fails if the wrapper is unavailable and waits while the machine-wide pause is active. A command already running inside a slot reuses that slot. The `--list` option only reads the plan and needs no slot.
 
@@ -20,7 +20,7 @@ After changing `upstream.json`, fetch its exact commit into `.upstream` and run 
 
 ## Affected lane
 
-A pull request from this repository runs the fast jobs plus the heavy jobs its changed files reach; [architecture/README.md](../../architecture/README.md) states the rule. A `ci.yml` change outside the job blocks runs every heavy job; one inside a job's block runs that job and the jobs that need it, with the block's synthetic `ci.yml#<job>` path as the reason. The selection and gate scripts listed in `selectionInputs` in `areas.ts` run no heavy job; setup and preparation scripts stay in `sharedInputs`. `node scripts/ci/select-jobs.ts` with `BASE_SHA` and `HEAD_SHA` set prints the selection and each job's reasons for a local candidate.
+No event requests the affected lane since 26-11-2026: pull requests run the fast lane, and a missed heavy failure is found in their batch's full Check. The lane, the fast jobs plus the heavy jobs a candidate's changed files reach, stays for a local candidate; [architecture/README.md](../../architecture/README.md) states the rule. A `ci.yml` change outside the job blocks runs every heavy job; one inside a job's block runs that job and the jobs that need it, with the block's synthetic `ci.yml#<job>` path as the reason. The selection and gate scripts listed in `selectionInputs` in `areas.ts` run no heavy job; setup and preparation scripts stay in `sharedInputs`. `node scripts/ci/select-jobs.ts` with `BASE_SHA` and `HEAD_SHA` set prints the selection and each job's reasons for a local candidate.
 
 The import graph sees imports, relative file literals, literal path arguments and scripts started with `node` or `bun`. A file read through a computed path is invisible to it: declare that read in `runtimeReads` in `areas.ts`, or give the data an area. A missed dependency still fails in the batch and main Checks, which run every heavy job.
 

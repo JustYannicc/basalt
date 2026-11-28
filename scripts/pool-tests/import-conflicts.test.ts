@@ -42,7 +42,7 @@ test("external import rejects changed retained contents and conflicting duplicat
     let inserts = 0;
     const adapter = {
       query: async (text: string, values?: unknown[]) => {
-        if (text.startsWith("INSERT INTO basalt_model_requests")) inserts++;
+        if (text.includes("INSERT INTO basalt_model_requests")) inserts++;
         const result = await db.query<Record<string, unknown>>(text, values);
         return { rows: result.rows, rowCount: result.affectedRows ?? null };
       },

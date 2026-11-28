@@ -1,10 +1,12 @@
-"""The /ready lapse and flip records: one per transition, only the last kept, closed fields."""
+"""The /ready lapse, flip and stall records: only the last kept, bounded lines, closed fields."""
 
 from __future__ import annotations
 
 import json
+import tempfile
 import threading
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from . import policy_monitor
@@ -199,6 +201,372 @@ class LapseFlipTests(unittest.TestCase):
             self.readiness.begin_recovery()
         self.assertTrue(held)
         self.assertFalse(any(held))
+
+
+class Counters:
+    """The kernel's steal counter and the cgroup's throttling counter, as files the monitor reads."""
+
+    def __init__(self, directory: str) -> None:
+        self.proc_stat = Path(directory, "stat")
+        self.cpu_stat = Path(directory, "cpu.stat")
+        self.steal_ticks = 1_000
+        self.throttled_usec = 5_000_000
+        self.write()
+
+    def write(self) -> None:
+        self.proc_stat.write_text(
+            f"cpu  100 0 50 9000 3 0 1 {self.steal_ticks} 0 0\n"
+            "cpu0 50 0 25 4500 1 0 0 0 0 0\ncpu1 50 0 25 4500 2 0 1 0 0 0\n"
+            "intr 12345 0 1\nctxt 999\n"
+        )
+        self.cpu_stat.write_text(
+            "usage_usec 900\nnr_periods 10\nnr_throttled 2\n"
+            f"throttled_usec {self.throttled_usec}\n"
+        )
+
+
+class Wait:
+    """The probe wait, its clock driven by the test: it returns `late_ms` after it was due, while
+    the host takes `steal_ms` and the quota holds the container back `throttled_ms`."""
+
+    def __init__(self, clock: Clock, counters: Counters | None = None) -> None:
+        self.clock = clock
+        self.counters = counters
+        self.late_ms = 0
+        self.steal_ms = 0
+        self.throttled_ms = 0
+        # The monitor's loop stops after this many waits; None never stops it.
+        self.rounds: int | None = None
+
+    def wait(self, seconds: float) -> bool:
+        self.clock.advance(int(seconds * 1000) + self.late_ms)
+        if self.counters is not None:
+            self.counters.steal_ticks += self.steal_ms * policy_monitor._ticks_per_second() // 1000
+            self.counters.throttled_usec += self.throttled_ms * 1000
+            self.counters.write()
+        if self.rounds is not None:
+            self.rounds -= 1
+        return self.is_set()
+
+    def is_set(self) -> bool:
+        return self.rounds is not None and self.rounds <= 0
+
+
+class StallTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.clock = Clock()
+        self.lines: list[str] = []
+        patcher = patch.object(readiness_module, "emit", lambda line, err=False: self.lines.append(line))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.readiness = Readiness("key", self.clock)
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.counters = Counters(directory.name)
+        self.monitor = policy_monitor.PolicyHealthMonitor(
+            self.readiness,
+            "key",
+            monotonic_ns=self.clock,
+            proc_stat=str(self.counters.proc_stat),
+            cpu_stats=(str(self.counters.cpu_stat),),
+        )
+        self.waits = Wait(self.clock, self.counters)
+
+    def payload(self) -> dict[str, object]:
+        return self.readiness.readiness_response()[1]
+
+    def test_a_wait_that_returns_late_records_the_stall_and_what_the_scheduler_did(self) -> None:
+        self.waits.late_ms, self.waits.steal_ms, self.waits.throttled_ms = 1_200, 300, 900
+        self.monitor.wait(self.waits, 0.5)
+        payload = self.payload()
+        self.assertEqual(payload["stalls"], 1)
+        stall = payload["last_stall"]
+        self.assertEqual(
+            {key: stall[key] for key in ("late_ms", "steal_ms", "throttled_ms", "cpus")},
+            {"late_ms": 1_200, "steal_ms": 300, "throttled_ms": 900, "cpus": 2},
+        )
+        # The supervisor's own CPU in that wait: a process that ran says so, one frozen says ~0.
+        self.assertIsInstance(stall["cpu_ms"], int)
+        self.assertGreaterEqual(stall["cpu_ms"], 0)
+        self.assertRegex(str(stall["at"]), r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+        self.assertEqual(len(self.lines), 1)
+        name, _space, body = self.lines[0].partition(" ")
+        self.assertEqual(name, "POOL_SUPERVISOR_STALL")
+        fields = json.loads(body)
+        self.assertEqual(
+            set(fields), {"late_ms", "cpu_ms", "steal_ms", "throttled_ms", "cpus", "stalls"}
+        )
+        self.assertEqual((fields["late_ms"], fields["steal_ms"], fields["throttled_ms"]), (1_200, 300, 900))
+
+    def test_a_counter_that_cannot_be_read_is_null(self) -> None:
+        monitor = policy_monitor.PolicyHealthMonitor(
+            self.readiness,
+            "key",
+            monotonic_ns=self.clock,
+            proc_stat=str(self.counters.proc_stat) + ".absent",
+            cpu_stats=(str(self.counters.cpu_stat) + ".absent",),
+        )
+        self.waits.late_ms = 2_000
+        monitor.wait(self.waits, 0.5)
+        stall = self.payload()["last_stall"]
+        self.assertIsNone(stall["steal_ms"])
+        self.assertIsNone(stall["throttled_ms"])
+        self.assertIsNone(stall["cpus"])
+        self.assertIn('"steal_ms":null', self.lines[0])
+        for broken in (
+            "",
+            "cpux 1 2 3\ncpu0 1 2 3\n",
+            "cpu 1 2\ncpu0 1 2\n",
+            "cpu 1 2 3 4 5 6 7 x\ncpu0 1 2 3 4 5 6 7 0\n",
+            # A total with no CPU under it gives nothing to set the steal against.
+            "cpu 1 2 3 4 5 6 7 8\nintr 1\n",
+        ):
+            self.counters.proc_stat.write_text(broken)
+            self.assertIsNone(policy_monitor.host_steal(str(self.counters.proc_stat)), broken)
+        self.counters.cpu_stat.write_text("throttled_usec many\n")
+        self.assertIsNone(policy_monitor.throttled_ms((str(self.counters.cpu_stat),)))
+
+    def test_cgroup_v1_reports_throttling_in_nanoseconds(self) -> None:
+        self.counters.cpu_stat.write_text("nr_periods 10\nnr_throttled 2\nthrottled_time 7000000\n")
+        self.assertEqual(policy_monitor.throttled_ms((str(self.counters.cpu_stat),)), 7)
+
+    def test_a_wait_on_time_records_nothing(self) -> None:
+        for late_ms in (0, 3, policy_monitor.STALL_LATE_MS - 1):
+            self.waits.late_ms = late_ms
+            self.monitor.wait(self.waits, 0.5)
+        payload = self.payload()
+        self.assertNotIn("stalls", payload)
+        self.assertNotIn("last_stall", payload)
+        self.assertEqual(self.lines, [])
+        self.waits.late_ms = policy_monitor.STALL_LATE_MS
+        self.monitor.wait(self.waits, 0.5)
+        self.assertEqual(self.payload()["stalls"], 1)
+
+    def test_the_monitor_loop_times_its_own_waits(self) -> None:
+        self.readiness.set_ready(True)
+        self.waits.late_ms, self.waits.rounds = 1_300, 1
+        with patch.object(policy_monitor, "probe_home_policy", lambda *_: ("healthy", INSTANCE)):
+            self.monitor.run(self.waits)
+        self.assertEqual(self.payload()["stalls"], 1)
+        self.assertEqual(self.payload()["last_stall"]["late_ms"], 1_300)
+
+    def test_every_stall_is_counted_and_only_one_that_may_lapse_the_lease_beats_the_line_gap(
+        self,
+    ) -> None:
+        # 13:02's shape: a short stall, then within seconds the one that lapses the lease.
+        for late_ms in (400, 300, 600, 1_600, 900, 1_000):
+            self.waits.late_ms = late_ms
+            self.monitor.wait(self.waits, 0.5)
+        payload = self.payload()
+        self.assertEqual(payload["stalls"], 6)
+        self.assertEqual(payload["last_stall"]["late_ms"], 1_000)
+        lined = [json.loads(line.partition(" ")[2]) for line in self.lines]
+        # The first; one longer than any since; two as late as the lease's slack.
+        self.assertEqual([line["late_ms"] for line in lined], [400, 600, 1_600, 1_000])
+        self.assertEqual([line["stalls"] for line in lined], [1, 3, 4, 6])
+        self.clock.advance(10_000)
+        self.waits.late_ms = 300
+        self.monitor.wait(self.waits, 0.5)
+        self.assertEqual(len(self.lines), 5)
+        self.assertEqual(json.loads(self.lines[4].partition(" ")[2])["stalls"], 7)
+
+
+SETTLED = "POOL_READINESS_SETTLED "
+
+
+class FirstReadyTests(unittest.TestCase):
+    """The process's first ready waits until the policy monitor's last 5 waits came back on time."""
+
+    def setUp(self) -> None:
+        self.clock = Clock()
+        self.lines: list[str] = []
+        for module in (readiness_module, policy_monitor):
+            patcher = patch.object(module, "emit", lambda line, err=False: self.lines.append(line))
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        healthy = patch.object(
+            policy_monitor, "probe_home_policy", lambda *_: ("healthy", INSTANCE)
+        )
+        healthy.start()
+        self.addCleanup(healthy.stop)
+        self.readiness = Readiness("key", self.clock)
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        counters = Counters(directory.name)
+        self.monitor = policy_monitor.PolicyHealthMonitor(
+            self.readiness,
+            "key",
+            monotonic_ns=self.clock,
+            proc_stat=str(counters.proc_stat),
+            cpu_stats=(str(counters.cpu_stat),),
+        )
+        self.waits = Wait(self.clock, counters)
+        self.first = policy_monitor.FirstReady(self.readiness, self.clock)
+
+    def audit(self) -> bool:
+        """One passing services audit, as the supervisor's start loop reports it."""
+        return self.first.set_ready(True, audit_revision=self.readiness.service_audit_revision())
+
+    def turn(self, late_ms: int) -> bool:
+        """One turn of the monitor's loop, a healthy probe and its 0.5 s wait, then one audit."""
+        self.monitor.check_once()
+        self.waits.late_ms = late_ms
+        self.monitor.wait(self.waits, 0.5)
+        return self.audit()
+
+    def settled(self) -> list[dict[str, object]]:
+        return [json.loads(line[len(SETTLED):]) for line in self.lines if line.startswith(SETTLED)]
+
+    def assert_answers_as_before_any_audit(self) -> None:
+        ready, payload, lease_ms = self.readiness.readiness_response()
+        self.assertEqual((ready, lease_ms), (False, 0))
+        # A live lease and no passed audit, never flipped; stall records are the stall line's own.
+        self.assertEqual(
+            {key: value for key, value in payload.items() if key not in ("stalls", "last_stall")},
+            {
+                "boot_id": self.readiness.boot_id,
+                "started_at": self.readiness.started_at,
+                "db_rtt_state": "pending",
+                "refusal": "degraded",
+            },
+        )
+
+    def test_slow_probes_hold_the_first_ready_as_late_waits_do(self) -> None:
+        def slow(*_: object) -> tuple[str, str]:
+            # The probe's own call runs past its 250 ms budget.
+            self.clock.advance(policy_monitor.POLICY_PROBE_BUDGET_NS // 1_000_000 + 1)
+            return "healthy", INSTANCE
+
+        with patch.object(policy_monitor, "probe_home_policy", slow):
+            for _ in range(6):
+                self.assertFalse(self.turn(0))
+                self.assert_answers_as_before_any_audit()
+        # The last slow probe's own wait was on time, so it starts the new run: a probe exactly at
+        # its budget is steady, and 4 such turns make the 5 waits.
+        def at_budget(*_: object) -> tuple[str, str]:
+            self.clock.advance(policy_monitor.POLICY_PROBE_BUDGET_NS // 1_000_000)
+            return "healthy", INSTANCE
+
+        with patch.object(policy_monitor, "probe_home_policy", at_budget):
+            self.assertEqual([self.turn(0) for _ in range(4)], [False, False, False, True])
+        self.assertEqual([line["ended"] for line in self.settled()], ["on_time"])
+
+    def test_a_failed_probe_starts_the_on_time_run_again(self) -> None:
+        for _ in range(4):
+            self.assertFalse(self.turn(0))
+        with patch.object(policy_monitor, "probe_home_policy", lambda *_: ("unavailable", None)):
+            self.monitor.check_once()
+        self.assertEqual(self.readiness.waits_on_time(), 0)
+
+    def test_missed_probes_while_home_boots_leave_no_run_behind(self) -> None:
+        # Connection refused while Home boots: the probe comes back missed at once, every wait on time.
+        with patch.object(policy_monitor, "probe_home_policy", lambda *_: ("missed", None)):
+            for _ in range(10):
+                self.monitor.check_once()
+                self.waits.late_ms = 0
+                self.monitor.wait(self.waits, 0.5)
+        # Home is up: the first healthy probe renews the lease, and the audit still waits.
+        self.monitor.check_once()
+        self.assertFalse(self.audit())
+        self.assert_answers_as_before_any_audit()
+
+    def test_a_refused_lease_refresh_starts_the_on_time_run_again(self) -> None:
+        for _ in range(4):
+            self.assertFalse(self.turn(0))
+        with patch.object(self.readiness, "refresh_policy_lease", lambda *_: False):
+            self.assertEqual(self.monitor.check_once(), "unavailable")
+        self.assertEqual(self.readiness.waits_on_time(), 0)
+
+    def test_a_wait_overdue_but_not_yet_back_holds_the_first_ready(self) -> None:
+        for _ in range(5):
+            self.monitor.check_once()
+            self.waits.late_ms = 0
+            self.monitor.wait(self.waits, 0.5)
+        # The next wait is under way and already 300 ms past due: a stall the monitor hasn't seen.
+        self.monitor.check_once()
+        self.readiness.note_wait_started(0.5)
+        self.clock.advance(800)
+        self.assertFalse(self.audit())
+        self.assert_answers_as_before_any_audit()
+
+    def test_a_failed_audit_between_passing_ones_keeps_the_bound_from_the_first(self) -> None:
+        self.assertFalse(self.turn(500))
+        self.assertFalse(self.first.set_ready(False, audit_revision=self.readiness.service_audit_revision()))
+        for _ in range(29):
+            self.assertFalse(self.turn(500))
+        self.assertTrue(self.turn(500))
+        self.assertEqual([line["ended"] for line in self.settled()], ["bound"])
+        self.assertEqual(self.settled()[0]["held_ms"], 30_000)
+
+    def test_the_hold_gives_way_before_the_start_s_deadline(self) -> None:
+        self.monitor.check_once()
+        margin_s = policy_monitor.FIRST_READY_DEADLINE_MARGIN_NS / 1_000_000_000
+        revision = self.readiness.service_audit_revision()
+        self.assertFalse(self.first.set_ready(True, audit_revision=revision, remaining_s=margin_s + 1))
+        self.assertTrue(self.first.set_ready(True, audit_revision=revision, remaining_s=margin_s))
+        self.assertEqual([line["ended"] for line in self.settled()], ["deadline"])
+
+    def test_a_quiet_start_is_ready_after_five_waits_on_time(self) -> None:
+        # The audit can pass before the monitor has timed a single wait; that is held too.
+        self.monitor.check_once()
+        self.assertFalse(self.audit())
+        self.assert_answers_as_before_any_audit()
+        for _ in range(4):
+            self.assertFalse(self.turn(0))
+            self.assert_answers_as_before_any_audit()
+        self.assertTrue(self.turn(0))
+        self.assertTrue(self.readiness.snapshot()[0])
+        self.assertEqual(self.settled(), [{"held_ms": 2_500, "ended": "on_time"}])
+
+    def test_a_starved_start_holds_the_first_ready_until_five_waits_in_a_row_are_on_time(
+        self,
+    ) -> None:
+        # 250 ms late is a stall and starts the count again; 249 ms is on time.
+        for late_ms in (250, 249, 0, 0, 0, 250, 249, 0, 0, 0):
+            self.assertFalse(self.turn(late_ms), late_ms)
+            self.assert_answers_as_before_any_audit()
+        self.assertTrue(self.turn(0))
+        # From the first passing audit, 750 ms in, to the eleventh turn's.
+        self.assertEqual(self.settled(), [{"held_ms": 5_748, "ended": "on_time"}])
+
+    def test_waits_late_throughout_hold_the_first_ready_for_30_seconds_at_most(self) -> None:
+        # Every 0.5 s wait returns 500 ms late, a stall each turn, inside the 1.5 s lease.
+        for _ in range(30):
+            self.assertFalse(self.turn(500))
+        self.assert_answers_as_before_any_audit()
+        self.assertTrue(self.turn(500))
+        self.assertEqual(self.settled(), [{"held_ms": 30_000, "ended": "bound"}])
+
+    def test_only_the_first_ready_is_held(self) -> None:
+        for late_ms in (0, 0, 0, 0):
+            self.assertFalse(self.turn(late_ms))
+        self.assertTrue(self.turn(0))
+        # A wait 1.2 s late lapses the lease; the next healthy probe renews it, and the runtime is
+        # ready again at once, though no wait since that stall has come back on time.
+        self.assertFalse(self.turn(1_200))
+        self.assertEqual(self.readiness.snapshot()[1]["refusal"], "policy_unproven")
+        self.monitor.check_once()
+        self.assertEqual(self.readiness.waits_on_time(), 0)
+        self.assertTrue(self.audit())
+        self.assertEqual(self.readiness.snapshot()[1]["last_flip"]["to"], "ready")
+
+    def test_the_settled_line_comes_once(self) -> None:
+        self.assertFalse(self.turn(600))
+        for late_ms in (0, 0, 0, 0, 0, 0, 1_200, 0, 300, 0):
+            self.turn(late_ms)
+        self.monitor.check_once()
+        self.assertTrue(self.audit())
+        settled = [line for line in self.lines if line.startswith(SETTLED)]
+        self.assertEqual(settled, [SETTLED + '{"held_ms":2500,"ended":"on_time"}'])
+
+    def test_without_a_monitor_timing_its_waits_the_first_ready_is_not_held(self) -> None:
+        # A real monitor times its waits from construction; only stand-ins in tests time none.
+        readiness = Readiness("key", self.clock)
+        self.assertIsNone(readiness.waits_on_time())
+        self.assertTrue(readiness.refresh_policy_lease(INSTANCE))
+        first = policy_monitor.FirstReady(readiness, self.clock)
+        self.assertTrue(first.set_ready(True, audit_revision=readiness.service_audit_revision()))
+        self.assertEqual(self.settled(), [])
 
 
 class LapseFlipPrivacyTests(unittest.TestCase):

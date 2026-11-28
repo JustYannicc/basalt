@@ -1,0 +1,223 @@
+diff --git a/e2e/tests/dashboard-code-highlighting.spec.ts b/e2e/tests/dashboard-code-highlighting.spec.ts
+new file mode 100644
+index 000000000..0d4c2e3b4
+--- /dev/null
++++ b/e2e/tests/dashboard-code-highlighting.spec.ts
+@@ -0,0 +1,217 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schedule, Schema } from "effect";
++import type { Page } from "playwright";
++import { randomUUID } from "node:crypto";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { Evidence } from "../support/evidence.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { App } from "../support/contracts.ts";
++import { scenarios } from "../test-plan.ts";
++import { appsManifest } from "../support/apps-release.ts";
++
++/** The member could not read the shared app's skills yet. */
++class SkillsNotShared extends Schema.TaggedError<SkillsNotShared>()("SkillsNotShared", {
++  status: Schema.Number,
++}) {}
++
++/** Text without quotes or angle brackets, so the server's escaping leaves it unchanged. */
++const snippets = {
++  /** A grammar the server engine carries: the document arrives colored. */
++  typescript: "const count: number = 42;\nexport default count;",
++  /** One it leaves to the browser: the document arrives plain. */
++  javascript: "const total = 40 + 2;\nexport default total;",
++} as const;
++type Language = keyof typeof snippets;
++const languages = Object.keys(snippets) as ReadonlyArray<Language>;
++const block = (page: Page, language: Language) =>
++  page
++    .getByRole("region", { name: "App skills", exact: true })
++    .locator("pre", { hasText: snippets[language].split("\n")[0]! });
++const box = (page: Page, language: Language) =>
++  block(page, language)
++    .boundingBox()
++    .then((value) => {
++      if (value === null) throw new Error(`The ${language} code block is not laid out`);
++      return value;
++    });
++const colors = (page: Page, language: Language) =>
++  block(page, language)
++    .locator("code span[style]")
++    .evaluateAll((tokens) => new Set(tokens.map((token) => getComputedStyle(token).color)).size);
++
++/**
++ * The dashboard's server build highlights with only the TypeScript, JSON and shell grammars
++ * (carry 0804). A reader of a shared app gets its skill with the page, so the document carries
++ * the TypeScript block colored and the JavaScript block plain, and the browser colors the plain
++ * one once its engine loads. The browser's engine chunk is held until the blocks are measured, so
++ * the colors are the only change the test can see, and nothing may move when they arrive. Whether
++ * the TypeScript block keeps the server's colors through hydration is not checked here: the page
++ * can still rebuild it after hydration (issue #2123), and then it waits for the engine too.
++ */
++layer(HostedLive, { excludeTestServices: true })("Dashboard code highlighting", (it) => {
++  for (const [scenario, viewport] of [
++    [scenarios.dashboardCodeHighlighting, { width: 1440, height: 960 }],
++    [scenarios.dashboardCodeHighlightingMobile, { width: 390, height: 844 }],
++  ] as const)
++    it.effect(scenario.title, (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const actors = yield* Actors;
++          const api = yield* Api;
++          const browser = yield* Browser;
++          const prefix = `/api/organizations/${actors.organization.id}/apps`;
++          const deployed = yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
++            name: `Code highlighting ${randomUUID().slice(0, 8)}`,
++            files: [
++              {
++                path: "index.ts",
++                content: `import { defineApp } from "apps";\nexport default defineApp({}, async () => ({}));`,
++              },
++              {
++                path: "skills/count/SKILL.md",
++                content: `---\nname: count\ndescription: Count something.\n---\n# Count\n\n\`\`\`ts\n${snippets.typescript}\n\`\`\`\n\n\`\`\`js\n${snippets.javascript}\n\`\`\`\n`,
++              },
++              appsManifest,
++            ],
++          });
++          expect(deployed.status).toBe(200);
++          const app = yield* body(App, deployed);
++          yield* Effect.addFinalizer(() =>
++            api.request(actors.owner, "DELETE", `${prefix}/${app.id}`).pipe(
++              Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))),
++              Effect.orDie,
++            ),
++          );
++          const access = yield* body(
++            Schema.Struct({ revision: Schema.String }),
++            yield* api.request(actors.owner, "GET", `${prefix}/${app.id}/access`),
++          );
++          expect(
++            (yield* api.request(actors.owner, "PATCH", `${prefix}/${app.id}/access`, {
++              revision: access.revision,
++              audience: { kind: "everyone" },
++            })).status,
++          ).toBe(200);
++          const url = `/org/${actors.organization.slug}/apps/${app.id}?view=skills`;
++          // A page opened before the member can read the new app's skills shows none, which is not
++          // what this test is about: wait until the member's own read succeeds.
++          const evidence = yield* Evidence;
++          const refusals: number[] = [];
++          yield* api.request(actors.member, "GET", `${prefix}/${app.id}/skill-bundle`).pipe(
++            Effect.flatMap((response) => {
++              if (response.status === 200) return Effect.void;
++              refusals.push(response.status);
++              return Effect.fail(new SkillsNotShared({ status: response.status }));
++            }),
++            Effect.retry({
++              while: Schema.is(SkillsNotShared),
++              schedule: Schedule.spaced("250 millis"),
++              times: 120,
++            }),
++            Effect.ensuring(
++              Effect.suspend(() => evidence.json("member-skill-reads.json", { refusals })),
++            ),
++          );
++
++          yield* browser.login(actors.member);
++          yield* browser.use("Set the viewport", (page) => page.setViewportSize(viewport));
++          let release = () => {};
++          const released = new Promise<void>((resolve) => {
++            release = resolve;
++          });
++          const engineRequests: string[] = [];
++          yield* browser.use("Hold the browser's highlight engine", (page) =>
++            page.route(/\/highlight-engine-[\w-]+\.js(?:\?|$)/, (route) => {
++              engineRequests.push(route.request().url());
++              return released.then(() => route.continue());
++            }),
++          );
++
++          // The browser's own document, not a second request: that is the markup it hydrates.
++          const html = yield* browser.use("Open the shared app's skills", (page) =>
++            page.goto(url).then((response) => {
++              if (response === null) throw new Error("The skills page answered no document");
++              return response.text().then((text) => ({ status: response.status(), text }));
++            }),
++          );
++          expect(html.status).toBe(200);
++          const served = yield* browser.use("Read the code blocks the document carries", (page) =>
++            page.evaluate(
++              (text) =>
++                [
++                  ...new DOMParser()
++                    .parseFromString(text, "text/html")
++                    .querySelectorAll("pre code"),
++                ].map((code) => ({
++                  text: code.textContent ?? "",
++                  colors: new Set(
++                    [...code.querySelectorAll("span[style*='--shiki-dark']")].map((span) =>
++                      span.getAttribute("style"),
++                    ),
++                  ).size,
++                })),
++              html.text,
++            ),
++          );
++          const servedAs = (language: Language) =>
++            served.find((entry) => entry.text === `${snippets[language]}\n`);
++          expect(servedAs("typescript")?.colors).toBeGreaterThan(1);
++          expect(servedAs("javascript")?.colors).toBe(0);
++
++          yield* browser.use("The page hydrates", (page) =>
++            page.locator("html[data-hydrated]").waitFor({ state: "attached" }),
++          );
++          for (const language of languages) {
++            yield* browser.use(`The reader shows the ${language} block`, (page) =>
++              block(page, language).locator("code").waitFor({ state: "visible" }),
++            );
++            expect(
++              yield* browser.use(`Read the ${language} block`, (page) =>
++                block(page, language).locator("code").textContent(),
++              ),
++            ).toBe(`${snippets[language]}\n`);
++          }
++          expect(
++            yield* browser.use("The JavaScript block is plain before the engine loads", (page) =>
++              block(page, "javascript").locator("code span[style]").count(),
++            ),
++          ).toBe(0);
++          const before = {
++            typescript: yield* browser.use("Measure the TypeScript block", (page) =>
++              box(page, "typescript"),
++            ),
++            javascript: yield* browser.use("Measure the JavaScript block", (page) =>
++              box(page, "javascript"),
++            ),
++          };
++          yield* browser.checkpoint(`${viewport.width} code blocks before the browser engine`);
++
++          yield* Effect.sync(release);
++          for (const language of languages)
++            yield* browser.use(`The ${language} block takes distinct syntax colors`, (page) =>
++              expect
++                // The engine is about 730 KB to fetch and start once released.
++                .poll(() => colors(page, language), { timeout: 30_000 })
++                .toBeGreaterThan(1),
++            );
++          expect(engineRequests.length).toBeGreaterThan(0);
++          for (const language of languages) {
++            expect(
++              yield* browser.use(`Read the highlighted ${language} block`, (page) =>
++                block(page, language).locator("code").textContent(),
++              ),
++            ).toBe(`${snippets[language]}\n`);
++            const after = yield* browser.use(`Measure the highlighted ${language} block`, (page) =>
++              box(page, language),
++            );
++            for (const side of ["x", "y", "width", "height"] as const)
++              expect(Math.abs(after[side] - before[language][side])).toBeLessThanOrEqual(0.5);
++          }
++          yield* browser.checkpoint(`${viewport.width} highlighted code blocks`);
++        }),
++      ),
++    );
++});

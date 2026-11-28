@@ -12,10 +12,14 @@ export async function summaryCoverage(
   db: HistoryDatabase,
   selection: Awaited<ReturnType<typeof summarySelection>>,
   authority: SeriesAuthority,
-  coverageQuery: typeof summaryCoverageQuery = summaryCoverageQuery,
+  /** The coverage rows a rolled summary's figures statement already read; else the raw read. */
+  rolledRows?: readonly Record<string, unknown>[],
 ) {
-  const query = coverageQuery(selection);
-  const rows = (await db.query(query.text, query.values)).rows;
+  let rows = rolledRows;
+  if (rows === undefined) {
+    const query = summaryCoverageQuery(selection);
+    rows = (await db.query(query.text, query.values)).rows;
+  }
   if (rows.length > 500) throw new Error("Usage source coverage exceeds its bound");
   // Read one indexed timestamp bucket. Too many microsecond ties leave the exact start unknown.
   const state = (

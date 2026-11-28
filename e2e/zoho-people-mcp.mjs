@@ -471,7 +471,10 @@ try {
     diagnostics.error ?? error,
     diagnostics.failurePhase ?? diagnostics.phase,
   );
-  await writeFile(join(directory, "partial-results.json"), JSON.stringify(results, null, 2));
+  await writeFile(
+    join(directory, "partial-results.json"),
+    JSON.stringify({ results, pageErrors: diagnostics.pageErrors ?? [] }, null, 2),
+  );
   await writeFile(
     join(directory, "failure.txt"),
     `${failure.publicLine}\n${failure.privateDetail}`,

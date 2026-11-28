@@ -1,8 +1,25 @@
 import { ControlFailure } from "./json.ts";
 import { membershipReadMs, type NativeMembershipPolicy } from "./membership-contract.ts";
 
+/** One Home reference and the saved account the host's last read linked it to. */
+export interface MembershipIdentity {
+  reference: string;
+  account: string;
+}
+
+/** What the pool view needs to name each Home account's saved account. */
+export interface NativeAccountIdentities {
+  readonly native: boolean;
+  readonly accounts: readonly { readonly account: string; readonly homeReference: string | null }[];
+}
+
 export interface MembershipState extends NativeMembershipPolicy {
   native: boolean;
+  /**
+   * The last host read's account for each Home reference, for the pool view's annotation. Absent in
+   * a state written before it was kept; the view then reads membership from the host as before.
+   */
+  identities?: MembershipIdentity[];
   nativeConfirmed?: boolean;
   checkedAt: number;
   installedRevision: number;

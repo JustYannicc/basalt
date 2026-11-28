@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "A production operation's write transaction ends itself after ten idle seconds, so a proof that pauses one at a step boundary keeps the pause to single statements. The released-retirement race proof runs another organization's unchanged deploy outside the pause and checks that it leaves the shared provider row's version unchanged, then takes and commits that row's lock inside the pause, the only trace such a deploy leaves on the row, and expects the repair to answer busy. A whole deploy never runs inside the pause: its build and activation can outlast ten seconds on a loaded runner and would end the paused transaction with SQL state class 25."
+    }
+  }
+}

@@ -119,14 +119,12 @@ export const CaptureHours = Schema.Struct({
       }),
     ),
   ),
-  recountPosition: Schema.optional(
-    Schema.NullOr(
-      Schema.Struct({
-        pool: Schema.String.check(Schema.isPattern(/^[0-9a-f]{16}$/u)),
-        block: Schema.String,
-      }),
-    ),
+  // When Home last remapped pools' keys or users, which made their counts be counted again, and
+  // how many pools are still being counted again.
+  lastRemap: Schema.optional(
+    Schema.NullOr(Schema.Struct({ at: Schema.String, pools: Schema.Number })),
   ),
+  recountingPools: Schema.optional(Schema.Number),
 });
 const Inspect = Schema.Struct({
   result: Schema.Struct({

@@ -1718,13 +1718,13 @@ test("growth logs its refusal once per change of reason, and again after a launc
   assert.equal(f.calls.starts, 1);
 });
 
-test("growth keeps a provider refusal's closed code beside its class", async (context) => {
+test("growth keeps a provider refusal's closed code, read and reason beside its class", async (context) => {
   const f = fixture(3, 1);
   const log = context.mock.method(console, "warn", () => {});
   let refuse = true;
   const reserve = f.state.reserve.bind(f.state);
   context.mock.method(f.state, "reserve", async (...args: Parameters<typeof f.state.reserve>) => {
-    if (refuse) throw new ProviderObservationRefused("provider_fetch_failed");
+    if (refuse) throw new ProviderObservationRefused({ reason: "fetch_failed" });
     return reserve(...args);
   });
   f.pressure(3);
@@ -1739,10 +1739,11 @@ test("growth keeps a provider refusal's closed code beside its class", async (co
         "POOL_FLEET_GROWTH_REFUSED",
         {
           step: null,
-          reason: null,
+          reason: "fetch_failed",
           cause: null,
           error: "ProviderObservationRefused",
           provider: "provider_fetch_failed",
+          read: null,
         },
       ],
     ],

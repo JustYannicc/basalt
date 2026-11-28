@@ -16,7 +16,7 @@ test("the default provider fetcher observes through native workerd and refuses r
             return fetch("https://api.cloudflare.com/synthetic-control");
           const reader = new RuntimeProviderReader("synthetic-provider-token");
           try {
-            return Response.json(await reader.observe(env.expected));
+            return Response.json(await reader.observe("launch", env.expected));
           } catch (error) {
             return Response.json({ error: error.message, code: error.code ?? null }, { status: 409 });
           }

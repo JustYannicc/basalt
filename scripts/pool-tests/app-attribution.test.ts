@@ -116,7 +116,7 @@ test("app attribution upgrades additively and new Home attempts retain app perso
     ]);
     await add(3, "c".repeat(64));
     // Home's management DELETE soft-deletes APIKeyRecord. Capture must still find its metadata.
-    await db.query("ALTER TABLE api_key ADD COLUMN deleted_at timestamptz");
+    await db.query("ALTER TABLE api_key ADD COLUMN IF NOT EXISTS deleted_at timestamptz");
     await db.query("UPDATE api_key SET deleted_at = CURRENT_TIMESTAMP WHERE id = 2");
     await captureHomeRequests(db);
     await captureHomeRequests(db);

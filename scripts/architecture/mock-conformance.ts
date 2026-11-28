@@ -4,6 +4,8 @@ import { declaredScenarios, implementsScenario } from "./mock-scenarios.ts";
 import { parseDocument } from "yaml";
 import { patternForGroup, readDeclarations } from "../ci/declarations.ts";
 
+type Declarations = ReturnType<typeof readDeclarations>;
+
 const object = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const word = (value: unknown): value is string =>
@@ -96,6 +98,7 @@ export function parseMockContract(value: unknown): Contract {
 // Computed shell selectors establish coverage only through the verified declaration CLI.
 function runsScenario(
   root: string,
+  declarations: Declarations | undefined,
   job: Record<string, unknown>,
   proof: Proof,
   scenario: { file: string; title: string },
@@ -122,13 +125,15 @@ function runsScenario(
         );
         if (declared) {
           if (match[2] !== '"') return false;
-          const { files, groups } = readDeclarations(root);
+          const { files, groups } = declarations ?? readDeclarations(root);
           const group = groups[declared[1]!];
           return (
             group?.job === proof.job &&
             group.target === proof.target &&
             files[scenario.file]?.runs[proof.scenario]?.includes(declared[1]!) === true &&
-            new RegExp(patternForGroup(declared[1]!, scenario.file, root)).test(scenario.title)
+            new RegExp(patternForGroup(declared[1]!, scenario.file, root, declarations)).test(
+              scenario.title,
+            )
           );
         }
         if (/\$[a-zA-Z{(]|`/.test(match[3]!)) return false;
@@ -173,9 +178,14 @@ export function mockConformanceErrors(root: string, requiredJobs: readonly strin
   const errors: string[] = [],
     identities = new Set<string>();
   const plan = declaredScenarios(readFileSync(join(root, ".upstream/e2e/test-plan.ts"), "utf8"));
+  // One read per scan, which every proof's job check reuses. Declared inputs choose affected CI
+  // lanes, not which jobs run a scenario, so this scan leaves their matching to the declarations'
+  // own checks.
+  let declarations: Declarations | undefined;
   if (existsSync(join(root, "e2e/plans"))) {
     try {
-      for (const [file, entry] of Object.entries(readDeclarations(root).files))
+      declarations = readDeclarations(root, { inputs: false });
+      for (const [file, entry] of Object.entries(declarations.files))
         for (const [key, scenario] of Object.entries(entry.scenarios))
           plan.set(key, {
             file,
@@ -236,7 +246,7 @@ export function mockConformanceErrors(root: string, requiredJobs: readonly strin
           !gate.includes(proof.job) ||
           !object(job) ||
           job.if !== `contains(fromJSON(needs.select.outputs.jobs), '${proof.job}')` ||
-          !runsScenario(root, job, proof, scenario)
+          !runsScenario(root, declarations, job, proof, scenario)
         )
           errors.push(`${label}: required CI job does not run this scenario`);
       }

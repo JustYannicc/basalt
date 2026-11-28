@@ -184,8 +184,27 @@ test("a refusal or a provider's 429 after this run's admitted boot read rolls ba
         outputs: await outputs(join(dir, `accept-${label}`)),
       };
     };
+    // The workflow reads the check mode from the policy file before any of these steps; a policy
+    // not yet on main is named with the mode it will carry.
+    const modeOf = async (policy: string) =>
+      policy === "route-gateway-class"
+        ? "cutover-classes"
+        : String(
+            (
+              JSON.parse(
+                await readFile(new URL(`./policies/${policy}.json`, import.meta.url), "utf8"),
+              ) as { check: { mode: string } }
+            ).check.mode,
+          );
+    const modes = Object.fromEntries(
+      await Promise.all(
+        ["code", "cutover-classes", "route-gateway-class"].map(
+          async (policy) => [policy, await modeOf(policy)] as const,
+        ),
+      ),
+    );
     const context = (policy: string, accept: Awaited<ReturnType<typeof after>>): Context => ({
-      env: { MODE: "apply", POLICY_NAME: policy },
+      env: { MODE: "apply", POLICY_NAME: policy, POLICY_MODE: modes[policy] ?? "" },
       steps: {
         serving: { outcome: "success" },
         apply: { outcome: "success" },
@@ -216,6 +235,22 @@ test("a refusal or a provider's 429 after this run's admitted boot read rolls ba
       assert.equal(
         holds("Stop on a failed class change", context("cutover-classes", accept)),
         true,
+        label,
+      );
+      // The route gateway's class change is the same kind: never rolled back, it stops red.
+      assert.equal(
+        holds("Roll back a failed release", context("route-gateway-class", accept)),
+        false,
+        label,
+      );
+      assert.equal(
+        holds("Stop on a failed class change", context("route-gateway-class", accept)),
+        true,
+        label,
+      );
+      assert.equal(
+        holds("Stop on an acceptance that could not test", context("route-gateway-class", accept)),
+        false,
         label,
       );
       const stop = await runStep("Stop on a failed class change", dir, {

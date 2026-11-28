@@ -1,0 +1,181 @@
+name: Emulated upstream
+run-name: Emulated upstream / ${{ github.event_name == 'schedule' && 'expire' || inputs.mode }}
+
+# The load proof's keyed mock model upstream, on its one stage. Deploy, check and destroy are
+# dispatched by hand from main with the coordinator's written go; the schedule only destroys a
+# stage past its 10-hour lease, or one a run left behind.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: deploy builds the keyed mock, checks it and starts a 10-hour lease; check calls each shape streamed and whole, and through both account profiles; destroy removes it
+        required: true
+        type: choice
+        options: [deploy, check, destroy]
+      stage:
+        description: Only test-emulated-upstream is permitted
+        required: true
+        type: choice
+        options: [test-emulated-upstream]
+        default: test-emulated-upstream
+      go:
+        description: The coordinator's go for this run, coordinator-YYYY-MM-DD-<text>
+        required: true
+        type: string
+  schedule:
+    - cron: "23 * * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  emulated:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    # Dispatches run one at a time. The expiry has a group of its own: a newer run queued in a shared
+    # group would cancel a pending dispatch.
+    concurrency:
+      group: emulated-upstream
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    # Every step before the mode has its own limit (15 minutes in all, with the toolchain's 25), and
+    # the mode at most 45: the teardown after a failed deploy still finds 12 of its own minutes before
+    # the job's reserve. scripts/emulated-upstream/stage-runs.test.mjs checks this sum.
+    timeout-minutes: 100
+    # The key lives only in this environment, which the coordinator fills; deploy and check read it.
+    environment: emulated-upstream
+    env:
+      EMULATED_MODE: ${{ inputs.mode }}
+      EMULATED_STAGE: ${{ inputs.stage }}
+      EMULATED_GO: ${{ inputs.go }}
+      EMULATED_OUTPUT: .local/emulated-upstream
+      # The job's own limit, as timeout-minutes above: a teardown's requests end before it.
+      EMULATED_JOB_LIMIT_MINUTES: 100
+    steps:
+      # Expressions compare case-insensitively, so a branch named MAIN would pass the job's condition.
+      - name: Refuse every ref but main
+        timeout-minutes: 1
+        run: test "$GITHUB_REF" = refs/heads/main
+      - name: Note when the job started
+        timeout-minutes: 1
+        run: echo "EMULATED_JOB_STARTED_MS=$(date +%s%3N)" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        timeout-minutes: 3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        timeout-minutes: 3
+        with:
+          node-version: 24.18.0
+      - name: Refuse a wrong stage, mode or go before loading credentials
+        timeout-minutes: 1
+        run: node scripts/emulated-upstream/guard.ts
+      - uses: oven-sh/setup-bun@v2
+        if: inputs.mode == 'deploy'
+        timeout-minutes: 3
+        with:
+          bun-version: 1.4.2
+      - name: Prepare the deployment toolchain
+        if: inputs.mode == 'deploy'
+        timeout-minutes: 25
+        run: npm run prepare:upstream
+      - name: Check the stage's stack and Worker
+        if: inputs.mode == 'deploy'
+        timeout-minutes: 3
+        run: |
+          .upstream/node_modules/.bin/tsc-rs --noEmit -p scripts/emulated-upstream/tsconfig.stack.json
+          .upstream/node_modules/.bin/tsc-rs --noEmit -p scripts/emulated-upstream/tsconfig.worker.json
+      # A mode that runs long is stopped while the teardown after it still has its time.
+      - name: Execute the mode
+        timeout-minutes: 45
+        run: node scripts/emulated-upstream/run.mjs
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          EMULATED_UPSTREAM_KEY: ${{ (inputs.mode == 'deploy' || inputs.mode == 'check') && secrets.EMULATED_UPSTREAM_KEY || '' }}
+      # A failed, cancelled or timed-out deploy tears down, but only once it may have created
+      # something: a deploy refused because the stage exists leaves that stage alone.
+      - name: Tear down after an unsuccessful deploy
+        if: ${{ !success() && inputs.mode == 'deploy' && hashFiles('.local/emulated-upstream/deploy-started.json') != '' }}
+        run: node scripts/emulated-upstream/run.mjs
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          EMULATED_MODE: destroy
+      # A job stopped before the mode wrote anything, by its guard or its setup, still leaves a file.
+      - name: Record a stop before the mode ran
+        if: ${{ !success() && hashFiles('.local/emulated-upstream/*.json') == '' }}
+        timeout-minutes: 1
+        run: |
+          mkdir -p .local/emulated-upstream
+          echo '{"stop":"before-the-mode-ran"}' > .local/emulated-upstream/stopped-run.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: emulated-upstream-${{ github.run_id }}
+          path: .local/emulated-upstream
+          if-no-files-found: warn
+          retention-days: 7
+
+  # No key and no environment: an expiry only reads the lease and removes the stage by name.
+  expire:
+    if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'
+    concurrency:
+      group: emulated-upstream-expiry
+      cancel-in-progress: false
+    # Reading this workflow's runs is the only extra permission, and only this job has it.
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      EMULATED_MODE: expire
+      EMULATED_STAGE: test-emulated-upstream
+      EMULATED_OUTPUT: .local/emulated-upstream
+      EMULATED_JOB_LIMIT_MINUTES: 20
+    steps:
+      - name: Refuse every ref but main
+        run: test "$GITHUB_REF" = refs/heads/main
+      - name: Note when the job started
+        run: echo "EMULATED_JOB_STARTED_MS=$(date +%s%3N)" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - name: Refuse anything but the scheduled expiry before loading credentials
+        run: node scripts/emulated-upstream/guard.ts
+      # A dispatched run that is queued or running may be using the stage; the next hour retries.
+      - name: Skip while a dispatched run is queued or running
+        id: dispatches
+        run: node scripts/emulated-upstream/dispatch-busy.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Destroy the stage once its lease has passed
+        if: steps.dispatches.outputs.skip == 'false'
+        run: node scripts/emulated-upstream/run.mjs
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      - name: Record an expiry skipped while a dispatched run is busy
+        if: steps.dispatches.outputs.skip == 'true'
+        run: |
+          mkdir -p .local/emulated-upstream
+          echo '{"outcome":"skipped-busy"}' > .local/emulated-upstream/expire.json
+      # The guard, the busy check or the setup stopped the job before the expiry wrote anything.
+      - name: Record a stop before the expiry ran
+        if: ${{ !success() && hashFiles('.local/emulated-upstream/*.json') == '' }}
+        run: |
+          mkdir -p .local/emulated-upstream
+          echo '{"stop":"before-the-expiry-ran"}' > .local/emulated-upstream/stopped-run.json
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && hashFiles('.local/emulated-upstream/teardown.json', '.local/emulated-upstream/expire.json', '.local/emulated-upstream/stopped-*.json') != '' }}
+        # The record is evidence, never the outcome: an upload that fails, or a re-run whose name
+        # already exists, does not turn the expiry's own result.
+        continue-on-error: true
+        with:
+          name: emulated-upstream-expiry-${{ github.run_id }}
+          overwrite: true
+          path: .local/emulated-upstream
+          retention-days: 7

@@ -25,8 +25,20 @@ const { parse } = createRequire(new URL("../architecture/package.json", import.m
 // production runs. Every production path writes that record the same way, so none of them can make
 // the check skip a commit that was never deployed: it names the deployed candidate, never the run's
 // own commit, and it waits on no status checks.
-type Step = { name?: string; run?: string; env?: Record<string, string> };
-type Job = { if?: string; permissions?: Record<string, string>; steps?: Step[] };
+type Step = {
+  id?: string;
+  if?: string;
+  name?: string;
+  run?: string;
+  env?: Record<string, string>;
+  "timeout-minutes"?: number;
+};
+type Job = {
+  if?: string;
+  permissions?: Record<string, string>;
+  outputs?: Record<string, string>;
+  steps?: Step[];
+};
 const workflow = async (name: string) =>
   parse(await readFile(new URL(`../../.github/workflows/${name}`, import.meta.url), "utf8")) as {
     permissions?: Record<string, string>;
@@ -80,6 +92,11 @@ test("production.yml records every deploy but one that stopped unchanged, from i
   assert.equal(production.jobs.production!.permissions, undefined, "the deploy job is unchanged");
   const step = creates(record)[0]!;
   assert.equal(step.env?.RESULT, "${{ needs.production.result }}");
+  assert.equal(step.env?.RELEASED, "${{ needs.production.outputs.released }}");
+  assert.equal(
+    production.jobs.production!.outputs?.released,
+    "${{ steps.release.outputs.released }}",
+  );
   // A record that cannot be written fails its job loudly, never as a warning.
   assert.match(step.run!, /::error::/);
   assert.doesNotMatch(step.run!, /::warning::/);
@@ -99,7 +116,13 @@ const own = (id: number, payload: unknown = { path: "production", run: "7" }) =>
  */
 async function recordStep(
   t: { after(fn: () => void): void },
-  options: { result: string; list?: unknown[]; create?: string; status?: string },
+  options: {
+    result: string;
+    released?: string;
+    list?: unknown[];
+    create?: string;
+    status?: string;
+  },
 ) {
   const step = creates((await workflow("production.yml")).jobs.record!)[0]!;
   const dir = mkdtempSync(join(tmpdir(), "production-record-"));
@@ -136,6 +159,7 @@ async function recordStep(
       GITHUB_RUN_ID: "7",
       CANDIDATE: "a".repeat(40),
       RESULT: options.result,
+      RELEASED: options.released ?? "",
       RUN_URL: "https://example.invalid/run/7",
     },
   });
@@ -149,14 +173,18 @@ async function recordStep(
 }
 
 test("a deploy's record is written once, with the candidate and the deploy's own state", async (t) => {
-  for (const [result, state] of [
-    ["success", "success"],
-    ["failure", "failure"],
-    ["cancelled", "failure"],
+  for (const [result, released, state] of [
+    ["success", "", "success"],
+    ["failure", "", "failure"],
+    ["cancelled", "", "failure"],
+    // Applied and smoked, then the fleet step failed or was cancelled: the release is live.
+    ["failure", "true", "success"],
+    ["cancelled", "true", "success"],
   ] as const) {
     // An older deployment, created before this deploy began, is no reason to refuse.
     const run = await recordStep(t, {
       result,
+      released,
       list: [{ id: 9, created_at: "2025-12-31T23:00:00Z", payload: {} }],
     });
     assert.equal(run.status, 0, run.stdout);
@@ -208,4 +236,24 @@ test("a record that cannot be written fails its job loudly after its tries", asy
   assert.equal(unrecorded.status, 1);
   assert.equal(unrecorded.creates.length, 5);
   assert.equal(unrecorded.statuses.length, 0);
+});
+
+test("a deploy that ended inside its fleet step still says where scale-out stands", async () => {
+  const job = (await workflow("production.yml")).jobs.production!;
+  const steps = job.steps ?? [];
+  const release = steps.findIndex((step) => step.id === "release");
+  const standing = steps.findIndex((step) => /fleet-recommit\.ts standing/.test(step.run ?? ""));
+  assert.ok(release >= 0 && standing === release + 1, "it runs right after the deploy step");
+  const step = steps[standing]!;
+  // After a cancel or a failure too, but only once the release is live and its own line is missing.
+  assert.match(step.if ?? "", /always\(\)/);
+  assert.match(step.if ?? "", /steps\.release\.outputs\.released == 'true'/);
+  assert.match(step.if ?? "", /steps\.release\.outputs\.fleet_line != 'written'/);
+  // Its one read waits out the controller's handover at most; it never holds the job longer.
+  assert.equal(step["timeout-minutes"], 10);
+  assert.deepEqual(Object.keys(step.env ?? {}).sort(), [
+    "CLOUDFLARE_ACCOUNT_ID",
+    "CLOUDFLARE_API_TOKEN",
+    "POOL_DEPLOYMENT_KEY",
+  ]);
 });

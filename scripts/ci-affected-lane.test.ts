@@ -45,7 +45,8 @@ test("a pool fleet script change reaches only the fast job's tests", () => {
 
 test("a pool runtime fleet change runs the jobs that import or run the pool Worker", () => {
   // #1762: the controller reaches the pool Worker, which the pool runtime tests, the Cloud pool
-  // scenarios and the scenarios declaring src/pool inputs run. Its test and model are fast-only.
+  // scenarios, the scenarios declaring src/pool inputs and one upstream route test run. Its test
+  // and model are fast-only.
   const selected = select([
     "src/pool/runtime-fleet/controller.ts",
     "src/pool/runtime-fleet/failures.ts",
@@ -62,6 +63,8 @@ test("a pool runtime fleet change runs the jobs that import or run the pool Work
     "pool-runtime",
     "production-build",
     "declared-cloud",
+    // The pool organization check's route test runs the pool Worker against the prepared upstream.
+    "upstream-contracts",
   ]);
   // Only the scenarios it reaches are planned, so declared-cloud runs a few shards, not twelve.
   assert.ok(selected.declaredFiles?.includes("pool-empty-home.spec.ts"));

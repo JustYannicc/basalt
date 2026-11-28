@@ -12,7 +12,9 @@ import meta from "./meta.json" with { type: "json" };
 import jev from "./jev.json" with { type: "json" };
 import cloudflare from "./cloudflare.json" with { type: "json" };
 import openrouter from "./openrouter.json" with { type: "json" };
+import custom from "./custom.json" with { type: "json" };
 import { providerAppIcons, providerAppNames } from "./presentation.ts";
+import { customEndpointGuidance } from "./custom-endpoint-guidance.ts";
 
 const sources = {
   openai,
@@ -27,6 +29,7 @@ const sources = {
   jev,
   cloudflare,
   openrouter,
+  custom,
 };
 const methodLabels: Readonly<Record<string, string>> = {
   codex: "ChatGPT subscription",
@@ -43,6 +46,11 @@ const methodLabels: Readonly<Record<string, string>> = {
   apiToken: "User API token",
   accountToken: "Account API token",
 };
+// Scoped to the one provider, so another provider's method of the same name keeps its own label.
+const customMethodLabels: Readonly<Record<string, string>> = {
+  anthropic: "Anthropic-compatible endpoint",
+  openai: "OpenAI-compatible endpoint",
+};
 
 export const providerApps: readonly Addition[] = Object.entries(sources).map(([id, source]) => {
   const lab = id as keyof typeof sources;
@@ -55,17 +63,22 @@ export const providerApps: readonly Addition[] = Object.entries(sources).map(([i
       description:
         lab === "jev"
           ? "Use your Jev account for typed decisions through pools."
-          : `Connect your ${name} accounts and reuse them in pools.`,
+          : lab === "custom"
+            ? "Connect your own model gateway by its address and reuse it in pools."
+            : `Connect your ${name} accounts and reuse them in pools.`,
       category: "AI providers",
       auth: providerCapabilities
         .filter((capability) => capability.lab === lab && capability.connection !== "unavailable")
         .map((capability) => ({
           method: capability.method,
           kind: capability.connection === "home-oauth" ? "interactive" : "secrets",
-          label: methodLabels[capability.method] ?? capability.method,
+          label:
+            (lab === "custom" ? customMethodLabels : methodLabels)[capability.method] ??
+            capability.method,
         })),
       icons: [...providerAppIcons(lab)],
       source: `apps/provider-${lab}.json`,
+      ...(lab === "custom" ? { connectionGuidance: customEndpointGuidance } : {}),
     },
     source,
   };

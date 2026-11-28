@@ -61,7 +61,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         process.env.BASE_SHA ?? "",
         process.env.HEAD_SHA ?? "",
       );
-      // The affected lane runs no heavy job for a change only these tests reach, so they run here.
+      // A pull request's fast lane runs no heavy job, so a change only these tests reach runs here.
       selected = selectUnitTests(tests, inputs, dependents(reach(root).graph.importers, inputs));
     } catch {
       console.log("Changed unit inputs could not be resolved; running the whole owned unit suite.");

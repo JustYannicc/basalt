@@ -2,6 +2,7 @@ import { RuntimeMap } from "../../scripts/pool-tests/runtime-map.ts";
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { test } from "node:test";
+import { poolOperationsAnswered } from "./operations-call.ts";
 import { openEnvelope, signEnvelope, signPoolToken } from "./token.ts";
 import {
   membershipPrefix,
@@ -1802,6 +1803,8 @@ test("the operator entrypoint writes one closed line when its handoff call throw
     new Request("https://pool.example/runtime-handoff", { method: "POST", body: "{}" }),
   );
   assert.equal(response.status, 500);
+  // The entrypoint's own answer, so the lane reads its origin as the pool, not the bridge.
+  assert.equal(poolOperationsAnswered(response), true);
   assert.deepEqual(
     log.mock.calls.map((call) => [call.arguments[0], JSON.parse(String(call.arguments[1]))]),
     [
@@ -1823,4 +1826,152 @@ test("the operator entrypoint writes one closed line when its handoff call throw
       ],
     ],
   );
+});
+
+/**
+ * A controller whose history database accepts connections and never answers, so a model-history
+ * pass stays in flight until `release`. Every other Home step is a stub; `warm` counts Home passes.
+ */
+async function slowHistoryController(t: import("node:test").TestContext) {
+  const { createServer } = await import("node:net");
+  const sockets = new Set<import("node:net").Socket>();
+  let accepted = 0;
+  const waiting: { count: number; resolve: () => void }[] = [];
+  const server = createServer((socket) => {
+    accepted++;
+    sockets.add(socket);
+    for (const waiter of waiting) if (accepted >= waiter.count) waiter.resolve();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as import("node:net").AddressInfo).port;
+  const now = Date.parse("2026-11-25T12:00:00Z");
+  t.mock.timers.enable({ apis: ["Date"], now });
+  const background: Promise<unknown>[] = [];
+  const counts = { warm: 0, control: 0, membership: 0 };
+  let alarm: number | null = null;
+  const storage = Object.assign(new RuntimeMap(new Map()), {
+    getAlarm: async () => alarm,
+    setAlarm: async (at: number) => {
+      alarm = at;
+    },
+  });
+  const { PoolAlarms } = await import("./alarms.ts");
+  const alarms = new PoolAlarms(storage);
+  const worker = Object.setPrototypeOf(
+    {
+      ctx: { storage, waitUntil: (work: Promise<unknown>) => void background.push(work) },
+      env: {
+        POOL_MODEL_HISTORY_ENABLED: "true",
+        POOL_AUTH_DATABASE: {
+          connectionString: `postgres://fixture:fixture@127.0.0.1:${port}/fixture`,
+        },
+        POOL_APP_SIGNING_KEY: "ab".repeat(32),
+        TOOLS_SERVICE: { fetch: async () => new Response(null, { status: 204 }) },
+      },
+      alarms,
+      handover: { draining: false },
+      changes: { deliver: async () => {} },
+      candidateProbe: { tick: async () => {} },
+      fleet: { upkeep: async () => {} },
+      appModels: { tick: async () => {} },
+      homeDatabasePool: { report: async () => {} },
+      memberships: { tick: async () => void counts.membership++ },
+      computers: { expire: async () => {}, observeUsage: async () => {} },
+      handoff: { warm: async () => void counts.warm++, retireDrained: async () => {} },
+      control: { expire: async () => void counts.control++ },
+      allowances: { refresh: async () => {}, reportExpiring: async () => {} },
+      prices: { run: async () => {} },
+      overviewPrices: { refresh: async () => {} },
+      usage: { observe: async () => {} },
+    },
+    PoolContainer.prototype,
+  );
+  // Bounded, so a Home pass held by history fails the test instead of hanging it.
+  const settled = (work: Promise<unknown> | undefined) =>
+    Promise.race([work, new Promise((resolve) => setTimeout(resolve, 2_000))]);
+  /** One Home alarm, through to the end of the Home pass it starts. */
+  const home = async () => {
+    await alarms.schedule("home", Date.now());
+    alarm = null;
+    await worker.alarm();
+    await settled((worker as { homeUpkeepTask?: Promise<void> }).homeUpkeepTask);
+  };
+  /** Until the history database has had `count` connections. */
+  const connections = (count: number) => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    if (accepted >= count) resolve();
+    else waiting.push({ count, resolve });
+    return settled(promise);
+  };
+  /** The database answers by dropping every connection: a pass in flight fails and ends. */
+  const drop = async () => {
+    for (const socket of sockets) socket.destroy();
+    sockets.clear();
+    while (background.length) await Promise.allSettled(background.splice(0));
+  };
+  const release = async () => {
+    server.close();
+    await drop();
+  };
+  return {
+    home,
+    drop,
+    release,
+    counts,
+    connections,
+    accepted: () => accepted,
+    tick: (ms: number) => t.mock.timers.tick(ms),
+  };
+}
+
+test("the Home pass's next steps start on time while a model-history pass is still running", async (t) => {
+  t.mock.method(console, "error", () => {});
+  t.mock.method(console, "info", () => {});
+  const controller = await slowHistoryController(t);
+  try {
+    await controller.home();
+    await controller.connections(1);
+    controller.tick(5_000);
+    await controller.home();
+    assert.deepEqual(
+      { warm: controller.counts.warm, control: controller.counts.control },
+      { warm: 2, control: 2 },
+      "the second Home pass ran warm and control expiry with the first history pass in flight",
+    );
+  } finally {
+    await controller.release();
+  }
+});
+
+test("two model-history passes never overlap, and the next starts once the first ends", async (t) => {
+  t.mock.method(console, "error", () => {});
+  t.mock.method(console, "log", () => {});
+  const trace = t.mock.method(console, "info", () => {});
+  // The controller's own trace: each pass it starts, and each time one already running is joined.
+  const traced = (phase: string, outcome: string) =>
+    trace.mock.calls.filter(
+      (call) =>
+        call.arguments[0] === "POOL_RUNTIME_UPKEEP" &&
+        (call.arguments[1] as { phase?: string; outcome?: string }).phase === phase &&
+        (call.arguments[1] as { phase?: string; outcome?: string }).outcome === outcome,
+    ).length;
+  const controller = await slowHistoryController(t);
+  try {
+    await controller.home();
+    await controller.connections(1);
+    // Due again, with the first pass still in flight: the Home pass runs, history does not.
+    controller.tick(5 * 60_000 + 1_000);
+    await controller.home();
+    assert.equal(controller.counts.warm, 2);
+    assert.equal(traced("model_history", "started"), 1);
+    assert.equal(traced("model_history_shared", "observed"), 1);
+    await controller.drop();
+    controller.tick(5 * 60_000 + 1_000);
+    await controller.home();
+    await controller.connections(2);
+    assert.equal(traced("model_history", "started"), 2);
+    assert.equal(controller.accepted(), 2);
+  } finally {
+    await controller.release();
+  }
 });

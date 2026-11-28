@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Every step of the repository token coordinator, on both sides of its RPC, logs its own failure as one closed step word and the error's class (a tag or the provider failure code, never its message or payload) before the failure becomes a source failure with reason `git`. The Git adapter records each failure it raises itself with a fixed type and, for an HTTP answer, its status, so its own failure line names the call too, and a `git` on the repository path says where it came from; CI's provisioning diagnostics publish both only as closed words."
+    }
+  }
+}

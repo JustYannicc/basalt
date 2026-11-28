@@ -6,6 +6,21 @@ import {
 import { decodeProviderApplication, type ContainerAttributes } from "./application.ts";
 import { canonicalProviderValue, providerDigest } from "./canonical.ts";
 import { runtimeApplicationSettings } from "./settings.ts";
+import {
+  closed,
+  ProviderCredentialRefused,
+  refused,
+  siblingState,
+  UndocumentedInstanceState,
+  type ObservationRead,
+} from "./refusal.ts";
+
+export {
+  ProviderCredentialRefused,
+  ProviderObservationRefused,
+  type ObservationRead,
+  type ObservationRefusal,
+} from "./refusal.ts";
 
 export interface RuntimeProviderTarget {
   accountId: string;
@@ -53,11 +68,35 @@ const documentedStates = new Set([
  * refuses; an admit over that record is not refused, and no current path reaches it.
  */
 const stopped = (state: string) => state === "inactive";
-/** Any other instance that may still run refuses the whole read, as any answer but running did. */
 const unsettled = (state: string) => state !== "running" && !stopped(state);
-/** Given only by a caller whose driver independently reported this exact boot stopped. */
-export interface DriverStopped {
-  readonly driverStopped: true;
+interface Listed {
+  readonly id: string;
+  readonly state: string;
+}
+/**
+ * Another instance that may still start or stop and that nothing in `counted` counts. Absence frees
+ * a place in the ledger, so such an instance holds every release, as does the retire read that
+ * begins one. A counted instance keeps its own place until its own absence is proven, so its start
+ * or stop can't take the provider past the ledger. One in a state the reference doesn't document
+ * holds whether counted or not: the absence proof can't read it, so the retire read waits too.
+ */
+const holding = (listed: readonly Listed[], instanceId: string, counted: ReadonlySet<string>) =>
+  listed.find(
+    (value) =>
+      value.id !== instanceId &&
+      (!documentedStates.has(value.state) || (unsettled(value.state) && !counted.has(value.id))),
+  );
+const nothingCounted: ReadonlySet<string> = new Set();
+/** What a caller vouches for beyond the provider's listing; each fact has one owner. */
+export interface Vouched {
+  /** Given only by a caller whose driver independently reported this exact boot stopped. */
+  readonly driverStopped?: true;
+  /**
+   * Given only by a fleet cell: the instances its ledger counts, read at the time of the proof. A
+   * row added after that read is uncounted, so the proof stays conservative; one released since is
+   * already absent. Without it, every unsettled instance holds the release.
+   */
+  readonly counted?: ReadonlySet<string>;
 }
 /** Why an absence proof failed, as one closed value. */
 type AbsenceRefusal =
@@ -71,19 +110,6 @@ type AbsenceRefusal =
   | "failed"
   | "listed";
 const Pagination = Schema.Struct({ next_page_token: Schema.optional(Schema.String) });
-export class ProviderObservationRefused extends Error {
-  readonly status = "unknown";
-  readonly code: "provider_observation_refused" | "provider_fetch_failed";
-  constructor(code: ProviderObservationRefused["code"] = "provider_observation_refused") {
-    super("Pool provider observation refused");
-    this.code = code;
-  }
-}
-/** A state outside the documented list: never absent, never proof, and named on its own. */
-class UndocumentedInstanceState extends ProviderObservationRefused {}
-/** No credential, or one the provider refuses: nothing reads it again until a person acts. */
-export class ProviderCredentialRefused extends ProviderObservationRefused {}
-
 /** A read-only credential observes actual provider state; desired bindings never stand in for it. */
 export class RuntimeProviderReader {
   private token: string | { get(): Promise<string | null> } | undefined;
@@ -100,11 +126,19 @@ export class RuntimeProviderReader {
     this.now = now;
   }
   private async credential(signal: AbortSignal) {
-    signal.throwIfAborted();
+    const unavailable = () => refused({ reason: "credential_unavailable" });
+    // The observation ran out of time, which says nothing about the credential.
+    const slow = () => refused({ reason: "slow" });
+    if (signal.aborted) throw slow();
     if (typeof this.token === "string") return this.token;
-    const pending = this.token?.get();
+    let pending;
+    try {
+      pending = this.token?.get();
+    } catch {
+      throw unavailable();
+    }
     return new Promise<string | null | undefined>((resolve, reject) => {
-      const abort = () => reject(new ProviderObservationRefused());
+      const abort = () => reject(slow());
       signal.addEventListener("abort", abort, { once: true });
       Promise.resolve(pending).then(
         (value) => {
@@ -113,7 +147,7 @@ export class RuntimeProviderReader {
         },
         () => {
           signal.removeEventListener("abort", abort);
-          reject(new ProviderObservationRefused());
+          reject(unavailable());
         },
       );
     });
@@ -123,26 +157,30 @@ export class RuntimeProviderReader {
       const fetcher = this.fetcher;
       return await fetcher(url, init);
     } catch {
-      throw new ProviderObservationRefused("provider_fetch_failed");
+      throw refused({ reason: "fetch_failed" });
     }
   }
   private async read(url: string, signal: AbortSignal) {
+    // Resolve on each observation so provisioning or rotation needs no Worker restart.
+    const token = await this.credential(signal);
+    if (!token) throw new ProviderCredentialRefused();
+    const response = await this.fetchResponse(url, {
+      method: "GET",
+      redirect: "manual",
+      signal,
+      headers: { authorization: `Bearer ${token}`, accept: "application/json" },
+    });
+    if (response.status !== 200 || !response.body) {
+      // The answer's status decides the refusal, whatever cancelling its body does.
+      await response.body?.cancel().catch(() => undefined);
+      if (response.status === 401 || response.status === 403) throw new ProviderCredentialRefused();
+      throw refused(
+        response.status === 200
+          ? { reason: "decode_failed" }
+          : { reason: "read_status", status: response.status },
+      );
+    }
     try {
-      // Resolve on each observation so provisioning or rotation needs no Worker restart.
-      const token = await this.credential(signal);
-      if (!token) throw new ProviderCredentialRefused();
-      const response = await this.fetchResponse(url, {
-        method: "GET",
-        redirect: "manual",
-        signal,
-        headers: { authorization: `Bearer ${token}`, accept: "application/json" },
-      });
-      if (response.status !== 200 || !response.body) {
-        await response.body?.cancel();
-        if (response.status === 401 || response.status === 403)
-          throw new ProviderCredentialRefused();
-        throw new ProviderObservationRefused();
-      }
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let text = "",
@@ -152,7 +190,7 @@ export class RuntimeProviderReader {
           const next = await reader.read();
           if (next.done) break;
           bytes += next.value.byteLength;
-          if (bytes > 2_000_000) throw new ProviderObservationRefused();
+          if (bytes > 2_000_000) throw refused({ reason: "body_too_large" });
           text += decoder.decode(next.value, { stream: true });
         }
         text += decoder.decode();
@@ -160,17 +198,40 @@ export class RuntimeProviderReader {
         await reader.cancel();
       }
       const result = Schema.decodeUnknownSync(Envelope)(JSON.parse(text));
-      if (result.errors.length) throw new ProviderObservationRefused();
+      if (result.errors.length) throw refused({ reason: "envelope_error" });
       return result;
     } catch (error) {
-      if (error instanceof ProviderObservationRefused) throw error;
-      throw new ProviderObservationRefused();
+      // A body cut by the observation's own deadline is slow, not malformed.
+      throw closed(error, signal.aborted ? { reason: "slow" } : { reason: "decode_failed" });
     }
   }
-  async observe(
+  observe(
+    read: Exclude<ObservationRead, "retire">,
     expected: RuntimeProviderTarget,
     instanceId?: string,
     signal = AbortSignal.timeout(15_000),
+  ) {
+    return this.observation(read, expected, instanceId, signal);
+  }
+  /**
+   * The named read that begins a fleet cell's release. It also refuses while an instance `counted`
+   * doesn't count may start or stop, as the release's absence proof does, so that wait holds the
+   * row draining rather than inside its retiring bound.
+   */
+  async retiring(
+    expected: RuntimeProviderTarget,
+    instanceId: string,
+    counted: ReadonlySet<string>,
+    signal = AbortSignal.timeout(15_000),
+  ) {
+    await this.observation("retire", expected, instanceId, signal, counted);
+  }
+  private async observation(
+    read: ObservationRead,
+    expected: RuntimeProviderTarget,
+    instanceId: string | undefined,
+    signal: AbortSignal,
+    counted?: ReadonlySet<string>,
   ) {
     try {
       if (
@@ -178,7 +239,7 @@ export class RuntimeProviderReader {
         !expected.applicationId ||
         !expected.namespaceId
       )
-        throw new ProviderObservationRefused();
+        throw refused({ reason: "target_invalid" });
       const observedAt = this.now();
       const base = `https://api.cloudflare.com/client/v4/accounts/${expected.accountId}/containers/applications/${encodeURIComponent(expected.applicationId)}`;
       const application = async () => {
@@ -189,20 +250,25 @@ export class RuntimeProviderReader {
       const before = await application();
       let instances: string[] | undefined;
       if (instanceId !== undefined) {
-        const listed = await this.instances(base, expected, signal);
-        // The named instance must run; an inactive sibling holds no compute, any other refuses.
-        if (
-          !listed.some((value) => value.id === instanceId && value.state === "running") ||
-          listed.some((value) => value.id !== instanceId && unsettled(value.state))
-        )
-          throw new ProviderObservationRefused();
+        const listed = await this.instances(base, expected, signal, instanceId);
+        // Only the named instance's state is judged. The ledger counts every instance this
+        // controller started until its absence is proven, and only a ready row takes a call, so
+        // another's start or stop guards nothing here.
+        if (!listed.some((value) => value.id === instanceId && value.state === "running"))
+          throw refused({ reason: "instance_not_running" });
+        // Except an uncounted one before a cell's retirement begins: it would hold the release
+        // (see `holding`), and that wait inside the retiring bound would quarantine a cell whose
+        // own stop ended. Waiting here keeps the row draining instead, unbounded and harmless.
+        const sibling = counted ? holding(listed, instanceId, counted) : undefined;
+        if (sibling)
+          throw refused({ reason: "sibling_unsettled", state: siblingState(sibling.state) });
         instances = listed.filter((value) => !stopped(value.state)).map((value) => value.id);
         const after = await application();
         if (canonicalProviderValue(before) !== canonicalProviderValue(after))
-          throw new ProviderObservationRefused();
+          throw refused({ reason: "changed_between_reads" });
       }
       if (this.now() - observedAt > 30_000 || observedAt > this.now() + 5_000)
-        throw new ProviderObservationRefused();
+        throw refused({ reason: "slow" });
       const proof = {
         ...expected,
         observedAt,
@@ -211,25 +277,40 @@ export class RuntimeProviderReader {
           ...(instances ? { instances } : {}),
         }),
       };
-      return instanceId === undefined
-        ? Schema.decodeUnknownSync(ProviderApplicationProof)(proof)
-        : Schema.decodeUnknownSync(ProviderRuntimeProof)({ ...proof, instanceId });
+      try {
+        return instanceId === undefined
+          ? Schema.decodeUnknownSync(ProviderApplicationProof)(proof)
+          : Schema.decodeUnknownSync(ProviderRuntimeProof)({ ...proof, instanceId });
+      } catch {
+        // Only the expected pins and the instance id can fail the proof's own decode.
+        throw refused({ reason: "target_invalid" });
+      }
     } catch (error) {
-      if (error instanceof ProviderObservationRefused) throw error;
-      throw new ProviderObservationRefused();
+      // Anything else that threw is the provider's application failing its own decode.
+      const refusal = closed(error, { reason: "decode_failed" });
+      refusal.read = read;
+      throw refusal;
     }
   }
   private async prove(value: ContainerAttributes, expected: RuntimeProviderTarget) {
+    const field =
+      value.accountId !== expected.accountId
+        ? "account"
+        : value.applicationId !== expected.applicationId
+          ? "application"
+          : String(value.version) !== expected.applicationVersion
+            ? "version"
+            : value.durableObjects?.namespaceId !== expected.namespaceId
+              ? "namespace"
+              : value.configuration.image.split("@")[1] !== expected.imageDigest
+                ? "image"
+                : undefined;
+    if (field) throw refused({ reason: "mismatch", field });
+    if (value.activeRolloutId) throw refused({ reason: "rollout_active" });
     if (
-      value.accountId !== expected.accountId ||
-      value.applicationId !== expected.applicationId ||
-      String(value.version) !== expected.applicationVersion ||
-      value.durableObjects?.namespaceId !== expected.namespaceId ||
-      value.configuration.image.split("@")[1] !== expected.imageDigest ||
-      value.activeRolloutId ||
       (await providerDigest(runtimeApplicationSettings(value))) !== expected.applicationConfigDigest
     )
-      throw new ProviderObservationRefused();
+      throw refused({ reason: "mismatch", field: "settings" });
   }
   /**
    * Absent means not listed. With the driver's own report that this boot stopped, an instance the
@@ -239,10 +320,10 @@ export class RuntimeProviderReader {
     expected: RuntimeProviderTarget,
     instanceId: string,
     signal = AbortSignal.timeout(15_000),
-    driver?: DriverStopped,
+    vouched: Vouched = {},
   ) {
     if (!instanceId) return false;
-    return this.absence(expected, signal, instanceId, driver?.driverStopped === true);
+    return this.absence(expected, signal, instanceId, vouched);
   }
   empty(expected: RuntimeProviderTarget, signal = AbortSignal.timeout(15_000)) {
     return this.absence(expected, signal);
@@ -251,9 +332,9 @@ export class RuntimeProviderReader {
     expected: RuntimeProviderTarget,
     signal: AbortSignal,
     instanceId?: string,
-    driverStopped = false,
+    vouched: Vouched = {},
   ) {
-    const refusal = await this.absenceRefusal(expected, signal, instanceId, driverStopped);
+    const refusal = await this.absenceRefusal(expected, signal, instanceId, vouched);
     // Retirement polls this every fleet tick; the reason is closed and names no runtime.
     if (refusal) console.info("POOL_PROVIDER_ABSENCE", { reason: refusal });
     return refusal === undefined;
@@ -262,7 +343,7 @@ export class RuntimeProviderReader {
     expected: RuntimeProviderTarget,
     signal: AbortSignal,
     instanceId: string | undefined,
-    driverStopped: boolean,
+    vouched: Vouched,
   ): Promise<AbsenceRefusal | undefined> {
     let stage: AbsenceRefusal = "invalid";
     try {
@@ -283,16 +364,24 @@ export class RuntimeProviderReader {
       if (this.now() - at > 30_000) return "slow";
       // An empty application has no listed instance at all, a stopped one included.
       if (instanceId === undefined) return listed.length > 0 ? "listed" : undefined;
-      if (listed.some((value) => value.id !== instanceId && unsettled(value.state)))
-        return "instances";
+      if (holding(listed, instanceId, vouched.counted ?? nothingCounted)) return "instances";
       const target = listed.find((value) => value.id === instanceId);
-      if (!target || (driverStopped && stopped(target.state))) return undefined;
+      if (!target || (vouched.driverStopped === true && stopped(target.state))) return undefined;
       return target.state === "stopped" || target.state === "failed" ? target.state : "listed";
     } catch (error) {
       return error instanceof UndocumentedInstanceState ? "unknown_state" : stage;
     }
   }
-  private async instances(base: string, expected: RuntimeProviderTarget, signal: AbortSignal) {
+  /**
+   * With `named`, only that instance's undocumented state refuses here, and the caller judges any
+   * other state; without it, an absence read refuses on any listed one.
+   */
+  private async instances(
+    base: string,
+    expected: RuntimeProviderTarget,
+    signal: AbortSignal,
+    named?: string,
+  ) {
     const states = new Map<string, string>(),
       tokens = new Set<string>();
     let token: string | undefined;
@@ -302,23 +391,25 @@ export class RuntimeProviderReader {
       const reply = await this.read(`${base}/instances-v2?${query}`, signal);
       for (const value of Schema.decodeUnknownSync(Schema.Array(Instance))(reply.result)) {
         const state = value.status.state;
-        if (!documentedStates.has(state)) throw new UndocumentedInstanceState();
-        if (
-          states.has(value.id) ||
-          value.application_id !== expected.applicationId ||
-          // A running instance must run the admitted image; the callers judge every other state.
-          (state === "running" && !value.image.endsWith(`@${expected.imageDigest}`))
-        )
-          throw new ProviderObservationRefused();
+        if (!documentedStates.has(state) && (named === undefined || value.id === named))
+          throw new UndocumentedInstanceState({ reason: "instance_not_running" });
+        if (value.application_id !== expected.applicationId)
+          throw refused({ reason: "mismatch", field: "application" });
+        // A running instance must run the admitted image; the caller judges any other state.
+        if (state === "running" && !value.image.endsWith(`@${expected.imageDigest}`))
+          throw refused({ reason: "mismatch", field: "image" });
+        // One instance listed twice is no listing this read can trust.
+        if (states.has(value.id)) throw refused({ reason: "decode_failed" });
         states.set(value.id, value.status.state);
       }
       const next = Schema.decodeUnknownSync(Pagination)(reply.result_info).next_page_token;
       if (next === undefined || next === "")
         return [...states.keys()].sort().map((id) => ({ id, state: states.get(id)! }));
-      if (tokens.has(next)) throw new ProviderObservationRefused();
+      // A cursor seen before, or more pages than any application holds, never ends the listing.
+      if (tokens.has(next)) throw refused({ reason: "decode_failed" });
       tokens.add(next);
       token = next;
     }
-    throw new ProviderObservationRefused();
+    throw refused({ reason: "decode_failed" });
   }
 }

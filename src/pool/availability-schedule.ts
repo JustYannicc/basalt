@@ -47,6 +47,20 @@ function signatures(result: ProbeResult): Omit<AvailabilityEpisode, "pool"> {
   };
 }
 
+/**
+ * One closed line every run, so a quiet minute reads as "ran, all fine" rather than "never ran":
+ * the kind of target, the verdict, which side failed, and whether Sentry accepted every part of
+ * the run. It never carries the target's id, a host or any message text.
+ */
+function probeRan(line: {
+  target: "pool" | "invalid" | "unset";
+  verdict: "ok" | "failing" | "skipped";
+  failed: "none" | "availability" | "reliability" | "both";
+  sentry: "yes" | "no";
+}) {
+  console.info("POOL_PROBE_RAN", line);
+}
+
 export async function runAvailabilityProbe(
   env: SentryEnv & { POOL_AVAILABILITY_TARGET?: string },
   probe: (pool: string) => Promise<ProbeResult>,
@@ -59,7 +73,9 @@ export async function runAvailabilityProbe(
   /** The history pools whose capture-hour counts are stuck; the same, on their own episodes. */
   captureHoursStuck?: () => Promise<readonly string[]>,
 ): Promise<void> {
-  if (env.POOL_AVAILABILITY_TARGET === undefined || env.POOL_AVAILABILITY_TARGET === "") return;
+  // Nothing is probed and nothing goes to Sentry.
+  if (env.POOL_AVAILABILITY_TARGET === undefined || env.POOL_AVAILABILITY_TARGET === "")
+    return probeRan({ target: "unset", verdict: "skipped", failed: "none", sentry: "no" });
   const receipt = await startPoolMonitor(env, availabilityCron);
   const target = env.POOL_AVAILABILITY_TARGET;
   let result: ProbeResult;
@@ -152,6 +168,23 @@ export async function runAvailabilityProbe(
     ...result,
     release,
     ...(report ? { report } : {}),
+  });
+  const availabilityFailed =
+    !result.ok || result.failures.some((failure) => failure.guard !== "request_reliability");
+  // A stuck state that could not be read counts on the reliability side, as its verdict does.
+  const reliabilityFailed =
+    unread.length > 0 || result.failures.some((failure) => failure.guard === "request_reliability");
+  probeRan({
+    target: validProbeTarget(target) ? "pool" : "invalid",
+    verdict: availabilityFailed || reliabilityFailed ? "failing" : "ok",
+    failed: availabilityFailed
+      ? reliabilityFailed
+        ? "both"
+        : "availability"
+      : reliabilityFailed
+        ? "reliability"
+        : "none",
+    sentry: delivered ? "yes" : "no",
   });
   // Recorded after sending, so a start whose events Sentry refused is tried again next minute.
   if (episodes && report && reported !== "unreachable")

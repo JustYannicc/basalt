@@ -9,7 +9,12 @@ export type Bounds = {
   log: (line: string) => void;
 };
 
-export type BoundedExit = { code: number | null; stopped?: "timed-out" | "cancelled" };
+/** `leftover`: why something the command started may still be running. */
+export type BoundedExit = {
+  code: number | null;
+  stopped?: "timed-out" | "cancelled";
+  leftover?: string;
+};
 
 /** How often the tree is listed while it runs, so groups orphaned later can still be found. */
 const sampleMs = 5_000;
@@ -27,7 +32,11 @@ const signalGroup = (group: number, signal: NodeJS.Signals) => {
 /** Every process group in `root`'s tree. Each member created its group, so all of them are ours. */
 function treeGroups(root: number) {
   const listed = spawnSync("ps", ["-A", "-o", "pid=,ppid=,pgid="], { encoding: "utf8" });
-  if (listed.status !== 0) return [];
+  // An empty list would read as "nothing to stop" and leave detached groups running unseen.
+  if (listed.status !== 0)
+    throw new Error(
+      `ps exited ${listed.status}: ${(listed.stderr || String(listed.error)).trim()}`,
+    );
   const rows = listed.stdout
     .trim()
     .split("\n")
@@ -56,12 +65,22 @@ export async function runBounded(
 ): Promise<BoundedExit> {
   const child = spawn(command, args, { ...spawnOptions, stdio: "inherit", detached: true });
   const groups = new Set<number>(child.pid === undefined ? [] : [child.pid]);
+  let untracked: string | undefined;
   const observe = () => {
-    if (child.pid !== undefined) for (const group of treeGroups(child.pid)) groups.add(group);
+    if (child.pid === undefined) return;
+    // Only the latest listing counts: one that works again finds every group still in the tree,
+    // and what a failed one missed is the same blind spot as the time between two samples.
+    try {
+      for (const group of treeGroups(child.pid)) groups.add(group);
+      untracked = undefined;
+    } catch (error) {
+      untracked = `could not list its process tree (${(error as Error).message})`;
+    }
   };
   const signal = (name: NodeJS.Signals) => groups.forEach((group) => signalGroup(group, name));
   let stopped: BoundedExit["stopped"];
   let stoppedAt: number | undefined;
+  let killed = false;
   let escalation: ReturnType<typeof setTimeout> | undefined;
   const stop = (reason: NonNullable<BoundedExit["stopped"]>) => {
     if (stopped) return;
@@ -72,6 +91,7 @@ export async function runBounded(
     signal("SIGTERM");
     escalation = setTimeout(() => {
       observe();
+      killed = true;
       signal("SIGKILL");
     }, bounds.graceMs);
   };
@@ -91,12 +111,21 @@ export async function runBounded(
   clearTimeout(deadline);
   clearTimeout(escalation);
   bounds.signal?.removeEventListener("abort", abort);
-  await settle([...groups], stoppedAt, bounds);
-  return stopped ? { code, stopped } : { code };
+  const leftover = (await settle([...groups], stoppedAt, killed, bounds)) ?? untracked;
+  return { code, ...(stopped && { stopped }), ...(leftover && { leftover }) };
 }
 
-/** Stop what outlived the command, counting the grace from the original stop when there was one. */
-async function settle(groups: number[], stoppedAt: number | undefined, bounds: Bounds) {
+/**
+ * Stop what outlived the command, counting the grace from the original stop when there was one.
+ * After the deadline's SIGKILL, what is still listed is exiting, not left running: no warning.
+ * Returns why something may still be running, if it may.
+ */
+async function settle(
+  groups: number[],
+  stoppedAt: number | undefined,
+  killed: boolean,
+  bounds: Bounds,
+) {
   let listed = true;
   const running = () => {
     const snapshot = processSnapshot(groups);
@@ -104,17 +133,25 @@ async function settle(groups: number[], stoppedAt: number | undefined, bounds: B
     return !snapshot.complete || snapshot.processes.size > 0;
   };
   if (!running()) return;
-  if (!listed) bounds.log("::warning::Cannot list processes; waiting out the grace period");
+  if (!listed && !killed)
+    bounds.log("::warning::Cannot list processes; waiting out the grace period");
   if (stoppedAt === undefined) {
     bounds.log("::warning::Stopping processes a declared file left running");
     groups.forEach((group) => signalGroup(group, "SIGTERM"));
     stoppedAt = Date.now();
   }
-  while (running() && Date.now() < stoppedAt + bounds.graceMs) await wait(200);
-  if (!running()) return;
-  bounds.log("::warning::Killing processes a declared file left running");
+  if (!killed) {
+    while (running() && Date.now() < stoppedAt + bounds.graceMs) await wait(200);
+    if (!running()) return;
+    bounds.log("::warning::Killing processes a declared file left running");
+  }
   groups.forEach((group) => signalGroup(group, "SIGKILL"));
   // The next file must not start while these still hold ports.
   const end = Date.now() + 5_000;
-  while (running() && Date.now() < end) await wait(200);
+  let left = running();
+  while (left && Date.now() < end) {
+    await wait(200);
+    left = running();
+  }
+  if (left) return listed ? "some survived SIGKILL" : "could not list its processes";
 }

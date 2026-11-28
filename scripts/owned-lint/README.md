@@ -27,11 +27,14 @@ Existing findings are recorded with an exact count per rule and file, so only ne
   commit's, and a new file carries no baseline; a renamed file keeps its old count. A rule
   enforced at the base may not be switched off.
 - `allowlist.json` records a reasoned exception for `no-direct-cloudflare-api`,
-  `no-strict-provider-decode` and landmines' `no-test-doubles` as
+  `no-strict-provider-decode` and landmines' `no-test-doubles` and `no-flake-masking` as
   `{ "count": <findings>, "reason": "<why>" }` per file. `no-test-doubles` takes one only in
   the wire guard's tests (`scripts/release/wire-guard*.test.ts`, enforced in `baseline.ts`): the
   guard under test wraps the global fetch, so the replaced fetch is the transport beneath the
-  subject, not a double of a collaborator. Its bodies still fall under the provider-response rule. You
+  subject, not a double of a collaborator. Its bodies still fall under the provider-response rule.
+  `no-flake-masking` takes one only in `scripts/import-cpamp-bulk.test.ts`, whose ACK test holds
+  an upload past 30 s as its proof. It covers that raised timeout and never a retry; its count
+  stays 1, so a second raised timeout there fails. You
   write these entries by hand; `--write-baseline` leaves them alone. With `BASE_SHA`, the
   check lists new or raised entries for review. No entry covers a decode the rule recognises
   as a provider response.

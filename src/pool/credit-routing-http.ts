@@ -24,6 +24,8 @@ export async function handleCreditRouting(
     signingKey: string;
     previousSigningKey?: string;
     ensure?: (pool: string, organization: string) => Promise<void>;
+    /** Credentials kept disabled because their plugin can't use the owner's route. */
+    refused?: () => Promise<ReadonlySet<string>>;
   },
 ): Promise<Response> {
   try {
@@ -77,7 +79,7 @@ export async function handleCreditRouting(
       payload.accounts.length > 500
     )
       return fail(400, "invalid_query", "A bounded inspected account mapping is required.");
-    const result = await poolCreditRouting(access.home, payload.pool);
+    const result = await poolCreditRouting(access.home, payload.pool, await access.refused?.());
     const accounts: Record<string, AccountUsageRouting> = {};
     const mappings: { account: string; home: string[] }[] = [];
     for (const entry of payload.accounts) {

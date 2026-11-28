@@ -6,7 +6,6 @@ import {
   runtimeFailureDiagnostic,
   runtimeRouteDiagnostic,
 } from "../runtime-route-diagnostic.ts";
-import { errorClass, providerFields } from "../pending-failure.ts";
 import type { RuntimeEnd } from "../runtime-slots/container-end.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
@@ -28,9 +27,12 @@ import {
   quarantineReportMs,
   startingBoundMs,
   upkeepCadenceMs,
+  type FirstStart,
   type PhaseBound,
 } from "./phase-bounds.ts";
 import { FleetDispatches } from "./dispatches.ts";
+import { UnprovableStart } from "./admission.ts";
+import { GrowthRefusals } from "./growth-refusals.ts";
 import {
   resumeGone,
   stampResumeTarget,
@@ -92,11 +94,15 @@ export interface CellCount {
   known: boolean;
   stillMs?: number;
 }
-/** The endpoint refused a start for identity, at its admission or its request boundary. */
+/**
+ * The endpoint refused a start for identity or for its controller code, at its admission or its
+ * request boundary. An endpoint on older code says identity for both.
+ */
 const deploymentRefused = (error: unknown) => {
   const diagnostic = runtimeRouteDiagnostic(error);
   return (
-    diagnostic?.runtimeReason === "slot_identity" &&
+    (diagnostic?.runtimeReason === "slot_identity" ||
+      diagnostic?.runtimeReason === "slot_controller_code") &&
     (diagnostic.runtimeStep === "endpoint_route" || diagnostic.runtimeStep === "endpoint_admission")
   );
 };
@@ -164,9 +170,13 @@ export interface FleetCell {
   lastEnd?(identity: SlotIdentity): RuntimeEnd | undefined;
   /**
    * True only once no instance can run for a start that never served: nothing was ever sent, or the
-   * provider proves the instance absent. Without it, such a row holds its place.
+   * provider proves the instance absent. Without it, such a row holds its place. With `stop`, a
+   * container that a start which never activated left running is stopped once, so its absence can
+   * be proven at all.
    */
-  abandon?(target: SlotTarget): Promise<boolean>;
+  abandon?(target: SlotTarget, stop?: boolean): Promise<boolean>;
+  /** How far the cell's first start got, by reads that never fence, stop, start or renew it. */
+  firstStart?(target: SlotTarget): Promise<FirstStart>;
 }
 interface Dependencies {
   state: RuntimeFleetState;
@@ -208,23 +218,6 @@ function markedCut(identity: SlotIdentity, error: unknown, signal: AbortSignal) 
   );
 }
 
-/**
- * Why growth was refused, as closed values only, never message text: the runtime's step, reason
- * and cause when the error carries them, a local refusal's own reason, and the error's class.
- */
-function growthRefusal(error: unknown) {
-  const diagnostic = runtimeRouteDiagnostic(error);
-  return {
-    step: diagnostic?.runtimeStep ?? null,
-    reason:
-      diagnostic?.runtimeReason ??
-      (error instanceof SlotRefused || error instanceof FleetRefused ? error.reason : null),
-    cause: runtimeFailureCause(error) ?? null,
-    error: error instanceof FleetRefused ? "FleetRefused" : errorClass(error),
-    ...providerFields(error),
-  };
-}
-
 /** The concurrency target triggers growth; it never becomes another fixed inference cap. */
 export class RuntimeFleet {
   private deps: Dependencies;
@@ -239,7 +232,7 @@ export class RuntimeFleet {
   private primaryFailure = 0;
   private nextGrowthCheck = 0;
   private growthAlarm?: number;
-  private growthRefusal?: string;
+  private refusals: GrowthRefusals;
   private cells = new Map<string, { target: SlotTarget; cell: FleetCell }>();
   private dispatches = new FleetDispatches();
   // In memory: a replaced isolate only reports a held row again, or counts an unproven drain afresh.
@@ -270,6 +263,7 @@ export class RuntimeFleet {
       () => deps.now(),
     );
     this.rootFallback = new RootFallback(() => deps.now());
+    this.refusals = new GrowthRefusals(() => deps.now());
   }
   refreshPolicy() {
     this.atCapacity = false;
@@ -305,17 +299,8 @@ export class RuntimeFleet {
       });
       this.deps.defer(
         this.growing.then(
-          () => {
-            this.growthRefusal = undefined;
-          },
-          (error: unknown) => {
-            // Growth retries on every request and alarm, so a refusal logs once until any of its
-            // fields changes.
-            const refusal = growthRefusal(error);
-            const key = JSON.stringify(refusal);
-            if (key !== this.growthRefusal) console.warn("POOL_FLEET_GROWTH_REFUSED", refusal);
-            this.growthRefusal = key;
-          },
+          () => this.refusals.passed(),
+          (error: unknown) => this.refusals.refused(error),
         ),
       );
     }
@@ -324,6 +309,8 @@ export class RuntimeFleet {
     while (true) {
       if (this.deps.enabled?.() === false) return;
       const rows = await this.deps.state.inspect();
+      // Before growth can reserve again, so no episode outlives the start it counted.
+      this.refusals.settle(rows);
       const physical = await this.deps.state.physicalCount();
       if (physical >= this.deps.maximum) this.atCapacity = true;
       const desired = await this.demandedCells(rows);
@@ -341,7 +328,7 @@ export class RuntimeFleet {
       if (replacements) await this.deps.state.reserveReplacement(target);
       else await this.deps.state.reserve(target);
       await this.start(target);
-      this.growthRefusal = undefined;
+      this.refusals.passed();
     }
   }
   /** Growth starts cells up to this count, and a far draw is kept while ready cells are fewer. */
@@ -364,6 +351,7 @@ export class RuntimeFleet {
       cell = this.cell(target);
       await this.admit(cell, await cell.start(target));
     } catch (error) {
+      this.refusals.startRefused(target.slotId, error);
       if (cell && (await this.refusedUnsent(cell, target, error))) {
         if (deploymentRefused(error)) await this.deferStart(cell, target, error, began);
         else await this.startRefused(target, error, began);
@@ -372,15 +360,15 @@ export class RuntimeFleet {
     }
   }
   /**
-   * A fresh slot's start the endpoint refused for identity before its first-start intent was
-   * written. For a fresh slot that refusal is about the endpoint's own deployment or the signed
-   * start itself (its application binding, controller code, runtime configuration, signing key or
-   * the start's freshness), never about the slot, so another fresh slot fares no better until both
-   * run one release, as while this controller still runs an upload a rollback re-pointed away from:
-   * the release never told it, and objects created since run the re-pointed one. The slot leaves as
-   * never started once its cell proves nothing ran, its recent end saying why, with no quarantine,
-   * and growth waits at least until the next pass instead of drawing again at once. A cell that
-   * can't prove it keeps today's quarantine.
+   * A fresh slot's start the endpoint refused for identity or its controller code before its
+   * first-start intent was written. For a fresh slot that refusal is about the endpoint's own
+   * deployment or the signed start itself (its application binding, controller code, runtime
+   * configuration, signing key or the start's freshness), never about the slot, so another fresh
+   * slot fares no better until both run one release, as while this controller still runs an upload
+   * a rollback re-pointed away from: the release never told it, and objects created since run the
+   * re-pointed one. The slot leaves as never started once its cell proves nothing ran, its recent
+   * end saying why, with no quarantine, and growth waits at least until the next pass instead of
+   * drawing again at once. A cell that can't prove it keeps today's quarantine.
    */
   private async deferStart(cell: FleetCell, target: SlotTarget, error: unknown, began: number) {
     const read = failureRead(
@@ -404,6 +392,33 @@ export class RuntimeFleet {
     );
   }
   /**
+   * A start at its bound. One its cell proves was never sent leaves as never started, its recent
+   * end saying so: refusals before any send, such as the provider's while it rolls out an image,
+   * held it to the bound, and nothing can be running. The proof is deferStart's: no start under
+   * way and no first-start intent, then the endpoint fenced with the intent still absent. A start
+   * the cell can't prove, a sent one included, keeps the start_unproven quarantine.
+   */
+  private async startBound(cell: FleetCell, row: FleetRow, now: number) {
+    const unsent =
+      !row.identity &&
+      (await cell.unsent?.().catch(() => false)) === true &&
+      ((await cell.abandon?.(row.target).catch(() => false)) ?? false);
+    if (!unsent) return this.exceed(row, "start_unproven");
+    const failure = { path: "start" as const, rule: "unsent" as const, reads: [] };
+    if (!(await this.deps.state.retireUnstarted(row.target, failure))) return;
+    this.cells.delete(row.target.slotId);
+    this.atCapacity = false;
+    boundedLog(
+      "POOL_FLEET_START_UNSENT",
+      {
+        slot: row.target.slotId,
+        ordinal: row.target.homePeerOrdinal ?? null,
+        heldMs: inPhaseFor(row, now),
+      },
+      console.info,
+    );
+  }
+  /**
    * The endpoint answered this start with a refusal before its first-start intent was written, so
    * nothing reached a container and a fresh slot does all a retry could. A local failure before
    * any send, such as an absent provider secret, carries no remote diagnostic and retries the same
@@ -417,8 +432,8 @@ export class RuntimeFleet {
   }
   /**
    * A start the endpoint refused before anything was sent leaves at once with the refusal, rather
-   * than holding growth for the whole start bound. The remote step and reason win over the
-   * admission step.
+   * than holding growth for the whole start bound, as does a sent one its own witness proved can
+   * never attest. The remote step and reason win over the admission step.
    */
   private startRefused(target: SlotTarget, error: unknown, began: number) {
     const read = failureRead(
@@ -439,7 +454,8 @@ export class RuntimeFleet {
     const row = (await this.deps.state.inspect()).find(
       (value) => value.target.slotId === identity.slotId,
     );
-    // Growth and upkeep can both observe one start; only the first admits it.
+    // Growth and upkeep can both observe one start; only the first admits it. A start its bound
+    // quarantined is never admitted, however late it activates.
     if (
       !row ||
       !["warming", "uncertain"].includes(row.phase) ||
@@ -468,12 +484,15 @@ export class RuntimeFleet {
                 : (await this.neededNow(identity, database))
                   ? "admit_needed"
                   : "redraw";
+    // Only once the admission's own write has committed: a failed write leaves the episode open.
     if (decision === "redraw") {
       if (!(await this.deps.state.redraw(identity, database))) return;
+      this.refusals.started(identity.slotId);
       logPlacement(identity, database, decision, draw);
       return;
     }
     await this.deps.state.ready(identity, database);
+    this.refusals.started(identity.slotId);
     logPlacement(identity, database, decision, draw);
   }
   /**
@@ -604,6 +623,18 @@ export class RuntimeFleet {
       leases: checked?.leases ?? null,
       connections: checked?.connections ?? null,
     };
+  }
+  /**
+   * For the fleet inspect, how far a quarantined start without an identity got: undefined for any
+   * other row, and null when its cell can't say, as from an endpoint on older code.
+   */
+  async firstStart(row: FleetRow): Promise<FirstStart | null | undefined> {
+    if (row.phase !== "quarantined" || row.identity) return undefined;
+    try {
+      return (await this.cell(row.target).firstStart?.(row.target)) ?? null;
+    } catch {
+      return null;
+    }
   }
   async recoverPrimary() {
     const failure = this.primaryFailure;
@@ -1013,19 +1044,24 @@ export class RuntimeFleet {
         this.cells.delete(row.target.slotId);
         return;
       }
-      if (pastBound(row, now)) return this.exceed(row, "start_unproven");
+      if (pastBound(row, now)) return this.startBound(cell, row, now);
       return this.start(row.target);
     }
     if (row.phase === "warming" || row.phase === "uncertain") {
       // Past its bound a start is no longer observed: it holds its place until abandon() proves it.
-      if (pastBound(row, now)) return this.exceed(row, "start_unproven");
+      if (pastBound(row, now)) return this.startBound(cell, row, now);
       const began = performance.now();
       let observed;
       try {
         observed = await cell.observe(row.target, enabled);
       } catch (error) {
         // The observation retries an unsent start, which can be refused just as growth's was.
-        if (!row.identity && (await this.refusedUnsent(cell, row.target, error))) {
+        if (!row.identity) this.refusals.startRefused(row.target.slotId, error);
+        // A witness proving it can never attest quarantines it now. Growth's own start that met one
+        // was left uncertain, so its next observation here decides it.
+        if (!row.identity && error instanceof UnprovableStart)
+          await this.startRefused(row.target, error, began);
+        else if (!row.identity && (await this.refusedUnsent(cell, row.target, error))) {
           if (deploymentRefused(error)) await this.deferStart(cell, row.target, error, began);
           else await this.startRefused(row.target, error, began);
         }
@@ -1069,9 +1105,11 @@ export class RuntimeFleet {
       this.reported.set(row.target.slotId, reports);
       logQuarantine("held", row, age);
     }
+    // Only a start that never activated has its container stopped; one with an identity activated
+    // and keeps the failure path.
     const absent = row.identity
       ? await cell.failed(row.identity, row.active)
-      : ((await cell.abandon?.(row.target)) ?? false);
+      : ((await cell.abandon?.(row.target, true)) ?? false);
     if (!absent) return;
     if (row.identity)
       await this.deps.state.reclaimQuarantined(row.identity, cell.lastEnd?.(row.identity));

@@ -218,7 +218,7 @@ export class RuntimeFleetConfiguration {
     // A declaration cannot relabel an occupied resource as a newly deployed application version.
     await this.assertOccupied(configuration);
     for (const application of configuration.applications)
-      await this.deps.provider.observe(application);
+      await this.deps.provider.observe("configure", application);
     const record = { operationId, digest, configuration, enabled: true };
     await this.deps.storage.transaction(async (transaction) => {
       const value = await transaction.get(key);

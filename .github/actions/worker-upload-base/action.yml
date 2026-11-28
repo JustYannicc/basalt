@@ -1,0 +1,32 @@
+name: Worker upload base
+description: Restore a base commit's Worker upload records, or keep this main commit's for later changes.
+inputs:
+  mode:
+    description: restore, before the Worker build; or save, after it.
+    required: true
+  base:
+    description: The comparison commit whose records restore reads.
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    # An exact key only: another commit's records would misstate what the change added.
+    - if: inputs.mode == 'restore'
+      uses: actions/cache/restore@v4
+      with:
+        path: .generated/worker-uploads-base
+        key: basalt-worker-uploads-${{ inputs.base }}
+    # Every Check compares with a main commit, and caches main saves are readable from every branch.
+    # The cache keys on its path, so the records are copied to the path restore reads.
+    - if: inputs.mode == 'save' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      shell: bash
+      run: |
+        rm -rf .generated/worker-uploads-base
+        mkdir -p .generated
+        cp -R .upstream/apps/hosted/cloud/.generated/worker-uploads .generated/worker-uploads-base
+    - if: inputs.mode == 'save' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      uses: actions/cache/save@v4
+      with:
+        path: .generated/worker-uploads-base
+        key: basalt-worker-uploads-${{ github.sha }}

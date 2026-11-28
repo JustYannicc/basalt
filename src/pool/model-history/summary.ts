@@ -21,17 +21,16 @@ import {
 } from "./summary-query.ts";
 import { summaryCoverage } from "./summary-coverage.ts";
 import { summaryGroups, summaryCostRows } from "./summary-values.ts";
-import { summaryHourly } from "./summary-hourly.ts";
+import { summaryHeatmapTo, summaryHourly, summaryHourlyFigures } from "./summary-hourly.ts";
 import { summaryIncidents } from "./summary-incidents.ts";
 import { summaryKnownDays } from "./summary-known-days.ts";
 import {
   maxSummaryRollupGroups,
-  rollupCoverageQuery,
-  rollupDailyQuery,
   rollupSupportedPrices,
   rollupSelection,
   summaryModeTargets,
 } from "./summary-rollup-query.ts";
+import { rollupFigures } from "./summary-rollup-figures.ts";
 import type { HistoryReadStep } from "./read-failure.ts";
 
 /** One statement: the read's timeout, no JIT, and whether each rollup's tables exist yet. */
@@ -106,21 +105,28 @@ export async function poolUsageSummary(
     if (rolled) prices = rollupSupportedPrices(prices);
     selection = await summarySelection(pool, readFrom, input.to, authority, prices);
     const source = rolled ? rollupSelection(selection, boundaries, target) : selection;
+    const heatmapTo = summaryHeatmapTo(input.to);
+    // A rolled summary reads its window's groups once, for coverage, daily and hourly together.
+    // The hourly window starts at input.from or heatmapFrom, both cuts inside readFrom's window.
+    let figures: Awaited<ReturnType<typeof rollupFigures>> | undefined;
+    if (rolled) {
+      mark("figures");
+      figures = await rollupFigures(db, source, {
+        from: input.from,
+        previousFrom: previous.from,
+        heatmapFrom,
+        heatmapTo,
+        models: input.by === "model",
+      });
+    }
     mark("coverage");
-    const observed = await summaryCoverage(
-      db,
-      source,
-      authority,
-      rolled ? rollupCoverageQuery : undefined,
-    );
-    const dailyQuery = (rolled ? rollupDailyQuery : summaryDailyQuery)(
-      source,
-      input.from,
-      previous.from,
-      input.by === "model",
-    );
-    mark("daily");
-    const rows = (await db.query(dailyQuery.text, dailyQuery.values)).rows;
+    const observed = await summaryCoverage(db, source, authority, figures?.coverage);
+    let rows = figures?.daily;
+    if (rows === undefined) {
+      const dailyQuery = summaryDailyQuery(source, input.from, previous.from, input.by === "model");
+      mark("daily");
+      rows = (await db.query(dailyQuery.text, dailyQuery.values)).rows;
+    }
     const historyRows = rows.filter((row) => row.scope === "history");
     const providerRows = rows.filter((row) => row.scope === "current");
     const previousRows = rows.filter((row) => row.scope === "previous");
@@ -196,21 +202,18 @@ export async function poolUsageSummary(
       capture,
       captureTo,
     );
-    const hourlySelection = await summarySelection(
-      pool,
-      [input.from, heatmapFrom].sort()[0]!,
-      input.to,
-      authority,
-    );
-    mark("hourly");
-    const hourly = await summaryHourly(
-      db,
-      rolled ? rollupSelection(hourlySelection, boundaries, target) : hourlySelection,
-      input.from,
-      heatmapFrom,
-      input.to,
-      rolled,
-    );
+    let hourly: ReturnType<typeof summaryHourlyFigures>;
+    if (figures) hourly = summaryHourlyFigures(figures.hourly, heatmapFrom, heatmapTo);
+    else {
+      const hourlySelection = await summarySelection(
+        pool,
+        [input.from, heatmapFrom].sort()[0]!,
+        input.to,
+        authority,
+      );
+      mark("hourly");
+      hourly = await summaryHourly(db, hourlySelection, input.from, heatmapFrom, input.to);
+    }
     const missingHours = capture.incompleteHours;
     // Whether every Home usage row has its request, which is not whether each request's account is
     // saved in the pool: an unmapped account is counted as unmapped in the coverage and in the

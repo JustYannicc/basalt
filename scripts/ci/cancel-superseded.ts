@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { github, pullRequestRuns, say, type GitHub, type PullRequestRun } from "./workflow-run.ts";
 
-// A pull request's full and affected-lane Checks have separate concurrency groups, so a full run
+// A pull request's full and lane Checks have separate concurrency groups, so a full run
 // a label asks for never waits behind the lane run of the same head. Each group cancels only its
 // own older runs; this cancels the rest: any older unfinished run of an earlier head, and, from a
 // full run, the lane run of its own head. A lane run leaves a full run of its own head alone.

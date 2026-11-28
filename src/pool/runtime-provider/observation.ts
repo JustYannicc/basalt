@@ -24,10 +24,15 @@ export async function observeBoundProvider(
   target: ProviderObservationTarget,
   signal?: AbortSignal,
 ) {
-  if (!token || typeof token !== "object") throw new ProviderObservationRefused();
+  if (!token || typeof token !== "object") {
+    const refusal = new ProviderObservationRefused({ reason: "credential_unavailable" });
+    refusal.read = "provider_observe";
+    throw refusal;
+  }
   return Schema.decodeUnknownSync(BoundProviderObservation)({
     credentialBinding: "POOL_PROVIDER_OBSERVATION_TOKEN",
     proof: await new RuntimeProviderReader(token).observe(
+      "provider_observe",
       target,
       undefined,
       signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : undefined,

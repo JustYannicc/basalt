@@ -4,24 +4,25 @@ import type { summarySelection } from "./summary-query.ts";
 import { requestCount } from "./series-coverage.ts";
 import { timestamp } from "./record.ts";
 import { utcSql } from "./series-query.ts";
-import { rollupHourlyText } from "./summary-rollup-query.ts";
 
 export const maxSummaryNativeHours = 12_000;
-const maxHeatmapCells = 5_000;
+export const maxHeatmapCells = 5_000;
 
+/** The heatmap ends at the last whole hour before the read's end. */
+export const summaryHeatmapTo = (to: string) =>
+  timestamp(new Date(Math.floor(Date.parse(to) / 3_600_000) * 3_600_000).toISOString());
+
+/** The raw path's hourly statement: the heatmap and the native requests per hour. */
 export async function summaryHourly(
   db: HistoryDatabase,
   selection: Awaited<ReturnType<typeof summarySelection>>,
   from: string,
   heatmapFrom: string,
   to: string,
-  rolled = false,
 ) {
-  const heatmapTo = new Date(Math.floor(Date.parse(to) / 3_600_000) * 3_600_000).toISOString();
+  const heatmapTo = summaryHeatmapTo(to);
   const wall = "(left(timestamp_exact,19)::timestamp AT TIME ZONE 'UTC')";
-  const query = rolled
-    ? rollupHourlyText(selection, maxHeatmapCells)
-    : `${selection.text}, keyed AS (
+  const query = `${selection.text}, keyed AS (
       SELECT *,CASE WHEN counts_only THEN NULL ELSE provider END AS pv,
         date_trunc('hour',${wall}) AS hour_at,
         (extract(isodow FROM ${wall} AT TIME ZONE 'Europe/Zurich')-1)::int AS weekday,
@@ -51,14 +52,21 @@ export async function summaryHourly(
       WHERE row_number <= CASE kind WHEN 'heatmap' THEN ${maxHeatmapCells + 1}
         ELSE ${maxSummaryNativeHours + 1} END
       ORDER BY kind,pv,weekday,clock_hour,hour_at`;
-  const rows = (
-    await db.query(query, [...selection.values, heatmapFrom, from, timestamp(heatmapTo)])
-  ).rows;
+  const rows = (await db.query(query, [...selection.values, heatmapFrom, from, heatmapTo])).rows;
+  return summaryHourlyFigures(rows, heatmapFrom, heatmapTo);
+}
+
+/** The heatmap and native hours from either path's hourly rows. */
+export function summaryHourlyFigures(
+  rows: readonly Record<string, unknown>[],
+  heatmapFrom: string,
+  heatmapTo: string,
+) {
   const heatRows = rows.filter((row) => row.kind === "heatmap");
   const nativeRows = rows.filter((row) => row.kind === "native");
   const heatmap: UsageSummaryHeatmap = {
     from: heatmapFrom,
-    to: timestamp(heatmapTo),
+    to: heatmapTo,
     basis: "recorded-usage",
     status: heatRows.length > maxHeatmapCells ? "unavailable" : "available",
     ...(heatRows.length > maxHeatmapCells

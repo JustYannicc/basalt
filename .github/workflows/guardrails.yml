@@ -23,4 +23,5 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.head_ref }}
         run: node scripts/guardrails/ship-alone.ts "$BASE_SHA" "$HEAD_SHA"
