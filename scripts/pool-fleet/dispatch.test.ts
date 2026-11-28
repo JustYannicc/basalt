@@ -7,6 +7,8 @@ import { providerDigest } from "../../src/pool/runtime-provider/canonical.ts";
 import { runtimeApplicationSettings } from "../../src/pool/runtime-provider/settings.ts";
 import { runPoolFleet, stepSummary, type DispatchInput } from "./dispatch.ts";
 import { FleetLaneRefused, refuse } from "./errors.ts";
+import { ownerReadVerdict } from "./accept.ts";
+import { AcceptanceFailure } from "../pool-acceptance/types.ts";
 import { resolvedApplication } from "./test/cloudflare-shapes.ts";
 import { accountId, colours, harness, ownRow, type HarnessOptions } from "./test/harness.ts";
 import { usageRollupInspect } from "../../src/pool/model-history/usage-rollup-auto.ts";
@@ -1240,4 +1242,110 @@ test("accept judges the turns served before every model was refused for quota", 
         await lane.close();
       }
     });
+});
+
+// With an owner token, the pool owner's usage read is the second witness of each turn's charge.
+test("a turn charged twice in the pool owner's usage ends the acceptance as a duplicate", async (t) => {
+  await t.test("with a cell, configure-and-accept", async () => {
+    const lane = await harness({ ownerRows: 2 });
+    try {
+      const result = await runPoolFleet(dispatch("configure-and-accept"), lane.deps());
+      assert.equal(result.ok, false);
+      assert.match(
+        String("cause" in result && result.cause),
+        /^usage-duplicate: One of the lane's own turns has 2 success rows in the pool owner's usage/u,
+      );
+      assert.equal(
+        (await lane.configuration.inspect())?.enabled,
+        false,
+        "a failed acceptance disables",
+      );
+    } finally {
+      await lane.close();
+    }
+  });
+  await t.test("while another turn's owner read fails, the double charge still wins", async () => {
+    // The first owner read answers 500 at once; every other one finds two success rows.
+    const lane = await harness({ ownerRows: 2, ownerFailure: (read) => read === 0 });
+    try {
+      const result = await runPoolFleet(dispatch("configure-and-accept"), lane.deps());
+      assert.equal(result.ok, false);
+      assert.match(String("cause" in result && result.cause), /^usage-duplicate: /u);
+    } finally {
+      await lane.close();
+    }
+  });
+  await t.test("while another turn's owner read fails, a foreign account still wins", async () => {
+    const lane = await harness({
+      usageAccount: "someone-else",
+      ownerFailure: (read) => read === 0,
+    });
+    try {
+      const result = await runPoolFleet(dispatch("configure-and-accept"), lane.deps());
+      assert.equal(result.ok, false);
+      assert.match(String("cause" in result && result.cause), /^usage-outside-pool: /u);
+    } finally {
+      await lane.close();
+    }
+  });
+  await t.test("after every model was refused for quota, accept", async () => {
+    let turns = 0;
+    const lane = await harness({
+      ownerRows: 2,
+      models: ["claude-opus-5-5", "gpt-6.1-sol"],
+      quota: () => (++turns > 6 ? "usage_credit_policy_denied" : undefined),
+      boot: () => "primary-boot",
+    });
+    try {
+      const deps = lane.deps();
+      if (deps.acceptance instanceof FleetLaneRefused) assert.fail(deps.acceptance.message);
+      const result = await runPoolFleet(dispatch("accept"), {
+        ...deps,
+        acceptance: { ...deps.acceptance, model: "claude-opus-5-5" },
+      });
+      assert.equal(result.ok, false);
+      const cause = String("cause" in result && result.cause);
+      assert.match(cause, /^usage-duplicate: /u);
+      assert.doesNotMatch(cause, /acceptance-quota-refused/u, "never beside the quota ending");
+    } finally {
+      await lane.close();
+    }
+  });
+  await t.test("without a cell, accept", async () => {
+    const lane = await harness({ ownerRows: 2, boot: () => "primary-boot" });
+    try {
+      const result = await runPoolFleet(dispatch("accept"), lane.deps());
+      assert.equal(result.ok, false);
+      const cause = String("cause" in result && result.cause);
+      assert.match(cause, /^usage-duplicate: /u);
+      assert.doesNotMatch(
+        cause,
+        /cell-served-proof-missing/u,
+        "never beside the missing cell proof",
+      );
+    } finally {
+      await lane.close();
+    }
+  });
+});
+
+test("every other failure of the owner read stays as it is", () => {
+  for (const message of [
+    "Pool usage records matched 0 rows; expected 1 before the polling deadline",
+    "Pool usage records remained incomplete after 45000 ms",
+    "Pool usage records contained duplicate IDs",
+    "/pool/v1/usage returned HTTP 500",
+    // Only the client's exact wording for more rows than one turn's counts; one row is no duplicate.
+    "Pool usage records matched 1 rows; expected 1",
+    "Pool usage records matched 2 rows; expected 1 before the polling deadline",
+  ]) {
+    const error = new AcceptanceFailure(message);
+    assert.equal(ownerReadVerdict(error), error, message);
+  }
+  const other = new Error("Pool usage records matched 2 rows; expected 1");
+  assert.equal(ownerReadVerdict(other), other, "only the client's own failure is read");
+  const duplicate = ownerReadVerdict(
+    new AcceptanceFailure("Pool usage records matched 3 rows; expected 1"),
+  );
+  assert.ok(duplicate instanceof FleetLaneRefused && duplicate.reason === "usage-duplicate");
 });
