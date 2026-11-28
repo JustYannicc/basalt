@@ -19,7 +19,9 @@ export declare const certificate: (fields: { id: string; name: string }) => Body
 export declare const settings: (text?: Record<string, string>) => Body;
 export declare const subdomain: (name: string) => Body;
 export declare const registryCredentials: () => Body;
-export declare const catalog: (repositories: readonly string[]) => { repositories: readonly string[] };
+export declare const catalog: (repositories: readonly string[]) => {
+  repositories: readonly string[];
+};
 export declare const tagList: (
   name: string,
   tags: readonly string[] | null,

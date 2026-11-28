@@ -7,7 +7,10 @@ for (const tree of ["src", "lib"])
   test(`the installed Alchemy ${tree} provider plans a just-created container as noop and a deleted one as update`, () => {
     execFileSync(
       tree === "src" ? "bun" : process.execPath,
-      [fileURLToPath(new URL("./fixtures/container-readback-after-create.ts", import.meta.url)), tree],
+      [
+        fileURLToPath(new URL("./fixtures/container-readback-after-create.ts", import.meta.url)),
+        tree,
+      ],
       { stdio: "pipe", timeout: 60_000 },
     );
   });
