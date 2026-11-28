@@ -2,7 +2,7 @@ import { PoolAcceptanceClient } from "./pool-acceptance/client.ts";
 import { observeRestart } from "./pool-acceptance/restart-observation.ts";
 import {
   AcceptanceFailure,
-  isAcceptancePool,
+  isPoolAppId,
   type Conversation,
   type ModelCatalog,
   type PoolAccess,
@@ -167,31 +167,35 @@ export async function runPoolAcceptance(
   log(`acceptance status=passed mode=${config.mode}`);
 }
 
-function requiredSecret(name: string): string {
-  const value = process.env[name]?.trim();
+function requiredSecret(env: NodeJS.ProcessEnv, name: string): string {
+  const value = env[name]?.trim();
   if (!value) throw new AcceptanceFailure(`Required GitHub secret ${name} is missing`);
   return value;
 }
 
-async function configFromEnvironment(): Promise<AcceptanceConfig> {
-  const apiKey = requiredSecret("POOL_ACCEPTANCE_KEY");
-  if (process.env.POOL_ACCEPTANCE_TEST_KEY_CONFIRMED !== "true") {
+/** Full mode refuses a pool that is not a pool app's id before it signs anything. */
+export async function configFromEnvironment(
+  env: NodeJS.ProcessEnv = process.env,
+  mint: typeof signPoolToken = signPoolToken,
+): Promise<AcceptanceConfig> {
+  const apiKey = requiredSecret(env, "POOL_ACCEPTANCE_KEY");
+  if (env.POOL_ACCEPTANCE_TEST_KEY_CONFIRMED !== "true") {
     throw new AcceptanceFailure("Confirm POOL_ACCEPTANCE_KEY is dedicated to test use");
   }
-  const mode = process.env.POOL_ACCEPTANCE_MODE ?? "full";
+  const mode = env.POOL_ACCEPTANCE_MODE ?? "full";
   if (mode !== "full" && mode !== "restart-observation") {
     throw new AcceptanceFailure("POOL_ACCEPTANCE_MODE must be full or restart-observation");
   }
   let poolAccess: PoolAccess | undefined;
   if (mode === "full") {
-    const pool = process.env.POOL_ACCEPTANCE_POOL?.trim();
-    if (!pool || !isAcceptancePool(pool)) {
+    const pool = env.POOL_ACCEPTANCE_POOL?.trim();
+    if (!pool || !isPoolAppId(pool)) {
       throw new AcceptanceFailure(
-        "POOL_ACCEPTANCE_POOL must name a dedicated acceptance-<run> pool",
+        "POOL_ACCEPTANCE_POOL must name the test pool's app id (app_...)",
       );
     }
     poolAccess = {
-      token: await signPoolToken(requiredSecret("POOL_APP_SIGNING_KEY"), {
+      token: await mint(requiredSecret(env, "POOL_APP_SIGNING_KEY"), {
         pool,
         owner: "acceptance",
         organization: "acceptance",
@@ -203,7 +207,7 @@ async function configFromEnvironment(): Promise<AcceptanceConfig> {
     apiKey,
     poolAccess,
     mode,
-    model: process.env.POOL_ACCEPTANCE_MODEL?.trim() || undefined,
+    model: env.POOL_ACCEPTANCE_MODEL?.trim() || undefined,
   };
 }
 

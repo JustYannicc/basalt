@@ -41,10 +41,11 @@ export type PoolAccess = {
 };
 
 /**
- * A pool made only for acceptance. Usage is read there with an owner token minted from the app
- * signing key, which is never minted for a pool that holds people's work.
+ * A pool app's id, the only kind of pool id the tools service makes. Full mode mints an owner token
+ * for organization acceptance on such a pool; the tools service's ownership check (carry 0815)
+ * refuses that token for any pool the acceptance organization does not own.
  */
-export const isAcceptancePool = (pool: string) => /^acceptance-[a-zA-Z0-9-]+$/u.test(pool);
+export const isPoolAppId = (pool: string) => /^app_[A-Za-z0-9_-]{1,124}$/u.test(pool);
 
 export type ModelCatalog = {
   readonly boot: string;

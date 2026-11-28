@@ -2,11 +2,12 @@ import { once } from "node:events";
 import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { acceptanceCredential, AcceptanceDeviceRefused } from "../release/acceptance-device.ts";
 import {
-  acceptanceCredential,
-  acceptanceDevice,
-  AcceptanceDeviceRefused,
-} from "../release/acceptance-device.ts";
+  acceptanceTestDevice,
+  isAcceptanceIdentity,
+  testDeviceSecret,
+} from "../release/acceptance-test-device.ts";
 import { PoolAcceptanceClient } from "./client.ts";
 import { verdictOf } from "./load-classes.ts";
 import {
@@ -19,7 +20,8 @@ import {
 } from "./load.ts";
 import { killTime, parseLoadShape } from "./load-shape.ts";
 import { mockWitness } from "./load-witness.ts";
-import { AcceptanceFailure, isAcceptancePool } from "./types.ts";
+import { RuntimeOrdinals } from "./load-runtimes.ts";
+import { AcceptanceFailure, isPoolAppId } from "./types.ts";
 
 /** Writes one JSON line per item, each its own write. */
 function writeLines(path: string, items: readonly unknown[]) {
@@ -126,11 +128,13 @@ export async function runLoadFromEnvironment(
   try {
     // Load spends the accounts of the device's pool, so it runs only in a pool made for acceptance.
     // It reads no usage, so it never mints an owner token at all.
-    if (!isAcceptancePool(acceptanceDevice(env).pool))
+    // Only the test pool's device, read from its own secret; the release's device is never read.
+    const test = acceptanceTestDevice(env);
+    if (!isAcceptanceIdentity(test) || !isPoolAppId(test.pool))
       throw new AcceptanceFailure(
-        "Load runs only through a dedicated acceptance-<run> pool; POOL_ACCEPTANCE_DEVICE names another pool",
+        "Load runs only through the test pool: the test device's user, owner and organization must all be the acceptance identity, and its pool a pool app's id",
       );
-    credential = acceptanceCredential(env);
+    credential = acceptanceCredential(env, Date.now, testDeviceSecret);
   } catch (error) {
     if (error instanceof AcceptanceDeviceRefused)
       throw new AcceptanceFailure(`${error.field}: ${error.why}; ${error.fix}`);
@@ -140,6 +144,8 @@ export async function runLoadFromEnvironment(
   mkdirSync(directory, { recursive: true });
   // Written synchronously as each call ends: a cancelled job keeps every call that finished.
   const calls = openSync(join(directory, "calls.jsonl"), "w");
+  // Every record names a runtime by its ordinal, never by its boot id.
+  const runtimes = new RuntimeOrdinals();
   const ended: EndedCall[] = [];
   let open = true;
   const running = runLoad({
@@ -153,7 +159,7 @@ export async function runLoadFromEnvironment(
     ended: (call) => {
       ended.push(call);
       // A call that outlives a stop's wait ends after the record closed: it is not written.
-      if (open) writeSync(calls, line(call));
+      if (open) writeSync(calls, line(runtimes.record(call)));
     },
   });
   // Past the stop's wait the run is reported from what ended; the calls still out are not waited on.
@@ -188,11 +194,14 @@ export async function runLoadFromEnvironment(
   const lines = summaryLines(run, shape);
   writeFileSync(
     join(directory, "in-flight.jsonl"),
-    run.calls.flatMap((call) => (call.inFlight ? [line(call)] : [])).join(""),
+    run.calls.flatMap((call) => (call.inFlight ? [line(runtimes.record(call))] : [])).join(""),
   );
   // Each call as both witnesses judged it, and the mock's own records they were judged on, a line
   // at a time: a run of a million calls is past the longest string one join may build.
-  writeLines(join(directory, "judged.jsonl"), run.calls);
+  writeLines(
+    join(directory, "judged.jsonl"),
+    run.calls.map((call) => runtimes.record(call)),
+  );
   writeLines(join(directory, "witness.jsonl"), run.sends ?? []);
   writeFileSync(
     join(directory, "run.json"),

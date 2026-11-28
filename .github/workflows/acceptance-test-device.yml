@@ -1,0 +1,142 @@
+name: Acceptance test device
+run-name: acceptance-test-device ${{ inputs.action }}
+
+# Registers the test pool's device after the acceptance-pool setup is applied, and revokes it before
+# the teardown. Each run first asks the tools service, through the signed read-only setup verify,
+# which pool the setup created, and ties it to the setup apply's own run by the app's digest. The
+# device's ids leave only sealed for the coordinator's recipient key; no line, summary or artifact
+# holds an id in clear.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: register after the setup apply; revoke before the teardown
+        required: true
+        type: choice
+        options: [register, revoke]
+      go:
+        description: The coordinator's literal GO (coordinator-20YY-...)
+        required: true
+        type: string
+      setup_plan_sha256:
+        description: The applied setup plan's checksum, which its receipt is kept under
+        required: true
+        type: string
+      setup_run:
+        description: The setup apply's run id, whose artifact records the app's digest
+        required: true
+        type: string
+      recipient:
+        description: register only, the coordinator's RSA 3072+ public key, SPKI DER as base64
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+# One group with production-ops and the acceptance-pool operation: never two production operations.
+concurrency:
+  group: production-ops
+  cancel-in-progress: false
+
+jobs:
+  register:
+    if: github.ref == 'refs/heads/main' && inputs.action == 'register'
+    runs-on: ${{ vars.BASALT_RELEASE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - name: Refuse every ref but main
+        run: test "$GITHUB_REF" = refs/heads/main
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.2
+      - name: Prepare the pinned SDK
+        run: npm run prepare:upstream
+      - name: Load the setup apply's record
+        uses: actions/download-artifact@v4
+        with:
+          name: acceptance-pool-${{ inputs.setup_run }}
+          run-id: ${{ inputs.setup_run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/setup-operation
+      - name: Register the test device
+        run: node scripts/acceptance-test-device/run.ts
+        env:
+          POOL_APP_SIGNING_KEY: ${{ secrets.POOL_APP_SIGNING_KEY }}
+          TEST_DEVICE_ACTION: register
+          TEST_DEVICE_GO: ${{ inputs.go }}
+          TEST_DEVICE_SETUP_PLAN_SHA256: ${{ inputs.setup_plan_sha256 }}
+          TEST_DEVICE_SETUP_RUN: ${{ inputs.setup_run }}
+          # Reads the setup apply run's own record: its workflow, branch, event and conclusion.
+          GITHUB_TOKEN: ${{ github.token }}
+          TEST_DEVICE_SETUP_DIRECTORY: ${{ runner.temp }}/setup-operation
+          TEST_DEVICE_RECIPIENT: ${{ inputs.recipient }}
+          TEST_DEVICE_OUTPUT_DIRECTORY: ${{ runner.temp }}/test-device
+      # Only the sealed ids and the report of kinds and digests.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: acceptance-test-device-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/test-device
+          if-no-files-found: ignore
+          retention-days: 30
+
+  revoke:
+    if: github.ref == 'refs/heads/main' && inputs.action == 'revoke'
+    runs-on: ${{ vars.BASALT_RELEASE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    # The test device's ids are an environment secret here, for the load job as well.
+    environment:
+      name: emulated-upstream
+      deployment: false
+    steps:
+      - name: Refuse every ref but main
+        run: test "$GITHUB_REF" = refs/heads/main
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.2
+      - name: Prepare the pinned SDK
+        run: npm run prepare:upstream
+      - name: Load the setup apply's record
+        uses: actions/download-artifact@v4
+        with:
+          name: acceptance-pool-${{ inputs.setup_run }}
+          run-id: ${{ inputs.setup_run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/setup-operation
+      - name: Revoke the test device
+        run: node scripts/acceptance-test-device/run.ts
+        env:
+          POOL_APP_SIGNING_KEY: ${{ secrets.POOL_APP_SIGNING_KEY }}
+          POOL_ACCEPTANCE_TEST_DEVICE: ${{ secrets.POOL_ACCEPTANCE_TEST_DEVICE }}
+          TEST_DEVICE_ACTION: revoke
+          TEST_DEVICE_GO: ${{ inputs.go }}
+          TEST_DEVICE_SETUP_PLAN_SHA256: ${{ inputs.setup_plan_sha256 }}
+          TEST_DEVICE_SETUP_RUN: ${{ inputs.setup_run }}
+          # Reads the setup apply run's own record: its workflow, branch, event and conclusion.
+          GITHUB_TOKEN: ${{ github.token }}
+          TEST_DEVICE_SETUP_DIRECTORY: ${{ runner.temp }}/setup-operation
+          TEST_DEVICE_OUTPUT_DIRECTORY: ${{ runner.temp }}/test-device
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: acceptance-test-device-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/test-device
+          if-no-files-found: ignore
+          retention-days: 30
