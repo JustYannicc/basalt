@@ -22,7 +22,11 @@ export const routePeerInstallMs = 5_000;
  * call succeeds, and it is installed again at the object's next start or legacy bootstrap
  * (`configure`), its next isolate (`restore`), and every controller construction.
  */
-export async function installRoutePeer(ctx: RoutePeerHost, pool: string, boundMs = routePeerInstallMs) {
+export async function installRoutePeer(
+  ctx: RoutePeerHost,
+  pool: string,
+  boundMs = routePeerInstallMs,
+) {
   const exports: unknown = ctx.exports;
   const peer: unknown =
     exports && typeof exports === "object" ? Reflect.get(exports, "PoolRoutePeer") : undefined;

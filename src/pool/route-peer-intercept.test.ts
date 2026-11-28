@@ -130,7 +130,8 @@ test("an install that fails after its bound is never an unhandled rejection", as
   });
   await installRoutePeer(container(() => late).ctx, "pool-1", 20);
   fail();
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  // Node reports an unhandled rejection once the microtasks drain: the next macrotask sees it.
+  await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(unhandled, []);
   assert.equal(pending(errors.mock.calls), 1);
 });

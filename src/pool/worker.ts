@@ -184,6 +184,7 @@ export interface PoolEnvironment extends TelemetryEnv, SentryEnv, HandoffEnviron
   PoolRuntime?: DurableObjectNamespace<PoolRuntime>;
   PoolRuntimeBlue?: DurableObjectNamespace<PoolRuntime>;
   PoolRuntimeGreen?: DurableObjectNamespace<PoolRuntime>;
+  /** The per-route gateway; absent until its class is declared (src/route/deployment.ts). */
   RouteGateway?: DurableObjectNamespace<RouteGateway>;
   POOL_BLUE_APPLICATION_ID?: string;
   POOL_BLUE_IMAGE_HASH?: string;
@@ -205,8 +206,6 @@ export interface PoolEnvironment extends TelemetryEnv, SentryEnv, HandoffEnviron
   POOL_AVAILABILITY_TARGET?: string;
   POOL_AUTOMATIC_RECOVERY_TARGET?: string;
   TOOLS_SERVICE: Fetcher;
-  /** P2's per-route gateway; absent until that class is bound. */
-  RouteGateway?: DurableObjectNamespace;
 }
 
 let controllerConstructions = 0;

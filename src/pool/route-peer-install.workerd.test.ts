@@ -92,7 +92,7 @@ async function start() {
   );
 }
 
-test("a cell's start gets past a route intercept that answers, throws or never answers, home-peer intercept first", { timeout: 60_000 }, async (context) => {
+test("a cell's start gets past a route intercept that answers, throws or never answers, home-peer intercept first", async (context) => {
   const mf = await start();
   context.after(() => mf.dispose());
   const install = async (kind: string, mode: string) => {
