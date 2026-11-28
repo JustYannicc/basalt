@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.poolMembership {
+    metadata {
+      constraint "The pool's signed membership read, which every pool view and the pool's own membership refresh make, holds only the shared organization advisory lock for its pure read, so it no longer waits for usage reads in flight or for other membership reads, while policy writers, role changes and handoffs, which take the exclusive lock, still wait for it. A legacy registration, whose handoff writes, makes the shared read refuse; the read then ends its shared transaction and runs again under the exclusive lock, and a mirror write's second read keeps the exclusive lock, so no write runs under the shared lock and no read upgrades it."
+    }
+  }
+}

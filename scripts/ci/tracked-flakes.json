@@ -65,5 +65,22 @@
     "issue": 1657,
     "listed": "2026-11-22",
     "expires": "2026-12-22"
+  },
+  {
+    "id": "dashboard-hydration-markup-server-gave-up",
+    "scope": "job",
+    "job": "declared-self-host",
+    "match": [
+      " self-host  e2e/tests/dashboard-hydration-markup.spec.ts > Dashboard hydration keeps server markup > ",
+      "' to contain 'const count: number = 42;'",
+      "e2e/tests/dashboard-hydration-markup.spec.ts:190:"
+    ],
+    "only": [
+      { "marker": " FAIL ", "allow": " FAIL   self-host  e2e/tests/dashboard-hydration-markup.spec.ts > Dashboard hydration keeps server markup > " },
+      { "marker": "tests/dashboard-hydration-markup.spec.ts:", "allow": "tests/dashboard-hydration-markup.spec.ts:190:" }
+    ],
+    "issue": 2137,
+    "listed": "2026-11-28",
+    "expires": "2026-12-05"
   }
 ]
