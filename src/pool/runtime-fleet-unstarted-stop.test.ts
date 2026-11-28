@@ -1,138 +1,15 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
-import { fleetCellFixture } from "../../scripts/pool-tests/runtime-fleet-cell-fixture.ts";
-import { runtimeFixtureCode } from "../../scripts/pool-tests/runtime-handoff-proofs.ts";
-import { RuntimeFleet, type FleetCell } from "./runtime-fleet/controller.ts";
-import { FleetRefused, RuntimeFleetState } from "./runtime-fleet/state.ts";
+import {
+  gate,
+  stuckFleet,
+  unready,
+  type Stuck,
+} from "../../scripts/pool-tests/runtime-fleet-stuck-fixture.ts";
+import { FleetRefused } from "./runtime-fleet/state.ts";
 import { startingBoundMs, upkeepCadenceMs } from "./runtime-fleet/phase-bounds.ts";
 import { poolLifecycle } from "./lifecycle.ts";
 import { forcedStopGraceMs } from "./runtime-slots/forced-restart-timing.ts";
-import { RuntimeEndpoint } from "./runtime-slots/endpoint.ts";
-import { RuntimeWitnessStore } from "./runtime-slots/witness-store.ts";
-import { runtimeRequest } from "./runtime-slots/transport.ts";
-import type { SlotTarget } from "./runtime-slots/contract.ts";
-
-const unready = () => new Response(null, { status: 503 });
-const gate = () => {
-  let open!: () => void;
-  let reached!: () => void;
-  const opened = new Promise<void>((resolve) => (open = resolve));
-  const arrived = new Promise<void>((resolve) => (reached = resolve));
-  return { open, opened, reached, arrived };
-};
-
-/**
- * A real fleet cell, its endpoint and its provider listing under one controller, on one clock the
- * test moves, as production reads `Date.now` for the ledger, the cell and the endpoint alike. The
- * stop's grace is spent on that clock, as for a Home that doesn't exit on SIGTERM. Growth draws the
- * fixture's slot first; later draws are stand-ins that never start.
- */
-async function stuckFleet(
-  context: TestContext,
-  options: { demand?: number; grace?: () => Promise<void> } = {},
-) {
-  context.mock.timers.enable({ apis: ["Date"], now: Date.now() });
-  const warn = context.mock.method(console, "warn", () => {});
-  context.mock.method(console, "info", () => {});
-  context.mock.method(console, "error", () => {});
-  const f = await fleetCellFixture();
-  context.after(f.cleanup);
-  f.timing.stopGrace = options.grace ?? (async () => context.mock.timers.tick(forcedStopGraceMs));
-  const state = new RuntimeFleetState(f.storage, 1, () => Date.now());
-  const pending: Promise<unknown>[] = [];
-  let drawn = 0;
-  const standIn = {
-    start: async () => {
-      throw new Error("synthetic stand-in never starts");
-    },
-    observe: async () => undefined,
-    selected: async () => undefined,
-  } as unknown as FleetCell;
-  const controller = (cell: FleetCell) =>
-    new RuntimeFleet({
-      state,
-      target: async () =>
-        drawn++ === 0
-          ? f.target
-          : {
-              ...f.target,
-              slotId: `slot-${drawn}`,
-              instanceId: `instance-${drawn}`,
-              homePeerOrdinal: 1 + drawn,
-            },
-      cell: (target: SlotTarget) => (target.slotId === f.target.slotId ? cell : standIn),
-      legacyActive: async () => 0,
-      currentRequests: () => options.demand ?? 0,
-      targetActive: 1,
-      idleMilliseconds: 60 * 60_000,
-      maximum: 1,
-      defer: (work) => {
-        pending.push(work);
-      },
-      wrap: f.wrap,
-      now: () => Date.now(),
-    });
-  let fleet = controller(f.cell);
-  const store = new RuntimeWitnessStore(f.ctx.storage, f.env.POOL_DEPLOYMENT_KEY!);
-  const row = async () =>
-    (await state.inspect()).find((value) => value.target.slotId === f.target.slotId);
-  let rootCalls = 0;
-  return {
-    f,
-    state,
-    row,
-    /** One fleet alarm `milliseconds` later. Without `settle`, a stop under way keeps running. */
-    async pass(milliseconds = upkeepCadenceMs, settle = true) {
-      context.mock.timers.tick(milliseconds);
-      await fleet.upkeep();
-      while (pending.length) await Promise.allSettled(pending.splice(0));
-      if (settle) await f.settle();
-      return row();
-    },
-    /**
-     * One fleet alarm that starts growth, which reserves the fixture's slot, starts it and admits
-     * it. Later passes leave that growth running, so a test can hold its start across them.
-     */
-    async grow() {
-      await fleet.upkeep();
-      const growth = pending.splice(0);
-      return () => Promise.allSettled(growth);
-    },
-    fenced: () => store.abandoned(f.target.slotId),
-    stops: () =>
-      warn.mock.calls
-        .filter((call) => call.arguments[0] === "POOL_RUNTIME_ABANDONED_STOP")
-        .map((call) => (call.arguments[1] as { path: string }).path),
-    /** One model call. The root answers 200 and counts it; a cell would answer it itself. */
-    forward: async () => {
-      const response = await fleet.forward(
-        new Request("http://pool/v1/responses", { method: "POST" }),
-        undefined,
-        async (_request, beforeDispatch) => {
-          beforeDispatch();
-          rootCalls++;
-          return new Response(null, { status: 200 });
-        },
-        () => {},
-      );
-      await response.text();
-      return response.status;
-    },
-    rootCalls: () => rootCalls,
-    /** The controller's isolate replaced: a fresh fleet controller and cell over the same storage. */
-    replaceController() {
-      fleet = controller(f.replacedCell());
-    },
-    /** The cell's runtime object replaced: a fresh endpoint over the same storage and container. */
-    replaceEndpoint() {
-      const endpoint = new RuntimeEndpoint(f.ctx, f.env, "runtime", runtimeFixtureCode, f.wrap, {
-        ownStorage: f.ctx.storage,
-      });
-      f.stub.fetch = (request: Request) => runtimeRequest(request, endpoint);
-    },
-  };
-}
-type Stuck = Awaited<ReturnType<typeof stuckFleet>>;
 
 /** A start whose container booted but whose activation was refused, held past its start bound. */
 async function quarantinedStart(s: Stuck) {
@@ -243,6 +120,49 @@ async function heldWhileRunning(s: Stuck) {
   assert.deepEqual(s.f.calls.signals, [], "a cell whose selection committed was stopped");
   assert.equal(s.f.calls.destroy, 0);
   s.f.listAs(undefined);
+}
+
+/**
+ * Pass after pass until its place is reclaimed, within the stop's grace and the absence bound of
+ * its quarantine: one stop, SIGTERM first, then destroy once the grace ran out with Home still up.
+ */
+async function reclaimedAfterStop(s: Stuck, quarantinedAt: number) {
+  let row;
+  while ((row = await s.pass()) !== undefined) {
+    assert.equal(row.phase, "quarantined", "a stopped start was admitted");
+    assert.ok(
+      Date.now() - quarantinedAt <= forcedStopGraceMs + startingBoundMs + 3 * upkeepCadenceMs,
+      "the place wasn't reclaimed within the stop grace and the absence bound",
+    );
+  }
+  assert.deepEqual(s.f.calls.signals, [15], "not one graceful stop, SIGTERM first");
+  assert.equal(s.f.calls.destroy, 1);
+  assert.deepEqual(s.stops(), ["destroy_after_grace"], "one stop line");
+  assert.equal(s.f.ctx.container.running, false);
+}
+
+/** The stop's grace held until `release`, as for a Home still draining its SIGTERM. */
+function heldGrace(context: TestContext) {
+  let release!: () => void;
+  const grace = new Promise<void>((resolve) => (release = resolve));
+  // Before the fixture's cleanup, which waits on the stop, even when an assertion failed first.
+  context.after(() => release());
+  return { grace: () => grace, release: () => release() };
+}
+
+/** While its stop's grace runs, a call goes to the root and is served, and none reaches the cell. */
+async function rootServesDuringStop(s: Stuck) {
+  assert.deepEqual(s.f.calls.signals, [15], "the stop isn't under way");
+  assert.equal(s.f.ctx.container.running, true, "the stop already ended");
+  const before = s.rootCalls();
+  assert.equal(await s.forward(), 200);
+  assert.equal(s.rootCalls(), before + 1, "a call during the stop didn't go to the root");
+}
+
+/** No call ever reached the cell's container, so no stream was admitted to it at any point. */
+function noStreamAdmitted(s: Stuck) {
+  assert.equal(s.f.calls.model, 0, "a call reached the stopped cell's container");
+  assert.deepEqual(s.f.transport.modelStubs, [], "a call was routed to the stopped cell");
 }
 
 /** The platform ends its container, as at its inactivity timeout: its place frees at the absence bound. */
@@ -381,42 +301,6 @@ test("an activated cell is never stopped on this path", async (context) => {
   });
 
   await context.test(
-    "an attestation queued at the endpoint ahead of the fence wins",
-    async (step) => {
-      const s = await stuckFleet(step);
-      await s.state.reserve(s.f.target);
-      await s.state.dispatch(s.f.target);
-      // The old isolate's activation reaches the endpoint and waits inside its health read.
-      const attesting = gate();
-      let holding = false;
-      const original = s.f.stub.fetch;
-      s.f.stub.fetch = async (request: Request) => {
-        if (new URL(request.url).pathname === "/attest") holding = true;
-        return original(request);
-      };
-      s.f.hooks.health = async () => {
-        if (!holding) return;
-        holding = false;
-        attesting.reached();
-        await attesting.opened;
-      };
-      const starting = s.f.cell.start(s.f.target).then(
-        () => "activated",
-        () => "refused",
-      );
-      await attesting.arrived;
-      // A replaced controller abandons the slot and asks for its stop while that attestation runs.
-      const abandoning = s.f.replacedCell().abandon(s.f.target, true);
-      attesting.open();
-      assert.equal(await abandoning, false);
-      assert.equal(await starting, "refused", "the fence refuses the activation's last step");
-      await s.f.settle();
-      assert.equal(await s.fenced(), true);
-      assert.deepEqual(s.f.calls.signals, [], "an attested start proved itself to its endpoint");
-    },
-  );
-
-  await context.test(
     "an activated first start is fenced, and its stop is never asked for",
     async (step) => {
       const s = await stuckFleet(step);
@@ -436,6 +320,64 @@ test("an activated cell is never stopped on this path", async (context) => {
       await assert.rejects(s.f.cell.healthy(identity), "a fenced endpoint still answered");
     },
   );
+});
+
+// Readiness answers the start's own reads and then lapses for good. With 4 or 5 good reads the
+// endpoint records the attestation before the activation's proof fails, so nothing is selected.
+for (const good of [2, 4, 5])
+  test(`a first start whose readiness answers ${good} reads and then lapses is stopped once at its bound and its place reclaimed, attested or not`, async (context) => {
+    const s = await stuckFleet(context);
+    await s.state.reserve(s.f.target);
+    await s.state.dispatch(s.f.target);
+    let reads = 0;
+    s.f.hooks.health = async () => (++reads <= good ? undefined : unready());
+    await assert.rejects(s.f.cell.start(s.f.target));
+    const attested = await s.attested();
+    assert.equal(attested, good >= 4, "the lapse didn't fall where the case needs it");
+    assert.equal(await s.f.cell.selected(), undefined, "it activated");
+    const row = await s.pass(startingBoundMs);
+    assert.equal(row?.phase, "quarantined");
+    assert.equal(row?.reason, "start_unproven");
+    assert.equal(row?.identity, undefined);
+    assert.deepEqual(s.f.calls.signals, [], "stopped before its quarantine");
+    await reclaimedAfterStop(s, row!.phaseAt!);
+  });
+
+test("an attestation queued at the endpoint ahead of the fence lands, yet its activation is refused and its start stopped once", async (context) => {
+  const s = await stuckFleet(context);
+  await s.state.reserve(s.f.target);
+  await s.state.dispatch(s.f.target);
+  // The old isolate's activation reaches the endpoint and waits inside its health read.
+  const attesting = gate();
+  let holding = false;
+  const original = s.f.stub.fetch;
+  s.f.stub.fetch = async (request: Request) => {
+    if (new URL(request.url).pathname === "/attest") holding = true;
+    return original(request);
+  };
+  s.f.hooks.health = async () => {
+    if (!holding) return;
+    holding = false;
+    attesting.reached();
+    await attesting.opened;
+  };
+  const starting = s.f.cell.start(s.f.target).then(
+    () => "activated",
+    () => "refused",
+  );
+  await attesting.arrived;
+  // A replaced controller abandons the slot and asks for its stop while that attestation runs.
+  const abandoning = s.f.replacedCell().abandon(s.f.target, true);
+  attesting.open();
+  assert.equal(await abandoning, false);
+  assert.equal(await starting, "refused", "the fence refuses the activation's last step");
+  await s.f.settle();
+  assert.equal(await s.attested(), true, "the attestation lost");
+  assert.equal(await s.f.cell.selected(), undefined, "a selection committed behind the fence");
+  assert.equal(await s.fenced(), true);
+  assert.deepEqual(s.f.calls.signals, [15], "the attested start was spared");
+  assert.equal(s.f.calls.destroy, 1);
+  assert.deepEqual(s.stops(), ["destroy_after_grace"]);
 });
 
 test("a start that activates after its bound fired is fenced but never admitted or stopped, so its container times out and its place frees", async (context) => {
@@ -486,45 +428,58 @@ test("a late start that never answers its read is fenced but never stopped while
   assert.deepEqual(await s.state.inspect(), []);
 });
 
-test("a start whose selection commits after a replaced controller fenced its slot is never made ready, and frees its place once it ends", async (context) => {
-  const s = await stuckFleet(context);
+test("a start whose selection commits after a replaced controller fenced its slot and asked its stop is never made ready, and is stopped once and its place reclaimed", async (context) => {
+  const held = heldGrace(context);
+  const s = await stuckFleet(context, { grace: held.grace });
   await s.state.reserve(s.f.target);
   await s.state.dispatch(s.f.target);
   const slow = slowProof(s);
   const starting = s.f.cell.start(s.f.target);
   await slow.boundFires();
-  // A replaced controller fences the slot while that read is held.
+  const quarantinedAt = (await s.row())!.phaseAt!;
+  // A replaced controller reads no selection while that read is held: it fences and asks the stop.
   s.replaceController();
-  assert.equal((await s.pass())?.phase, "quarantined");
+  assert.equal((await s.pass(upkeepCadenceMs, false))?.phase, "quarantined");
   assert.equal(await s.fenced(), true);
-  // The old isolate's selection commits behind the fence.
+  assert.deepEqual(s.f.calls.signals, [15], "the attested start was spared");
+  // The old isolate's selection commits behind the fence while Home drains.
   slow.commit();
   assert.equal((await starting).bootId, s.f.identity().bootId);
+  await rootServesDuringStop(s);
+  held.release();
+  await s.f.settle();
   await neverServes(s, "a fenced cell was admitted ready");
-  assert.equal(await s.fenced(), true);
-  await heldWhileRunning(s);
-  await freedOnceEnded(s);
+  await reclaimedAfterStop(s, quarantinedAt);
+  noStreamAdmitted(s);
 });
 
-test("the old isolate's growth never admits its start once a replaced controller fenced its slot", async (context) => {
-  const s = await stuckFleet(context, { demand: 1 });
+test("the old isolate's growth never admits its start once a replaced controller fenced its slot, and the start is stopped once", async (context) => {
+  const held = heldGrace(context);
+  const s = await stuckFleet(context, { demand: 1, grace: held.grace });
   const slow = slowProof(s);
   const grown = await s.grow();
   await slow.boundFires();
+  const quarantinedAt = (await s.row())!.phaseAt!;
   s.replaceController();
-  assert.equal((await s.pass())?.phase, "quarantined");
+  assert.equal((await s.pass(upkeepCadenceMs, false))?.phase, "quarantined");
   assert.equal(await s.fenced(), true);
-  // Its selection commits behind the fence, and the old growth goes on to admit it.
+  assert.deepEqual(s.f.calls.signals, [15], "the attested start was spared");
+  // Its selection commits behind the fence while Home drains, and the old growth goes on to admit it.
   slow.commit();
   await grown();
   assert.equal((await s.f.cell.selected())?.bootId, s.f.identity().bootId, "it never activated");
+  await rootServesDuringStop(s);
+  held.release();
+  await s.f.settle();
   await neverServes(s, "a fenced cell was admitted ready");
   assert.equal(s.f.calls.start, 1, "growth started it again");
-  assert.deepEqual(s.f.calls.signals, []);
+  await reclaimedAfterStop(s, quarantinedAt);
+  noStreamAdmitted(s);
 });
 
-test("a growth admission that runs while a replaced controller's fence is on its way never makes the cell ready", async (context) => {
-  const s = await stuckFleet(context, { demand: 1 });
+test("a growth admission that runs while a replaced controller's fence is on its way never makes the cell ready, and the fence stops it once", async (context) => {
+  const held = heldGrace(context);
+  const s = await stuckFleet(context, { demand: 1, grace: held.grace });
   const slow = slowProof(s);
   const fence = gate();
   const admission = gate();
@@ -548,10 +503,11 @@ test("a growth admission that runs while a replaced controller's fence is on its
   };
   const grown = await s.grow();
   await slow.boundFires();
-  // A replaced controller reads no selection, so its fence goes out; it is held on its way.
+  const quarantinedAt = (await s.row())!.phaseAt!;
+  // A replaced controller reads no selection, so its fence and stop go out; they are held on their way.
   s.replaceController();
   holdFence = true;
-  const fencing = s.pass();
+  const fencing = s.pass(upkeepCadenceMs, false);
   await fence.arrived;
   // The old selection commits and its growth admits it while the slot is still unfenced. A health
   // read it makes answers, and its answer is held until the fence has landed.
@@ -565,8 +521,13 @@ test("a growth admission that runs while a replaced controller's fence is on its
   admission.open();
   await grown();
   assert.equal((await s.f.cell.selected())?.bootId, s.f.identity().bootId, "it never activated");
+  // Its selection committed before the fence landed, yet after the cell's read: the fence stops it.
+  await rootServesDuringStop(s);
+  held.release();
+  await s.f.settle();
   await neverServes(s, "a fenced cell was admitted ready");
-  assert.deepEqual(s.f.calls.signals, []);
+  await reclaimedAfterStop(s, quarantinedAt);
+  noStreamAdmitted(s);
 });
 
 test("an admission whose start's bound fires during its read is refused by the ledger, and growth settles", async (context) => {
