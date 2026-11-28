@@ -268,7 +268,7 @@ diff --git a/e2e/support/owned-pool.ts b/e2e/support/owned-pool.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/owned-pool.ts
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,80 @@
 +import { expect } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { Actors } from "./actors.ts";
@@ -284,10 +284,11 @@ new file mode 100644
 + * A pool its organization owns, as the tools service's ownership check reads one, and the owner
 + * token for it. The pool is an app the organization owns, named by a record in the organization's
 + * pools; a token for any other pool is refused before the pool Worker runs a route, so a scenario
-+ * that signs its own pool token gets the pool and the token here. The app keeps no active
-+ * deployment and the record names no membership, so the host's native membership read finds a pool
-+ * that is neither native nor due a handoff and leaves membership to the pool Worker's Home, as for
-+ * a pool the host never registered. Both go when the case ends.
++ * that sends the pool Worker a pool token the product did not issue gets the pool and the token
++ * here. The app keeps no active deployment and the record names no membership, so the host's
++ * native membership read finds a pool that is neither native nor due a handoff and leaves
++ * membership to the pool Worker's Home, as for a pool the host never registered. Both go when the
++ * case ends.
 + */
 +export const ownedPool = Effect.gen(function* () {
 +  const api = yield* Api,

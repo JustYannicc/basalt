@@ -1,7 +1,7 @@
 {
   "identity": "basalt-pool-ownership-enforce",
   "file": "0815-pool-ownership-enforce.patch",
-  "content_sha256": "4587e5b181edc909ec6322ebae2c45d5ff6315597f6675b508922e356fb0ba27",
+  "content_sha256": "d8199a591a26c0732093f06cf9f1803aec29d0e8f9dcc60fe98e1df7e8c15b4f",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
