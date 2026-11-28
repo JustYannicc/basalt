@@ -3,7 +3,10 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { once } from "node:events";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { test, type TestContext } from "node:test";
 import { brand } from "../../brand.ts";
 import { openEnvelope } from "../../src/pool/token.ts";
 import { createHash } from "node:crypto";
@@ -15,21 +18,9 @@ import {
 } from "./client.ts";
 
 const signingKey = "ab".repeat(32);
-const target = "https://operator.example.test";
 const origin = "https://upstream.example.test";
 const key = "poison-upstream-key-".padEnd(40, "z");
 const planSha256 = "1".repeat(64);
-const setup: AcceptanceInput = {
-  target,
-  signingKey,
-  kind: "setup",
-  action: "dry-run",
-  request: JSON.stringify({ pool: "acceptance-run-1", accounts: [] }),
-  recipient: "YQ==",
-  planSha256: "",
-  go: "",
-  upstreamOrigin: origin,
-};
 const previous = {
   action: "dry-run",
   kind: "setup",
@@ -46,38 +37,70 @@ const reason = async (work: Promise<unknown>) => {
   assert.fail("expected a refusal");
 };
 
-const capture = () => {
-  const sent: Record<string, unknown>[] = [];
-  const send: typeof fetch = async (url, init) => {
-    assert.equal(String(url), `${target}/api/internal/acceptance-pool`);
-    const body: unknown = JSON.parse(String(init?.body));
-    assert.ok(typeof body === "object" && body !== null && "envelope" in body);
-    const signed = await openEnvelope(signingKey, "sbacc1", String(body.envelope));
-    assert.ok(typeof signed === "object" && signed !== null);
-    sent.push(signed as Record<string, unknown>);
-    const operation = (signed as { operation: { action: string; kind: string } }).operation;
-    return Response.json({ action: operation.action, kind: operation.kind, planSha256 });
-  };
-  return { sent, send };
+type Answer = (signed: Record<string, unknown>) => { status: number; body: unknown };
+const answered: Answer = (signed) => {
+  const operation = signed.operation as { action: string; kind: string };
+  return { status: 200, body: { action: operation.action, kind: operation.kind, planSha256 } };
 };
+
+/**
+ * A real local server where the tools service stands: the driver's own fetch reaches it, and it
+ * records each signed request it opens before it answers.
+ */
+async function toolsService(t: TestContext, answer: Answer = answered) {
+  const sent: Record<string, unknown>[] = [];
+  const paths: string[] = [];
+  const server = createServer(async (request, response) => {
+    let text = "";
+    for await (const chunk of request) text += chunk;
+    paths.push(request.url ?? "");
+    const body = JSON.parse(text) as { envelope: string };
+    const signed = (await openEnvelope(signingKey, "sbacc1", body.envelope)) as Record<
+      string,
+      unknown
+    >;
+    sent.push(signed);
+    const out = answer(signed);
+    response.writeHead(out.status, { "content-type": "application/json" });
+    response.end(JSON.stringify(out.body));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const { port } = server.address() as AddressInfo;
+  const target = `http://127.0.0.1:${port}`;
+  const setup: AcceptanceInput = {
+    target,
+    signingKey,
+    kind: "setup",
+    action: "dry-run",
+    request: JSON.stringify({ pool: "acceptance-run-1", accounts: [] }),
+    recipient: "YQ==",
+    planSha256: "",
+    go: "",
+    upstreamOrigin: origin,
+  };
+  return { target, setup, sent, paths };
+}
 
 // The server computes the same digest; scripts/upstream-tests/acceptance-pool-runner.test.ts
 // compares the two functions directly.
 const serverDigest = (value: string) =>
   createHash("sha256").update(`basalt-acceptance-upstream-origin-v1\n${value}`).digest("hex");
 
-test("the driver sends only the digest of the origin, never the address", async () => {
+test("the driver sends only the digest of the origin, never the address", async (t) => {
   assert.equal(upstreamOriginSha256(origin), serverDigest(origin));
   assert.equal(
     upstreamOriginSha256(`${origin}/`),
     serverDigest(origin),
     "a trailing slash names the same origin",
   );
-  const { sent, send } = capture();
-  await acceptanceOperation(setup, send);
-  const [signed] = sent;
+  const tools = await toolsService(t);
+  await acceptanceOperation(tools.setup);
+  assert.deepEqual(tools.paths, ["/api/internal/acceptance-pool"]);
+  const [signed] = tools.sent;
   assert.ok(signed);
-  assert.equal(signed.target, target);
+  assert.equal(signed.target, tools.target);
   assert.equal(Number(signed.expiresAt) - Number(signed.at), 60_000);
   const operation = signed.operation as Record<string, unknown>;
   assert.equal(operation.upstreamOriginSha256, serverDigest(origin));
@@ -85,8 +108,28 @@ test("the driver sends only the digest of the origin, never the address", async 
   assert.equal(operation.upstreamKey, undefined, "a dry run carries no key");
 });
 
-test("an origin with a path, query or credentials, or none at all, is refused before anything is sent", async () => {
-  const { sent, send } = capture();
+test("only an https target, or plain http to the loopback address, is ever called", async () => {
+  const setup: AcceptanceInput = {
+    target: "",
+    signingKey,
+    kind: "setup",
+    action: "dry-run",
+    request: "{}",
+    recipient: "YQ==",
+    planSha256: "",
+    go: "",
+    upstreamOrigin: origin,
+  };
+  for (const target of [
+    "http://operator.example.test",
+    "http://localhost:1",
+    "https://x.example.test/a",
+  ])
+    assert.equal(await reason(acceptanceOperation({ ...setup, target })), "config", target);
+});
+
+test("an origin with a path, query or credentials, or none at all, is refused before anything is sent", async (t) => {
+  const tools = await toolsService(t);
   for (const upstreamOrigin of [
     `${origin}/a`,
     `${origin}?x=1`,
@@ -95,18 +138,18 @@ test("an origin with a path, query or credentials, or none at all, is refused be
     "not a url",
   ])
     assert.equal(
-      await reason(acceptanceOperation({ ...setup, upstreamOrigin }, send)),
+      await reason(acceptanceOperation({ ...tools.setup, upstreamOrigin })),
       "upstream_origin_invalid",
     );
-  const { upstreamOrigin: _, ...none } = setup;
-  assert.equal(await reason(acceptanceOperation(none, send)), "upstream_origin_missing");
-  assert.equal(sent.length, 0);
+  const { upstreamOrigin: _, ...none } = tools.setup;
+  assert.equal(await reason(acceptanceOperation(none)), "upstream_origin_missing");
+  assert.equal(tools.sent.length, 0);
 });
 
-test("an apply needs the saved dry run of the same kind, its checksum and the exact GO, and only a setup apply carries the key", async () => {
-  const { sent, send } = capture();
+test("an apply needs the saved dry run of the same kind, its checksum and the exact GO, and only a setup apply carries the key", async (t) => {
+  const tools = await toolsService(t);
   const apply: AcceptanceInput = {
-    ...setup,
+    ...tools.setup,
     action: "apply",
     planSha256,
     go: `GO ${planSha256}`,
@@ -121,45 +164,38 @@ test("an apply needs the saved dry run of the same kind, its checksum and the ex
     { ...apply, go: `GO ${"2".repeat(64)}` },
     { ...apply, go: planSha256 },
   ])
-    assert.equal(await reason(acceptanceOperation(invalid, send)), "config");
+    assert.equal(await reason(acceptanceOperation(invalid)), "config");
   const { upstreamKey: _, ...keyless } = apply;
-  assert.equal(await reason(acceptanceOperation(keyless, send)), "upstream_key_missing");
-  assert.equal(sent.length, 0);
-  await acceptanceOperation(apply, send);
-  const [first] = sent;
+  assert.equal(await reason(acceptanceOperation(keyless)), "upstream_key_missing");
+  assert.equal(tools.sent.length, 0);
+  await acceptanceOperation(apply);
+  const [first] = tools.sent;
   assert.ok(first);
   const operation = first.operation as Record<string, unknown>;
   assert.equal(operation.upstreamKey, key);
   assert.equal(operation.go, `GO ${planSha256}`);
-  await acceptanceOperation(
-    {
-      ...apply,
-      kind: "teardown",
-      request: JSON.stringify({ setup: planSha256 }),
-      previous: { ...previous, kind: "teardown" },
-    },
-    send,
-  );
-  const [, teardown] = sent;
+  await acceptanceOperation({
+    ...apply,
+    kind: "teardown",
+    request: JSON.stringify({ setup: planSha256 }),
+    previous: { ...previous, kind: "teardown" },
+  });
+  const [, teardown] = tools.sent;
   assert.ok(teardown);
   assert.equal((teardown.operation as Record<string, unknown>).upstreamKey, undefined);
 });
 
-test("a refusal reports only the server's closed word", async () => {
-  const answer =
-    (body: unknown, status = 409) =>
-    async () =>
-      new Response(JSON.stringify(body), { status });
-  assert.equal(
-    await reason(acceptanceOperation(setup, answer({ reason: "operation_busy", step: "x" }))),
-    "operation_busy",
-  );
-  assert.equal(
-    await reason(acceptanceOperation(setup, answer({ reason: `leaked ${key}` }))),
-    "unknown",
-  );
+test("a refusal reports only the server's closed word", async (t) => {
+  let next: unknown = {};
+  const tools = await toolsService(t, () => ({ status: 409, body: next }));
+  next = { reason: "operation_busy", step: "x" };
+  assert.equal(await reason(acceptanceOperation(tools.setup)), "operation_busy");
+  next = { reason: `leaked ${key}` };
+  assert.equal(await reason(acceptanceOperation(tools.setup)), "unknown");
+  next = { reason: "step_failed", step: `bad step ${key}` };
   try {
-    await acceptanceOperation(setup, answer({ reason: "step_failed", step: `bad step ${key}` }));
+    await acceptanceOperation(tools.setup);
+    assert.fail("expected a refusal");
   } catch (error) {
     assert.ok(error instanceof AcceptanceRefusal);
     assert.equal(error.failure.step, undefined, "a step name outside the closed shape is dropped");
@@ -187,7 +223,7 @@ const run = (env: Record<string, string>, response: unknown, status = 200) => {
         ACCEPTANCE_TARGET: "production",
         ACCEPTANCE_KIND: "setup",
         ACCEPTANCE_ACTION: "dry-run",
-        ACCEPTANCE_REQUEST: setup.request,
+        ACCEPTANCE_REQUEST: JSON.stringify({ pool: "acceptance-run-1", accounts: [] }),
         ACCEPTANCE_RECIPIENT: "YQ==",
         EMULATED_UPSTREAM_ORIGIN: origin,
         EMULATED_UPSTREAM_KEY: key,

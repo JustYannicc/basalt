@@ -96,7 +96,14 @@ export async function acceptanceOperation(
   fetcher: typeof fetch = fetch,
 ): Promise<Record<string, unknown>> {
   const target = URL.parse(input.target);
-  if (target === null || target.origin !== input.target || target.protocol !== "https:")
+  // https only; plain http only to 127.0.0.1, where the tests' local server stands in for the
+  // tools service (the load job's driver makes the same exception).
+  const loopback = target?.protocol === "http:" && target.hostname === "127.0.0.1";
+  if (
+    target === null ||
+    target.origin !== input.target ||
+    (target.protocol !== "https:" && !loopback)
+  )
     throw refused("config");
   if (!/^[a-f0-9]{64}$/iu.test(input.signingKey)) throw refused("config");
   if (!["setup", "teardown"].includes(input.kind)) throw refused("config");

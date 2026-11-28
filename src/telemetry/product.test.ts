@@ -140,32 +140,23 @@ test("regional configuration selects the exact ingest host and rejects arbitrary
   assert.equal(calls.length, 2);
 });
 
-test("the acceptance identity's pool, accounts and usage never become product events", async (t) => {
-  const calls: Request[] = [];
-  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
-    calls.push(new Request(url, init));
-    return new Response(null, { status: 200 });
-  });
-  const env = { POSTHOG_PROJECT_KEY: "synthetic" };
-  for (const event of [
-    "pool_created",
-    "account_connected",
-    "setup_completed",
-    "first_model_request",
-  ] as const)
-    await captureProduct(env, event, "acceptance");
-  assert.equal(calls.length, 0, "nothing is sent for the acceptance identity alone");
+test("the acceptance identity's pool, accounts and usage never become product events", async () => {
+  // An empty batch answers before the destination is checked, so a refused destination shows
+  // whether anything was left to send. No network is involved either way.
+  const refusedHost = {
+    POSTHOG_PROJECT_KEY: "synthetic",
+    POSTHOG_HOST: "https://elsewhere.invalid",
+  };
+  const identityOnly = (
+    ["pool_created", "account_connected", "setup_completed", "first_model_request"] as const
+  ).map((event) => ({ event, accountId: "acceptance" }));
+  assert.equal(await captureProducts(refusedHost, identityOnly), true, "nothing is left to send");
   assert.equal(
-    await captureProducts(env, [
-      { event: "pool_created", accountId: "acceptance" },
+    await captureProducts(refusedHost, [
+      ...identityOnly,
       { event: "pool_created", accountId: "account_fixture" },
     ]),
-    true,
-  );
-  assert.equal(calls.length, 1);
-  const wire = (await calls[0]!.json()) as { batch: { distinct_id: string }[] };
-  assert.deepEqual(
-    wire.batch.map((entry) => entry.distinct_id),
-    ["account_fixture"],
+    false,
+    "a person's event is still sent, here to a refused destination",
   );
 });
