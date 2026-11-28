@@ -39,6 +39,8 @@ const reasons = [
   "slot_unhealthy",
   "slot_draining",
   "slot_uncertain",
+  // A caller on older code doesn't know it: it reads no diagnostic and refuses as uncertain.
+  "slot_controller_code",
   "fleet_capacity",
   "fleet_identity",
   "fleet_uncertain",
