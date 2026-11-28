@@ -1,13 +1,17 @@
 import { join } from "node:path";
 import { signPoolToken } from "../../src/pool/token.ts";
 import { PoolAcceptanceClient } from "../pool-acceptance/client.ts";
-import { isAcceptancePool } from "../pool-acceptance/types.ts";
 import {
   acceptanceCredential,
-  acceptanceDevice,
   AcceptanceDeviceRefused,
   acceptanceSigningKey,
 } from "../release/acceptance-device.ts";
+import {
+  acceptanceIdentity,
+  acceptanceTestDevice,
+  isAcceptanceIdentity,
+  testDeviceSecret,
+} from "../release/acceptance-test-device.ts";
 import { checkoutControllerCode } from "./controller.ts";
 import type { DispatchDependencies, DispatchInput, FleetAcceptance } from "./dispatch.ts";
 import { FleetLaneRefused, refuse } from "./errors.ts";
@@ -27,33 +31,56 @@ export const dispatchInput = (env: NodeJS.ProcessEnv): DispatchInput => ({
 const missing = (why: string, fix: string) => refuse("acceptance-credentials-missing", why, fix);
 
 /**
- * The lane's model calls sign for the release's registered acceptance device, as release acceptance
- * does. Only in a dedicated acceptance pool does it also hold an owner token, to read that pool's
- * accounts and usage, so the records its calls leave are the ones checked. A device in a pool that
- * holds people's work gets no owner token at all: the acceptance runs on the device alone.
+ * The lane's model calls sign for one registered device, chosen by the run's `device` input: the
+ * release's own (`release`, the default) or the test pool's (`test`). Each is read from its own
+ * secret only; an unset one is refused, never replaced by the other. The test pool is exactly the
+ * pool the test device's secret names. Only when that device's user, owner and organization are
+ * all the acceptance identity does the lane also hold an owner token, to read the pool's accounts
+ * and usage; otherwise, and always with the release's device, it proves usage by the device's own
+ * read alone and mints nothing.
  */
+/** The owner token outlives the lane's job, whose timeout is 30 minutes, and nothing after it. */
+export const ownerTokenLifetimeSeconds = 35 * 60;
+
 export async function acceptanceFromEnvironment(
   env: NodeJS.ProcessEnv,
   mint: typeof signPoolToken = signPoolToken,
+  now: () => number = Date.now,
 ): Promise<FleetAcceptance | FleetLaneRefused> {
+  const choice = env.POOL_FLEET_DEVICE?.trim() || "release";
+  if (choice !== "release" && choice !== "test")
+    return refuse(
+      "acceptance-device-invalid",
+      "The device input must be release or test.",
+      "Pick release or test.",
+    );
+  const model = env.POOL_ACCEPTANCE_MODEL?.trim() || undefined;
   try {
-    const { pool } = acceptanceDevice(env);
+    if (choice === "release")
+      return {
+        client: new PoolAcceptanceClient(),
+        credential: acceptanceCredential(env),
+        model,
+        device: "release",
+      };
+    const test = acceptanceTestDevice(env);
     const device = {
       client: new PoolAcceptanceClient(),
-      credential: acceptanceCredential(env),
-      model: env.POOL_ACCEPTANCE_MODEL?.trim() || undefined,
+      credential: acceptanceCredential(env, Date.now, testDeviceSecret),
+      model,
+      device: "test" as const,
     };
-    // Never minted for a pool that is not acceptance-named (pool-acceptance/types.ts).
-    if (!isAcceptancePool(pool)) return device;
+    if (!isAcceptanceIdentity(test)) return device;
     return {
       ...device,
       access: {
         token: await mint(acceptanceSigningKey(env), {
-          pool,
-          owner: "acceptance",
-          organization: "acceptance",
+          pool: test.pool,
+          owner: acceptanceIdentity,
+          organization: acceptanceIdentity,
+          exp: Math.floor(now() / 1000) + ownerTokenLifetimeSeconds,
         }),
-        owner: "acceptance",
+        owner: acceptanceIdentity,
       },
     };
   } catch (error) {
