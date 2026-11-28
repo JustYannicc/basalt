@@ -1,5 +1,5 @@
 import { after } from "node:test";
-import { ConfigProvider, Effect, Logger, ManagedRuntime } from "effect";
+import { ConfigProvider, Data, Effect, Logger, ManagedRuntime } from "effect";
 import { HttpServerRequest } from "effect/http";
 import { SqlClient, SqlError } from "effect/sql";
 import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.ts";
@@ -128,7 +128,10 @@ export const answer = async (
         Effect.provideService(
           StatementBatch,
           input.batched
-            ? (leaves) => db.withTransaction(Effect.forEach(leaves, (leaf) => Effect.exit(leaf)))
+            ? (leaves) =>
+                db
+                  .withTransaction(Effect.forEach(leaves, (leaf) => Effect.exit(leaf)))
+                  .pipe(Effect.orDie)
             : undefined,
         ),
         Effect.provideService(
@@ -180,6 +183,9 @@ export const notObserved = (organization: string, reason: string, target = pool)
   fields: { pool: target, organization, reason },
 });
 
+/** A read that failed for a reason of its own, not one the database's bound gave. */
+export class ReadFailed extends Data.TaggedError("ReadFailed") {}
+
 /** How the driver reports a read the database ended at its statement timeout. */
 export const endedByDatabase = () =>
   new SqlError.SqlError({
@@ -192,7 +198,7 @@ export const endedByDatabase = () =>
  * Every other query is the real one.
  */
 export const ownershipReadAnswers =
-  <A, E>(read: Effect.Effect<A, E>, organization?: string) =>
+  (read: Effect.Effect<unknown, ReadFailed | SqlError.SqlError>, organization?: string) =>
   (db: SqlClient.SqlClient): SqlClient.SqlClient =>
     new Proxy(db, {
       apply(target, self, args: [TemplateStringsArray, ...unknown[]]) {

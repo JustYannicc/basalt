@@ -267,22 +267,14 @@ test("an organization whose metadata cannot be read gets the pool's unavailable 
 
 test("a check the tools service never answers ends at the pool Worker's 10 s as its unavailable answer", async () => {
   await database();
-  const timeout = AbortSignal.timeout;
-  const asked: number[] = [];
-  // The Worker's own bound, shortened here only so the test need not wait it out.
-  AbortSignal.timeout = (ms: number) => {
-    asked.push(ms);
-    return timeout.call(AbortSignal, 20);
-  };
-  try {
-    const visited = await visit("/pool/v1/pool", own, false, true);
-    assert.equal(asked[0], 10_000, "the check waits the Worker's 10 s, past the database's 8 s");
-    assert.deepEqual(
-      { status: visited.status, body: visited.body },
-      { status: 503, body: unavailableBody },
-    );
-    assert.equal(visited.containerCalls, 0);
-  } finally {
-    AbortSignal.timeout = timeout;
-  }
+  const started = performance.now();
+  const visited = await visit("/pool/v1/pool", own, false, true);
+  const waited = performance.now() - started;
+  // The Worker waits its own 10 s, past the database's 8 s, and then answers by itself.
+  assert.ok(waited >= 9_900 && waited < 11_000, String(waited));
+  assert.deepEqual(
+    { status: visited.status, body: visited.body },
+    { status: 503, body: unavailableBody },
+  );
+  assert.equal(visited.containerCalls, 0);
 });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Data, Effect } from "effect";
+import { Effect } from "effect";
 import {
   type Answer,
   ask,
@@ -10,6 +10,7 @@ import {
   ownershipReadAnswers,
   person,
   pool,
+  ReadFailed,
   refused,
   seed,
   wouldRefuse,
@@ -322,8 +323,6 @@ test("25. stale envelopes and a missing signing key keep their answers and write
   silent(await ask({ organization: person, at: now - 60_000, expiresAt: now - 1 }), 401);
   silent(await ask({ organization: person, key: null }), 503);
 });
-
-class ReadFailed extends Data.TaggedError("ReadFailed") {}
 
 test("an ownership read the database ends at its bound answers 503, never 403 or 204", async () => {
   for (const metadata of [{ basaltPools: { [pool]: native(pool) } }, { basaltPools: {} }]) {
