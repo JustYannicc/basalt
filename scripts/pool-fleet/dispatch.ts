@@ -15,6 +15,7 @@ import {
   UsageRollup,
   CaptureHours,
   type ControllerAccess,
+  type ReadSessions,
 } from "./controller.ts";
 import { crashReadyCell } from "./crash-cell.ts";
 import { readEnd, type RuntimeEnd } from "../../src/pool/runtime-slots/container-end.ts";
@@ -247,7 +248,7 @@ const connectionWarning = (connections: number | null | undefined) =>
       ? `${connections} connections are open on this cell; the override may cut them`
       : "the connection read failed; nothing proves this cell is idle";
 
-const program = (input: DispatchInput, deps: DispatchDependencies) =>
+const program = (input: DispatchInput, deps: DispatchDependencies, retried: ReadSessions[]) =>
   Effect.gen(function* () {
     if (!modes.includes(input.mode as Mode))
       return yield* Effect.fail(
@@ -297,7 +298,14 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
         ),
       );
     const worker = yield* poolWorkerName(deps.cloudflare);
-    const access = deps.controller(worker);
+    const access: ControllerAccess = {
+      ...deps.controller(worker),
+      // A read the pool never answered goes again on a fresh session; the run says each one.
+      sessions: (read) => {
+        retried.push(read);
+        deps.log(`read_sessions action=${read.action} sessions=${read.sessions} ok=${read.ok}`);
+      },
+    };
     const evidence: Record<string, unknown> = { controllerCode: access.code };
     // inspect and retire-check send nothing, so their probe waits out the controller's code handover
     // too, but only for what's left of it since the PoolWorker's latest deployment: the lane holds
@@ -593,11 +601,20 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
 
 export async function runPoolFleet(input: DispatchInput, deps: DispatchDependencies) {
   const startedAt = new Date(deps.now()).toISOString();
-  const outcome = await Effect.runPromise(Effect.result(program(input, deps)));
+  const retried: ReadSessions[] = [];
+  const outcome = await Effect.runPromise(Effect.result(program(input, deps, retried)));
   const secrets = [deps.cloudflare.accountId];
+  const readSessions = retried.length ? { readSessions: retried } : {};
   if (Result.isSuccess(outcome))
     return redact(
-      { mode: input.mode, go: input.go, startedAt, ok: true, result: outcome.success },
+      {
+        mode: input.mode,
+        go: input.go,
+        startedAt,
+        ok: true,
+        ...readSessions,
+        result: outcome.success,
+      },
       secrets,
     );
   const failure = outcome.failure;
@@ -609,7 +626,10 @@ export async function runPoolFleet(input: DispatchInput, deps: DispatchDependenc
     ("rollback" in failure || "evidence" in failure)
       ? failure
       : { cause: describeError(failure), couldNotTest: isCapReached(failure) };
-  return redact({ mode: input.mode, go: input.go, startedAt, ok: false, ...detail }, secrets);
+  return redact(
+    { mode: input.mode, go: input.go, startedAt, ok: false, ...readSessions, ...detail },
+    secrets,
+  );
 }
 
 const couldNotTest = (result: Awaited<ReturnType<typeof runPoolFleet>>) =>
@@ -631,6 +651,12 @@ export function stepSummary(result: Awaited<ReturnType<typeof runPoolFleet>>) {
       ? (result.result as { bookmark?: { at?: unknown } } | undefined)?.bookmark
       : undefined;
   if (bookmark) lines.push(`- Controller storage bookmark taken at ${String(bookmark.at)}`);
+  if ("readSessions" in result && result.readSessions?.length)
+    lines.push(
+      `- Reads sent again because the pool never answered: ${result.readSessions
+        .map((read) => `${read.action} on ${read.sessions} sessions${read.ok ? "" : ", failed"}`)
+        .join("; ")}`,
+    );
   if (!result.ok && "cause" in result) lines.push(`- Cause: ${String(result.cause)}`);
   if (!result.ok && "rollback" in result)
     lines.push(`- Rollback: \`${JSON.stringify(result.rollback)}\``);
