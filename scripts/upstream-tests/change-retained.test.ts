@@ -339,6 +339,54 @@ test("two registries on one atom each refresh only themselves", async (t) => {
   b.stop();
 });
 
+test("the browser never writes the server's give-up line, for a failed read or one in flight", async (t) => {
+  const { server, flush, mount } = setup(t);
+  const warnings = t.mock.method(console, "warn");
+  const gaveUp = () =>
+    warnings.mock.calls.filter(
+      ({ arguments: [message] }) => message === "Dashboard committed read gave up",
+    );
+  const src = source();
+  const atom = changeProtected(ORGANIZATION, ["accounts"])(src.atom);
+  const registry = AtomRegistry.make();
+  const view = mount(registry, atom);
+  await flush();
+  server.handshake();
+  await flush();
+  src.loads.at(-1)!.resolve("fresh-1");
+  await flush();
+  for (let revision = 2; revision <= 4; revision++) {
+    server.commit("accounts", String(revision));
+    await flush();
+    server.heads.set("accounts", String(revision + 10));
+    src.loads.at(-1)!.resolve(`moving-${revision}`);
+    await flush();
+  }
+  assert.ok(
+    view.values.some(
+      (value) => value._tag === "Failure" && errorTag(value) === "ChangeRefreshFailed",
+    ),
+    "the browser's read gave up",
+  );
+  // Heads that answer without an identity cannot be used either.
+  Reflect.deleteProperty(server.state, "identity");
+  const failures = view.values.length;
+  server.commit("accounts", "5");
+  await flush();
+  src.loads.at(-1)!.resolve("unreadable");
+  await flush();
+  assert.ok(
+    view.values.slice(failures).some((value) => value._tag === "Failure"),
+    "the read without an identity gave up",
+  );
+  server.state.identity = "viewer-a";
+  server.commit("accounts", "20");
+  await flush();
+  // The registry ends while that read waits for its body.
+  registry.dispose();
+  assert.deepEqual(gaveUp(), []);
+});
+
 test("a write while a read is in flight never publishes its body", async (t) => {
   const { server, flush, mount } = setup(t);
   const src = source();

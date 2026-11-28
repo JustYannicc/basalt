@@ -18,9 +18,21 @@ const organization = Schema.decodeUnknownSync(OrganizationSlug)("fixture-organiz
 
 const globals = globalThis as { window?: unknown; document?: unknown };
 
-for (const reason of ["moving", "unavailable", "revoked"] as const)
+/** What the server says when its read gives up: one line with a closed reason, per case. */
+const watching = ["apps", "session"];
+const gaveUp = {
+  moving: [{ reason: "moved", topics: ["apps"], watching }],
+  unavailable: [{ reason: "unavailable", watching }],
+  undecodable: [{ reason: "unavailable", watching }],
+  revoked: [],
+  ended: [{ reason: "ended", watching }],
+} as const;
+
+for (const reason of ["moving", "unavailable", "undecodable", "revoked", "ended"] as const)
   test(
-    `a server ${reason} fence failure hydrates as the same body-free failure`,
+    reason === "ended"
+      ? "a server read still in flight when the request ends says so"
+      : `a server ${reason} fence failure hydrates as the same body-free failure`,
     { timeout: 5000 },
     async (t) => {
       const previousWindow = globals.window;
@@ -32,6 +44,10 @@ for (const reason of ["moving", "unavailable", "revoked"] as const)
       let calls = 0;
       const fetch = () => {
         calls++;
+        // A read the document never hears back from.
+        if (reason === "ended") return new Promise<Response>(() => {});
+        // Heads that answer but cannot be read.
+        if (reason === "undecodable") return Promise.resolve(new Response("{}", { status: 200 }));
         return Promise.resolve(
           reason === "moving"
             ? new Response(
@@ -63,6 +79,22 @@ for (const reason of ["moving", "unavailable", "revoked"] as const)
         else globals.document = previousDocument;
         globalThis.fetch = previousFetch;
       });
+      const warnings = t.mock.method(console, "warn");
+      const logged = () =>
+        warnings.mock.calls
+          .map((call) => call.arguments)
+          .filter(([message]) => message === "Dashboard committed read gave up")
+          .map(([, detail]) => detail);
+      if (reason === "ended") {
+        // A request mounts its reads until it ends, as the document's registry does.
+        server.mount(query);
+        server.get(query);
+        assert.deepEqual(logged(), [], "nothing is said while the read is in flight");
+        // The request ends while its read waits: the document has rendered it as loading.
+        server.dispose();
+        assert.deepEqual(logged(), gaveUp.ended);
+        return;
+      }
       const failure = await new Promise<unknown>((resolve) => {
         server.subscribe(query, (value: unknown) => {
           if (AsyncResult.isFailure(value)) resolve(value);
@@ -84,6 +116,7 @@ for (const reason of ["moving", "unavailable", "revoked"] as const)
         return error._tag;
       };
       assert.equal(tag(failure), expected);
+      assert.deepEqual(logged(), gaveUp[reason], "the server names why its read gave up");
       const document = [...server.getNodes()].flatMap(([key, node]) => {
         if (typeof key !== "string" || !Atom.isSerializable(node.atom)) return [];
         try {
@@ -100,6 +133,12 @@ for (const reason of ["moving", "unavailable", "revoked"] as const)
         }
       });
       assert.ok(!JSON.stringify(document).includes("unconfirmed fixture body"));
+      server.dispose();
+      assert.deepEqual(
+        logged(),
+        gaveUp[reason],
+        "a settled read says nothing when the request ends",
+      );
       Hydration.hydrate(browser, document);
       globals.window = { addEventListener() {}, removeEventListener() {} };
       globals.document = {
@@ -110,5 +149,7 @@ for (const reason of ["moving", "unavailable", "revoked"] as const)
       const hydrated = browser.get(query);
       assert.equal(tag(hydrated), expected, "the first browser render matches the server error");
       assert.equal(hydrated.waiting, (failure as { waiting: boolean }).waiting);
+      browser.dispose();
+      assert.deepEqual(logged(), gaveUp[reason], "the browser says nothing of its own reads");
     },
   );
