@@ -128,6 +128,7 @@ Each run is two plans, setup and teardown, and each plan is a dry run first. A d
 
 - A setup refuses while the identity holds a pool, an app or an account, so tear one run down before the next.
 - The emulated upstream's host comes from the deploy, never the request. Until it is set, a setup dry run says `upstream host configured: no` and its apply refuses.
+- A run's files and summary name the pool app and its accounts only by digest. The route answers the ids only to a signed verify, so a later run that needs the pool app reads it that way and checks it against the digest.
 - An interrupted apply resumes with the same plan and GO within the hour after its dry run; it repeats no step and makes no second pool. The same request sent twice is refused. After that hour, tear the run down and start a new one.
 - Teardown removes the pool, its provider app, both accounts and the pool's token account, also after a setup that stopped halfway. The pool's deletion record, its deployments and source repositories, and the empty Home group stay.
 
