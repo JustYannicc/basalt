@@ -1,4 +1,13 @@
-import { constants, createDecipheriv, generateKeyPairSync, privateDecrypt } from "node:crypto";
+import {
+  constants,
+  createCipheriv,
+  createDecipheriv,
+  createPublicKey,
+  generateKeyPairSync,
+  privateDecrypt,
+  publicEncrypt,
+  randomBytes,
+} from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -18,6 +27,56 @@ export function createRecipient(path: string): string {
     flag: "wx",
   });
   return pair.publicKey.export({ type: "spki", format: "der" }).toString("base64");
+}
+
+/**
+ * The recipient's public key, refused unless it is RSA of 3072 bits or more with the standard
+ * exponent: a weak exponent would leave the wrapped key readable by anyone.
+ */
+export function recipientKey(recipient: string) {
+  const publicKey = createPublicKey({
+    key: Buffer.from(recipient, "base64"),
+    format: "der",
+    type: "spki",
+  });
+  const details = publicKey.asymmetricKeyDetails;
+  if (
+    publicKey.asymmetricKeyType !== "rsa" ||
+    (details?.modulusLength ?? 0) < 3072 ||
+    details?.publicExponent !== 65537n
+  )
+    throw new Error("The recipient must be an RSA key of 3072 bits or more, exponent 65537");
+  return publicKey;
+}
+
+/**
+ * Seals `plaintext` for one recipient in the format `decryptArtifact` opens: an AES-256-GCM copy
+ * bound to `target`, its key wrapped with RSA-OAEP-SHA256 for the recipient's SPKI DER key (base64),
+ * and the plaintext's checksum. Only the recipient's private key reads it back.
+ */
+export function sealArtifact(plaintext: string, recipient: string, target: string) {
+  const publicKey = recipientKey(recipient);
+  const rawKey = randomBytes(32);
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", rawKey, iv);
+  cipher.setAAD(Buffer.from(`basalt-production-ops-v1:${target}`));
+  const ciphertext = Buffer.concat([
+    cipher.update(plaintext, "utf8"),
+    cipher.final(),
+    cipher.getAuthTag(),
+  ]);
+  return {
+    sha256: hash(plaintext),
+    recipient: {
+      version: 1,
+      wrappedKey: publicEncrypt(
+        { key: publicKey, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: "sha256" },
+        rawKey,
+      ).toString("base64"),
+      iv: iv.toString("base64"),
+      ciphertext: ciphertext.toString("base64"),
+    },
+  };
 }
 
 /** Only a private local file receives the decrypted inventory or recovery snapshot. */

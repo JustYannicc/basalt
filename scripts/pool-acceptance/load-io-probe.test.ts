@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
 import { createConnection, createServer } from "node:net";
 import test from "node:test";
-import { acceptanceCredential } from "../release/acceptance-device.ts";
 import { ioLagLimitMs } from "./load-classes.ts";
 import { startIoProbe } from "./load-io-probe.ts";
 import { parseLoadShape } from "./load-shape.ts";
 import { runLoad } from "./load.ts";
-import { deviceEnv, frame, pacedPool, testClock } from "./test/load-fixtures.ts";
+import { deviceCredential, frame, pacedPool, testClock } from "./test/load-fixtures.ts";
 
 const busy = (ms: number) => {
   const until = performance.now() + ms;
@@ -122,7 +121,7 @@ test("a healthy run at the highest concurrency keeps its wait far under the limi
   );
   const run = await runLoad({
     client: pool.client,
-    credential: acceptanceCredential(deviceEnv),
+    credential: deviceCredential(),
     shape,
     clock,
     witness: pool.witness,

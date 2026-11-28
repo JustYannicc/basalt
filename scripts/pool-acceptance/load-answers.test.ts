@@ -3,11 +3,11 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { acceptanceCredential } from "../release/acceptance-device.ts";
 import type { Attempt } from "./load-call.ts";
 import { runLoadFromEnvironment } from "./load-entry.ts";
 import {
   chatOnly,
+  deviceCredential,
   deviceEnv,
   go,
   load,
@@ -65,7 +65,7 @@ test("a redirect to another origin sends that origin nothing, so no device asser
   try {
     const run = await runLoad({
       client: pool.client,
-      credential: acceptanceCredential(deviceEnv),
+      credential: deviceCredential(),
       shape: chatOnly(1),
       clock: testClock(),
     });

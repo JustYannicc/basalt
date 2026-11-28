@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { phaseCounts, phaseLines } from "./load-runtimes.ts";
 import type { ModelCredential, PoolAcceptanceClient } from "./client.ts";
 import {
   sendAttempt,
@@ -241,6 +242,7 @@ export function summaryLines(run: LoadRun, shape: LoadShape): string[] {
     `load boots distinct=${verdict.boots.length} answers=${verdict.boots.join(",") || "0"}`,
     // The pool strips its placement header, so a caller sees the boot and not the runtime.
     "load runtime=not_visible_to_callers join_on=requestId,traceId",
+    ...phaseLines(phaseCounts(run.calls, shape, run.killAt)),
   );
   if (verdict.restart) {
     const { kill, inFlight, resendPassed, newBoots, goneBoots, passed } = verdict.restart;

@@ -6,6 +6,7 @@ import type { AddressInfo } from "node:net";
 import { nativeModelHeader } from "../../../src/pool/native-contract.ts";
 import { nativeRuntimeUnavailable } from "../../../src/pool/runtime-unavailable.ts";
 import { acceptanceCredential } from "../../release/acceptance-device.ts";
+import { testDeviceSecret } from "../../release/acceptance-test-device-secret.ts";
 import { PoolAcceptanceClient } from "../client.ts";
 import { mockWitness } from "../load-witness.ts";
 import type { Clock } from "../load-call.ts";
@@ -14,16 +15,22 @@ import { sendsPath } from "../../emulated-upstream/sends.ts";
 import { runLoad, summaryLines } from "../load.ts";
 import { fakeMock, witnessKey, type Says } from "./fake-mock.ts";
 
+/** The test pool's device, of the acceptance identity, read from its own secret. */
 export const device = {
   computer: "computer-load-7c21",
   grant: "native:grant-load-3e90",
-  user: "person-load-51ad",
-  pool: "acceptance-load-proof",
+  user: "acceptance",
+  pool: "app_acceptance0load",
+  owner: "acceptance",
+  organization: "acceptance",
 };
 export const deviceEnv = {
-  POOL_ACCEPTANCE_DEVICE: JSON.stringify(device),
+  [testDeviceSecret]: JSON.stringify(device),
   POOL_APP_SIGNING_KEY: "cd".repeat(32),
 };
+/** Signs for the test device, as the load does. */
+export const deviceCredential = (now: () => number = Date.now) =>
+  acceptanceCredential(deviceEnv, now, testDeviceSecret);
 export const boot = "boot-load-9f13";
 export const go = "coordinator-2026-11-26-load-proof";
 
@@ -231,7 +238,7 @@ export async function load(
     const loadShape = typeof shape === "number" ? chatOnly(shape) : shape;
     const run = await runLoad({
       client: pool.client,
-      credential: acceptanceCredential(deviceEnv),
+      credential: deviceCredential(),
       shape: loadShape,
       clock,
       kill,

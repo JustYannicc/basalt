@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { acceptanceCredential } from "../release/acceptance-device.ts";
 import type { Attempt } from "./load-call.ts";
 import { contentWaitMs, delayed, ioLagLimitMs } from "./load-classes.ts";
 import { parseLoadShape } from "./load-shape.ts";
@@ -9,7 +8,7 @@ import type { Shape } from "./load-verdict.mjs";
 import { runLoad, summaryLines } from "./load.ts";
 import {
   dataLine,
-  deviceEnv,
+  deviceCredential,
   frame,
   pacedPool,
   testClock,
@@ -50,7 +49,7 @@ async function paced(shape: Shape, steps: readonly Step[]) {
   );
   const run = await runLoad({
     client: pool.client,
-    credential: acceptanceCredential(deviceEnv),
+    credential: deviceCredential(),
     shape: loadShape,
     clock,
     witness: pool.witness,
@@ -265,7 +264,7 @@ async function blockedRun(overMs: number) {
   );
   const run = await runLoad({
     client: pool.client,
-    credential: acceptanceCredential(deviceEnv),
+    credential: deviceCredential(),
     shape: loadShape,
     clock,
     witness: pool.witness,

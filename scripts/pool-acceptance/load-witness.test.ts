@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { acceptanceCredential } from "../release/acceptance-device.ts";
 import { loadOutcomes } from "./load-classes.ts";
 import { runLoad, summaryLines } from "./load.ts";
 import { mockWitness, type MockSend } from "./load-witness.ts";
 import { recorderVersion } from "../emulated-upstream/sends.ts";
-import { chatOnly, deviceEnv, load, stage, streamed, testClock } from "./test/load-fixtures.ts";
+import {
+  chatOnly,
+  deviceCredential,
+  load,
+  stage,
+  streamed,
+  testClock,
+} from "./test/load-fixtures.ts";
 import { witnessKey } from "./test/fake-mock.ts";
 
 const late = 31_000;
@@ -198,7 +204,7 @@ test("a record that cannot be read, or not all of it, fails every call as mock_m
       const shape = chatOnly(2);
       const run = await runLoad({
         client: pool.client,
-        credential: acceptanceCredential(deviceEnv),
+        credential: deviceCredential(),
         shape,
         clock: testClock(),
         witness: mockWitness({ origin: pool.origin, key: witnessKey, fetch: broken(fetch) }),
@@ -222,7 +228,7 @@ test("a run without a witness has no record of any call, and cannot pass", async
   try {
     const run = await runLoad({
       client: pool.client,
-      credential: acceptanceCredential(deviceEnv),
+      credential: deviceCredential(),
       shape: chatOnly(1),
       clock: testClock(),
     });

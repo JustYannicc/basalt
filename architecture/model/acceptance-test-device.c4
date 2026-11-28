@@ -1,0 +1,13 @@
+model {
+  extend basalt {
+    acceptanceTestDevice = module "Acceptance test device" {
+      #basalt
+      description "A manual main-branch workflow registers the test pool's models-only device after the acceptance-pool setup is applied, and revokes it before the teardown, each with the coordinator's GO, the setup plan's checksum and the setup apply's run. Before it signs anything for the device, it takes the setup's receipt from the tools gateway's own signed read-only verify and refuses unless the setup is applied for the acceptance identity, every check passes, and the pool matches the setup run's own record by digest. It shares production-ops' concurrency group. Register writes the device's ids only sealed for the coordinator's recipient key, in production-ops' artifact format; revoke runs in the emulated upstream's environment, which holds the device's secret. Its report, summary and logs carry kinds, closed refusal words and digests, and its tests assert that no id appears in any of them."
+      metadata { code "scripts/acceptance-test-device|.github/workflows/acceptance-test-device.yml" }
+    }
+  }
+  basalt.acceptanceTestDevice -[sync]-> basalt.acceptancePool "verify the applied setup through its signed read-only operation"
+  basalt.acceptanceTestDevice -[sync]-> basalt.deployment "register and revoke the test device through the pool's native control route"
+  basalt.acceptanceTestDevice -[sync]-> basalt.productionOps "seal the device's ids for the coordinator's recipient key"
+  basalt.acceptanceTestDevice -[sync]-> repositoryApi "read the setup apply run's record of the pool's digest"
+}

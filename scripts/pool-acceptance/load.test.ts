@@ -89,20 +89,47 @@ test("the first call that is not a pass stops the run", async () => {
   );
 });
 
-test("the load mode refuses before any credential or call without a GO or outside an acceptance pool", async () => {
+test("the load mode refuses before any credential or call without a GO or outside the test pool", async () => {
   const pool = await stage([streamed()]);
   try {
     for (const [env, refusal] of [
       [{ ...deviceEnv }, /go input matching/u],
       [{ ...deviceEnv, POOL_LOAD_GO: "go" }, /go input matching/u],
+      // Each of the test device's user, owner and organization must be the acceptance identity.
+      ...(["user", "owner", "organization"] as const).map(
+        (field) =>
+          [
+            {
+              POOL_ACCEPTANCE_TEST_DEVICE: JSON.stringify({
+                ...device,
+                [field]: "person-load-51ad",
+              }),
+              POOL_APP_SIGNING_KEY: deviceEnv.POOL_APP_SIGNING_KEY,
+              POOL_LOAD_GO: go,
+              ...pool.witnessEnv,
+            },
+            /only through the test pool/u,
+          ] as const,
+      ),
+      // The acceptance identity on a pool that is no pool app's id: the old acceptance-<run> name.
       [
         {
-          POOL_ACCEPTANCE_DEVICE: JSON.stringify({ ...device, pool: "app_people" }),
+          POOL_ACCEPTANCE_TEST_DEVICE: JSON.stringify({ ...device, pool: "acceptance-run-7" }),
           POOL_APP_SIGNING_KEY: deviceEnv.POOL_APP_SIGNING_KEY,
           POOL_LOAD_GO: go,
           ...pool.witnessEnv,
         },
-        /dedicated acceptance-<run> pool/u,
+        /only through the test pool/u,
+      ],
+      // The release's device is never read for a load, so it alone is refused by the test secret.
+      [
+        {
+          POOL_ACCEPTANCE_DEVICE: JSON.stringify(device),
+          POOL_APP_SIGNING_KEY: deviceEnv.POOL_APP_SIGNING_KEY,
+          POOL_LOAD_GO: go,
+          ...pool.witnessEnv,
+        },
+        /POOL_ACCEPTANCE_TEST_DEVICE: unset/u,
       ],
       // The mock's record is the run's second witness: no run starts on the driver's clock alone.
       [{ ...deviceEnv, POOL_LOAD_GO: go }, /POOL_LOAD_WITNESS_ORIGIN and POOL_LOAD_WITNESS_KEY/u],
@@ -170,13 +197,17 @@ test("a clean run across the three protocols passes and keeps ids out of its pub
     assert.ok(
       calls.every(
         (call) =>
-          call.pass && call.attempts[0].boot === boot && call.attempts[0].firstContentMs >= 0,
+          call.pass &&
+          call.attempts[0].boot === "runtime-1" &&
+          call.attempts[0].firstContentMs >= 0,
       ),
     );
     const summary = await readFile(join(directory, "summary.txt"), "utf8");
     assert.deepEqual(summary.trim().split("\n"), logged);
     assert.match(summary, /^load status=passed calls=6 passes=6 attempts=6$/mu);
     assert.match(summary, /^load boots distinct=1 answers=6$/mu);
+    // One steady phase, served by one runtime, named by number only.
+    assert.match(summary, /^load phase=steady calls=6 runtimes=1 answers=6$/mu);
     assert.match(summary, /^load witness=read sends=6$/mu);
     const witness = (await readFile(join(directory, "witness.jsonl"), "utf8")).trim().split("\n");
     assert.equal(witness.length, 6);
@@ -186,13 +217,18 @@ test("a clean run across the three protocols passes and keeps ids out of its pub
       judged.map((text) => (JSON.parse(text) as { classes: unknown }).classes),
       Array(6).fill([]),
     );
-    // Neither the mock's origin nor its key reaches a line or any file the run leaves.
+    // Neither the mock's origin nor its key, the runtime's boot id or the test device's ids reach
+    // a line or any file the run leaves.
     const files = await readdir(directory);
     assert.ok(files.length >= 5, files.join(", "));
     for (const secret of [
       pool.origin,
       new URL(pool.origin).host,
       pool.witnessEnv.POOL_LOAD_WITNESS_KEY,
+      boot,
+      device.computer,
+      device.grant,
+      device.pool,
     ]) {
       assert.ok(!logged.join("\n").includes(secret), "a witness secret in a logged line");
       for (const file of files)
@@ -322,6 +358,22 @@ test("a dispatch from a ref other than main goes red, and every other job runs o
   assert.deepEqual(Object.keys(jobs).sort(), ["acceptance", "load"]);
   for (const job of Object.values(jobs))
     assert.match(job.if ?? "", /^github\.ref == 'refs\/heads\/main' && /u);
+});
+
+test("the load job reads only the test pool's device, in the emulated upstream's environment", () => {
+  const workflow = parse(
+    readFileSync(new URL("../../.github/workflows/pool-acceptance.yml", import.meta.url), "utf8"),
+  ) as {
+    jobs: Record<
+      string,
+      { environment?: { name: string }; steps: { env?: Record<string, string> }[] }
+    >;
+  };
+  const load = workflow.jobs.load!;
+  assert.equal(load.environment?.name, "emulated-upstream");
+  const env = Object.assign({}, ...load.steps.map((step) => step.env ?? {}));
+  assert.equal(env.POOL_ACCEPTANCE_TEST_DEVICE, "${{ secrets.POOL_ACCEPTANCE_TEST_DEVICE }}");
+  assert.equal(env.POOL_ACCEPTANCE_DEVICE, undefined, "the release's device never reaches a load");
 });
 
 test("a run passes only with its own loop lag measured and under the limit, and prints it", () => {
