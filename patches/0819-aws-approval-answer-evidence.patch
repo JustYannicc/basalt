@@ -1,0 +1,46 @@
+diff --git a/e2e/support/answer-evidence.ts b/e2e/support/answer-evidence.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/answer-evidence.ts
+@@ -0,0 +1,15 @@
++/**
++ * An app's answer as public evidence may keep it: its whole shape, with numbers, flags and words
++ * as they are, and any string carrying a link or a token-like run replaced, since evidence is
++ * uploaded where anyone can read it.
++ */
++export const answerEvidence = (value: unknown): unknown =>
++  Array.isArray(value)
++    ? value.map(answerEvidence)
++    : value !== null && typeof value === "object"
++      ? Object.fromEntries(
++          Object.entries(value).map(([key, entry]) => [key, answerEvidence(entry)]),
++        )
++      : typeof value === "string" && (value.includes("://") || /[\w.+/=-]{20,}/u.test(value))
++        ? "[cut]"
++        : value;
+diff --git a/e2e/support/aws-production-approval.ts b/e2e/support/aws-production-approval.ts
+--- a/e2e/support/aws-production-approval.ts
++++ b/e2e/support/aws-production-approval.ts
+@@ -2,6 +2,8 @@
+ import { expect } from "@effect/vitest";
+ import { Effect, Schema } from "effect";
+ import { Api, body } from "./api.ts";
++import { answerEvidence } from "./answer-evidence.ts";
++import { Evidence } from "./evidence.ts";
+ import { Actors } from "./actors.ts";
+ import { McpClient } from "./mcp-client.ts";
+ import type { awsIdentityFixture } from "./aws-identity-fixture.ts";
+@@ -94,7 +96,12 @@ export const awsProductionApprovals = (input: {
+       organization: actors.organization.id,
+       mode: "native",
+     });
+-    expect(yield* execute(approved, "Approve a fresh exact production request")).toMatchObject({
++    const answer = yield* execute(approved, "Approve a fresh exact production request");
++    // An approved call has answered "not ok" without asking the approving client (#1880): keep
++    // what it said, since the assertion's own output omits the fields that would name why.
++    if (!(typeof answer === "object" && answer !== null && "ok" in answer && answer.ok === true))
++      yield* (yield* Evidence).json("aws-approved-answer.json", answerEvidence(answer));
++    expect(answer).toMatchObject({
+       ok: true,
+       value: {
+         target: {

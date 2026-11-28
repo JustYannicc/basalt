@@ -6,6 +6,7 @@ import { flakeDecision, parseJobFlakes, type JobFlake } from "./ci/flake-rerun.t
 import { flakeNote, flakeRunTitle } from "./ci/flake-note.ts";
 import { parsePolicy } from "./ci/flake-policy.ts";
 import { attemptJobs, supersededPullRequest, type Run, type RunJob } from "./ci/workflow-run.ts";
+import * as rerun from "./ci/flake-rerun.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
 const read = (path: string) => parse(readFileSync(new URL("../" + path, import.meta.url), "utf8"));
@@ -149,6 +150,7 @@ test("every listed job flake names its issue, a signature and an expiry; test-sc
   assert.deepEqual(
     flakes.map((entry) => [entry.id, entry.job, entry.issue]),
     [
+      ["aws-approval-answered-not-ok", "aws-connectors", 1880],
       ["cpa-websocket-429-test", "pool-runtime", 1656],
       ["zoho-mcp-browser-assertions", "catalog-compat", 1625],
       ["production-ops-cleanup-502", "production-ops-identity", 1657],
@@ -188,6 +190,53 @@ test("every listed job flake names its issue, a signature and an expiry; test-sc
   ])
     assert.throws(() => parseJobFlakes([{ ...base, ...broken }]), JSON.stringify(broken));
   assert.throws(() => parseJobFlakes([base, base]), /twice/);
+});
+
+test("the AWS approval listing re-runs only the approved call answering not ok", () => {
+  const listing = parseJobFlakes(listed).find(
+    (entry) => entry.id === "aws-approval-answered-not-ok",
+  );
+  assert.ok(listing);
+  const title =
+    "AWS Identity Center > AWS Identity Center acquires assigned accounts and roles through the actual hosted catalog app";
+  const notOk = [
+    ` ×  self-host  e2e/tests/aws-identity-center.spec.ts > ${title} 25868ms`,
+    ` FAIL   self-host  e2e/tests/aws-identity-center.spec.ts > ${title}`,
+    "AssertionError: expected { ok: false, …(3) } to match object { ok: true, …(1) }",
+    // The harness logs the same assertion once more, as the error it caught.
+    "[09:23:03.365] ERROR (#1052): Error [AssertionError]: expected { ok: false, …(3) } to match object { ok: true, …(1) }",
+    " ❯ e2e/support/aws-production-approval.ts:104:20",
+  ];
+  const log = (...lines: string[][]) => lines.flat().join("\n");
+  assert.ok(rerun.explains(listing, log(notOk)));
+  assert.deepEqual(rerun.candidates([listing], "aws-connectors", "2026-11-28"), [listing]);
+  assert.deepEqual(rerun.candidates([listing], "aws-connectors", "2026-12-06"), []);
+  // The same assertion answering ok with another target is another failure.
+  const wrongTarget = [
+    ` FAIL   self-host  e2e/tests/aws-identity-center.spec.ts > ${title}`,
+    "AssertionError: expected { ok: true, …(1) } to match object { ok: true, …(1) }",
+    " ❯ e2e/support/aws-production-approval.ts:104:20",
+  ];
+  assert.ok(!rerun.explains(listing, log(notOk, wrongTarget)));
+  // A failure at another check of the same proof stays red.
+  const elsewhere = [
+    ` FAIL   self-host  e2e/tests/aws-identity-center.spec.ts > ${title}`,
+    "AssertionError: expected 0 to be 1",
+    " ❯ e2e/support/aws-production-approval.ts:112:44",
+  ];
+  assert.ok(!rerun.explains(listing, log(elsewhere)));
+  assert.ok(!rerun.explains(listing, log(notOk, elsewhere)));
+  // A failure that is no assertion, such as a wait timing out at another step of the proof.
+  const timedOut = [
+    "TimeoutError: Operation timed out after '30s'",
+    " ❯ e2e/support/aws-production-approval.ts:121:9",
+  ];
+  assert.ok(!rerun.explains(listing, log(notOk, timedOut)));
+  // Another test failing in the same job stays red.
+  const other = [
+    " FAIL   self-host  e2e/tests/aws-identity-center.spec.ts > AWS Identity Center > AWS Identity Center signs every hosted MCP request",
+  ];
+  assert.ok(!rerun.explains(listing, log(notOk, other)));
 });
 
 test("the re-run attempt's summary names the flake flake-rerun.yml re-ran", () => {
