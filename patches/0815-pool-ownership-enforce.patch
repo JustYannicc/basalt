@@ -166,7 +166,20 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
      const causes: Array<Cause.Cause<unknown>> = [];
      if (Exit.isFailure(set)) causes.push(set.cause);
      if (Exit.isFailure(owns)) causes.push(owns.cause);
-@@ -226,22 +232,14 @@ const inOneFlight = (
+@@ -220,28 +226,25 @@ const inOneFlight = (
+       const again = leaf(factsOf(sql, organization, pool));
+       yield* batch([boundedAgain.effect, again.effect], { outside: 0 });
+       const [setAgain, readAgain] = [boundedAgain.exit(), again.exit()];
+-      if (Exit.isFailure(setAgain) || Exit.isFailure(readAgain))
+-        return { unobserved: "read-failed" as const };
++      if (Exit.isFailure(setAgain) || Exit.isFailure(readAgain)) {
++        // A second read the database ended is a timeout too, never a failure of its own.
++        const ended =
++          (Exit.isFailure(setAgain) && endedByDatabase(setAgain.cause)) ||
++          (Exit.isFailure(readAgain) && endedByDatabase(readAgain.cause));
++        return { unobserved: ended ? "timeout" : "read-failed" } as const;
++      }
+       const shape = shapeOf(readAgain.value, organization, pool, true);
        return shape !== undefined ? { shape } : { unobserved: "read-failed" as const };
      }
      if (Exit.isFailure(read)) return { unobserved: "read-failed" as const };
@@ -191,7 +204,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
  /** The rule and its shape in bounded transactions, for a client that cannot send them in one write. */
  const inTransactions = (
    sql: SqlClient.SqlClient,
-@@ -259,8 +257,8 @@ const inTransactions = (
+@@ -259,23 +262,38 @@ const inTransactions = (
          }),
        ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
      );
@@ -202,10 +215,18 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
      if (Exit.isFailure(first) && endedByDatabase(first.cause))
        return { unobserved: "timeout" as const };
      // A failed read ends its transaction, so what says why is read again in a new one.
-@@ -268,14 +266,24 @@ const inTransactions = (
-     const facts = Exit.isSuccess(first)
-       ? first.value.facts
-       : yield* boundedRead(sql, factsOf(sql, organization, pool));
+     const ruleFailed = Exit.isFailure(first);
+-    const facts = Exit.isSuccess(first)
+-      ? first.value.facts
+-      : yield* boundedRead(sql, factsOf(sql, organization, pool));
++    let facts = Exit.isSuccess(first) ? first.value.facts : undefined;
++    if (ruleFailed) {
++      const again = yield* Effect.exit(boundedRead(sql, factsOf(sql, organization, pool)));
++      // A second read the database ended is a timeout too, never a failure of its own.
++      if (Exit.isFailure(again))
++        return { unobserved: endedByDatabase(again.cause) ? "timeout" : "read-failed" } as const;
++      facts = again.value;
++    }
 +    if (!ruleFailed && facts === undefined) return { absent: true as const };
      const shape = shapeOf(facts, organization, pool, ruleFailed);
      if (shape !== undefined) return { shape };
@@ -229,7 +250,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
  /** No positive cache: an unexpired pool credential cannot outlive organization removal. */
  export const readPoolOrganization = Effect.gen(function* () {
    const key = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
-@@ -293,10 +301,10 @@ export const readPoolOrganization = Effect.gen(function* () {
+@@ -293,10 +311,10 @@ export const readPoolOrganization = Effect.gen(function* () {
    const removed = yield* OrganizationTombstones;
    if (yield* removed(value.organization)) return HttpServerResponse.empty({ status: 403 });
    const sql = yield* policyDatabase;

@@ -192,18 +192,37 @@ export const endedByDatabase = () =>
     reason: new SqlError.StatementTimeoutError({ cause: new Error("canceling statement") }),
   });
 
+type Injected = Effect.Effect<unknown, ReadFailed | SqlError.SqlError>;
+
+/**
+ * This file's database, except that each statement whose text holds one of `answers`' markers
+ * answers with that marker's reads in turn, the last one from then on, for `organization` only when
+ * given. Every other query is the real one.
+ */
+export const statementsAnswer =
+  (answers: Readonly<Record<string, readonly [Injected, ...Injected[]]>>, organization?: string) =>
+  (db: SqlClient.SqlClient): SqlClient.SqlClient => {
+    const asked = new Map<string, number>();
+    return new Proxy(db, {
+      apply(target, self, args: [TemplateStringsArray, ...unknown[]]) {
+        const text = args[0].join("");
+        const found = Object.entries(answers).find(([key]) => text.includes(key));
+        const named = organization === undefined || args.slice(1).includes(organization);
+        if (found === undefined || !named) return Reflect.apply(target, self, args);
+        const [marker, reads] = found;
+        const turn = asked.get(marker) ?? 0;
+        asked.set(marker, turn + 1);
+        return reads[Math.min(turn, reads.length - 1)];
+      },
+    });
+  };
+
 /**
  * This file's database, except that the ownership rule's read (the one that walks an
  * organization's pool records) answers with `read` instead, for `organization` only when given.
- * Every other query is the real one.
  */
-export const ownershipReadAnswers =
-  (read: Effect.Effect<unknown, ReadFailed | SqlError.SqlError>, organization?: string) =>
-  (db: SqlClient.SqlClient): SqlClient.SqlClient =>
-    new Proxy(db, {
-      apply(target, self, args: [TemplateStringsArray, ...unknown[]]) {
-        const rule = args[0].join("").includes("jsonb_each");
-        const named = organization === undefined || args.slice(1).includes(organization);
-        return rule && named ? read : Reflect.apply(target, self, args);
-      },
-    });
+export const ownershipReadAnswers = (read: Injected, organization?: string) =>
+  statementsAnswer({ jsonb_each: [read] }, organization);
+
+/** The marker of the read that says why the rule refuses, and whether the organization exists. */
+export const shapeRead = "pg_input_is_valid";

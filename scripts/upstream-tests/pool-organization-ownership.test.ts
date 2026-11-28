@@ -13,6 +13,8 @@ import {
   ReadFailed,
   refused,
   seed,
+  shapeRead,
+  statementsAnswer,
   wouldRefuse,
 } from "./pool-organization-fixture.ts";
 
@@ -420,4 +422,33 @@ test("a client that sends one batch gives every answer the same, an unexplained 
       notObserved("acceptance", reason),
     );
   }
+});
+
+test("a read the database ends after a failed rule is a timeout, never a failure of its own", async () => {
+  await seed({
+    organizations: { [person]: { basaltPools: { [pool]: native(pool) } }, acceptance: {} },
+    ...personPool,
+  });
+  const ruleFails = Effect.fail(new ReadFailed());
+  const ended = Effect.fail(endedByDatabase());
+  // One statement apart: the rule fails, and the read of why, in a transaction of its own, is
+  // ended by the database.
+  const apart = statementsAnswer({ jsonb_each: [ruleFails], [shapeRead]: [ended] });
+  unavailable(
+    await ask({ organization: "acceptance", database: apart }),
+    notObserved("acceptance", "timeout"),
+  );
+  // In one batch: the failed rule aborts the batch's read of why, and the second flight's is ended.
+  const batch = statementsAnswer({ jsonb_each: [ruleFails], [shapeRead]: [ruleFails, ended] });
+  unavailable(
+    await ask({ organization: "acceptance", batched: true, database: batch }),
+    notObserved("acceptance", "timeout"),
+  );
+  // Either way, a second read that fails for a reason of its own still says so.
+  const failsAgain = statementsAnswer({ jsonb_each: [ruleFails], [shapeRead]: [ruleFails] });
+  for (const batched of [false, true])
+    unavailable(
+      await ask({ organization: "acceptance", batched, database: failsAgain }),
+      notObserved("acceptance", "read-failed"),
+    );
 });
