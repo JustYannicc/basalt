@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-pool-view-reads-again-once",
+  "file": "0821-pool-view-reads-again-once.patch",
+  "content_sha256": "daec93c5ac1d67504dd80867cc0bb91f90b5662e8ae7ccaeb5ca1823e6d8458b",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
