@@ -107,7 +107,8 @@ async function inventoryLinesWithoutConnection() {
   };
   await Effect.runPromise(
     reportHostPoolInventory.pipe(
-      Effect.provideService(GroupDatabase, Effect.fail(new Error("no connection")) as never),
+      // A database service that cannot connect at all.
+      Effect.provideService(GroupDatabase, Effect.die("no connection") as never),
       Effect.provideService(Console.Console, captured),
     ),
   );
