@@ -202,6 +202,12 @@ test("jobs running the pool harness upload its gateway forwarding diagnostics", 
           true,
           `${label} retains the runtime directory it ran in`,
         );
+        // The redacted log the harness writes beside them on a failure says what the stack did.
+        assert.equal(
+          included(`${output}/runtime-cloud.log`),
+          true,
+          `${label} retains the harness's redacted runtime log`,
+        );
         // Raw runtime logs and journals stay private; the harness retains a redacted log instead.
         for (const file of ["cloud.log", "pool-backend.ndjson", "change-journal.ndjson"])
           assert.equal(included(`${runtime}/${file}`), false, `${label} uploads raw ${file}`);

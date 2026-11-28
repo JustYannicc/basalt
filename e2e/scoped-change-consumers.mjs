@@ -22,6 +22,7 @@ import {
   splitRoutedReads,
 } from "../.upstream/e2e/support/read-batches.ts";
 import { redactLogText } from "../src/feedback/logs.ts";
+import { requestShape } from "./recipes/request-shape.mjs";
 
 const { chromium } = createRequire(join(root, ".upstream/package.json"))("playwright");
 const args = process.argv.slice(2);
@@ -36,6 +37,8 @@ process.chdir(join(root, ".upstream"));
 const checks = [],
   screenshots = [];
 const diagnostics = { pool: { proved: false } };
+/** The current page's open reads; set once a page is watched. */
+let openReads = () => [];
 const check = (name, actual, expected) => {
   assert.deepEqual(actual, expected, name);
   checks.push(name);
@@ -240,8 +243,13 @@ const program = Effect.gen(function* () {
       routingReads = 0;
     diagnostics.accountProgress = { width, phase: "initial", responses: [], heads: [] };
     const progress = diagnostics.accountProgress;
-    const inFlight = new Set(),
+    // Each read the proof waits on, with when it started, so a wait that times out can say which.
+    const inFlight = new Map(),
       idleWaiters = new Set();
+    openReads = () =>
+      [...inFlight].map(([request, started]) =>
+        requestShape(request.method(), request.url(), Date.now() - started),
+      );
     const finished = (request) => {
       inFlight.delete(request);
       if (!inFlight.size) {
@@ -263,7 +271,7 @@ const program = Effect.gen(function* () {
         count ||
         /\/pool-usage\/(?:series|last-success)$/.test(new URL(request.url()).pathname)
       )
-        inFlight.add(request);
+        inFlight.set(request, Date.now());
     });
     page.on("requestfinished", finished);
     page.on("requestfailed", (request) => {
@@ -995,6 +1003,8 @@ try {
     }),
   );
 } catch (error) {
+  // Reads still open when the proof stopped, for a wait that ran out (#2281).
+  diagnostics.openReads = openReads();
   await writeFile(
     join(directory, "failure.json"),
     JSON.stringify(
