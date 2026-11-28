@@ -6,9 +6,9 @@ import { decodeProviderApplication } from "../../src/pool/runtime-provider/appli
 import { providerDigest } from "../../src/pool/runtime-provider/canonical.ts";
 import { runtimeApplicationSettings } from "../../src/pool/runtime-provider/settings.ts";
 import { runPoolFleet, stepSummary, type DispatchInput } from "./dispatch.ts";
-import { refuse } from "./errors.ts";
+import { FleetLaneRefused, refuse } from "./errors.ts";
 import { resolvedApplication } from "./test/cloudflare-shapes.ts";
-import { accountId, colours, harness } from "./test/harness.ts";
+import { accountId, colours, harness, ownRow, type HarnessOptions } from "./test/harness.ts";
 import { usageRollupInspect } from "../../src/pool/model-history/usage-rollup-auto.ts";
 import { captureHoursInspect } from "../../src/pool/model-history/capture-hours-auto.ts";
 
@@ -168,6 +168,116 @@ test("no request served by a fleet cell fails the acceptance and disables the fl
   }
 });
 
+/** The first acceptance model refused for funding; the second one's cells serve from `cellFrom` on. */
+async function afterRefusal(cellFrom: number | undefined) {
+  const lane = await harness({
+    models: ["claude-opus-5-5", "gpt-6.1-sol"],
+    quota: (model) => (model === "claude-opus-5-5" ? "usage_credit_policy_denied" : undefined),
+    boot: (index, enabled) =>
+      enabled && cellFrom !== undefined && index >= cellFrom ? "cell-boot" : "primary-boot",
+  });
+  const deps = lane.deps();
+  if (deps.acceptance instanceof FleetLaneRefused) assert.fail(deps.acceptance.message);
+  const result = await runPoolFleet(dispatch("configure-and-accept"), {
+    ...deps,
+    acceptance: { ...deps.acceptance, model: "claude-opus-5-5" },
+  });
+  return { lane, result };
+}
+
+test("after a model refused for quota, the next has all three bursts, and a cell serving in its third passes", async () => {
+  // Turns 0-5 are the refused model's; the next model's bursts are turns 6-11, 12-17 and 18-23.
+  const { lane, result } = await afterRefusal(18);
+  try {
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const acceptance = ("result" in result && result.result) as {
+      acceptance?: { model?: string; quotaRefused?: string[]; servedByCell?: { round: number } };
+    };
+    assert.equal(acceptance.acceptance?.model, "gpt-6.1-sol");
+    assert.equal(acceptance.acceptance?.servedByCell?.round, 3);
+    assert.deepEqual(acceptance.acceptance?.quotaRefused, [
+      "claude-opus-5-5: usage_credit_policy_denied, HTTP 429",
+    ]);
+    assert.equal((await lane.configuration.inspect())?.enabled, true);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("after a model refused for quota, a next model whose cells never serve ends cell-served-proof-missing and disables the fleet", async () => {
+  const { lane, result } = await afterRefusal(undefined);
+  try {
+    assert.equal(result.ok, false);
+    const cause = String("cause" in result && result.cause);
+    assert.match(cause, /cell-served-proof-missing/u);
+    assert.doesNotMatch(cause, /acceptance-quota-refused|turn-budget/u);
+    assert.equal((await lane.configuration.inspect())?.enabled, false);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("a fleet read lost after a funding refusal still ends as the quota refusal and keeps the permission", async () => {
+  let refused = false;
+  const lane = await harness({
+    models: ["claude-opus-5-5", "gpt-6.1-sol"],
+    quota: (model) => {
+      if (model === "claude-opus-5-5") refused = true;
+      return "usage_credit_policy_denied";
+    },
+    handoffFailure: (action) => {
+      if (action !== "inspect" || !refused) return undefined;
+      refused = false;
+      return new Error("synthetic lost read");
+    },
+    boot: () => "primary-boot",
+  });
+  try {
+    const deps = lane.deps();
+    if (deps.acceptance instanceof FleetLaneRefused) assert.fail(deps.acceptance.message);
+    const result = await runPoolFleet(dispatch("configure-and-accept"), {
+      ...deps,
+      acceptance: { ...deps.acceptance, model: "claude-opus-5-5" },
+    });
+    assert.equal(result.ok, false);
+    assert.match(String("cause" in result && result.cause), /acceptance-quota-refused/u);
+    assert.equal((await lane.configuration.inspect())?.enabled, true);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("a cooldown in a later burst of the next model ends as cooldown-refused and disables the fleet", async () => {
+  // The first model is refused for funding; the next one's cells never serve, and the first turn
+  // of its third burst is cooled down. A cooldown may be the cell's own node, so the fleet goes off.
+  let laterTurns = 0;
+  const lane = await harness({
+    models: ["claude-opus-5-5", "gpt-6.1-sol"],
+    quota: (model) =>
+      model === "claude-opus-5-5"
+        ? "usage_credit_policy_denied"
+        : ++laterTurns === 13
+          ? "model_cooldown"
+          : undefined,
+    boot: () => "primary-boot",
+  });
+  try {
+    const deps = lane.deps();
+    if (deps.acceptance instanceof FleetLaneRefused) assert.fail(deps.acceptance.message);
+    const result = await runPoolFleet(dispatch("configure-and-accept"), {
+      ...deps,
+      acceptance: { ...deps.acceptance, model: "claude-opus-5-5" },
+    });
+    assert.equal(result.ok, false);
+    const cause = String("cause" in result && result.cause);
+    assert.match(cause, /acceptance-cooldown-refused/u);
+    assert.doesNotMatch(cause, /acceptance-quota-refused|turn-budget/u);
+    assert.equal((await lane.configuration.inspect())?.enabled, false);
+  } finally {
+    await lane.close();
+  }
+});
+
 test("crash-cell refuses when no ready cell other than the primary exists, and sends no crash", async () => {
   const lane = await harness();
   try {
@@ -221,6 +331,8 @@ test("crash-cell kills one ready non-primary cell, sees it restart, and keeps re
     const proof = JSON.stringify("result" in result && result.result);
     assert.match(proof, /"status":"proven"/u);
     assert.match(proof, /"failedAfter":0/u);
+    // Its own turns' usage stayed in the device's pool and every response came from a known runtime.
+    assert.match(proof, /"ownTraffic":\{"sessions":[1-9]/u);
     // The same GO again reads the retained submission and never sends a second kill.
     const again = await runPoolFleet(crash, lane.deps());
     assert.match(JSON.stringify("result" in again && again.result), /"already-submitted"/u);
@@ -285,7 +397,109 @@ test("without an acceptance device the lane refuses the modes that send model ca
   }
 });
 
-test("with a device outside a dedicated acceptance pool, the fleet is proven by the device alone and no owner token is sent", async () => {
+test("a usage fault or an unknown boot in the lane's own traffic fails acceptance and rolls the fleet back", async (t) => {
+  const outside = { inPool: false, account: null };
+  const cases: [string, HarnessOptions, RegExp][] = [
+    [
+      "another pool's account",
+      { usage: (i) => [ownRow(i, i === 3 ? outside : {})] },
+      /usage-outside-pool/u,
+    ],
+    [
+      "a failed attempt on another pool's account",
+      { usage: (i) => [ownRow(i, { status: "failed", ...outside }), ownRow(i)] },
+      /usage-outside-pool/u,
+    ],
+    ["another key", { usage: (i) => [ownRow(i, i === 2 ? { key: 99 } : {})] }, /usage-other-key/u],
+    [
+      "two success rows",
+      { usage: (i) => (i === 4 ? [ownRow(i), ownRow(100 + i)] : [ownRow(i)]) },
+      /usage-duplicate/u,
+    ],
+    ["no success row", { usage: (i) => (i === 1 ? [] : [ownRow(i)]) }, /usage-missing/u],
+    // The route fails closed on a row of another session or key, so that is how another key shows.
+    ["a usage read the route refuses", { usageStatus: 503 }, /usage-read-refused/u],
+    [
+      "an unknown boot",
+      { boot: (index, on) => (index === 2 ? "stranger-boot" : on ? "cell-boot" : "primary-boot") },
+      /unknown-boot/u,
+    ],
+  ];
+  for (const [name, options, cause] of cases)
+    await t.test(name, async () => {
+      // Production's shape: no owner token, so the device's own read is the only usage check.
+      const lane = await harness({ deviceOnly: true, ...options });
+      try {
+        const result = await runPoolFleet(dispatch("configure-and-accept"), lane.deps());
+        assert.equal(result.ok, false);
+        assert.match(String("cause" in result && result.cause), cause);
+        assert.equal((await lane.configuration.inspect())?.enabled, false);
+        assert.doesNotMatch(JSON.stringify(result), /pool-account-|stranger-boot/u);
+      } finally {
+        await lane.close();
+      }
+    });
+});
+
+test("crash-cell holds its own traffic to the same isolation rule", async () => {
+  let outside = false;
+  const lane = await harness({
+    deviceOnly: true,
+    usage: (i) => [ownRow(i, outside ? { inPool: false, account: null } : {})],
+  });
+  try {
+    assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
+    outside = true;
+    const result = await runPoolFleet(
+      dispatch("crash-cell", { go: "coordinator-2026-11-18-crash" }),
+      lane.deps(),
+    );
+    assert.equal(result.ok, false);
+    assert.match(String("cause" in result && result.cause), /usage-outside-pool/u);
+    assert.equal(lane.crashes.length, 1);
+    assert.deepEqual(lane.poolReads, []);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("a cap-coded 429 ends configure-and-accept as could not test, and the rollback sends no turn", async () => {
+  const lane = await harness({ capped: (index) => index >= 2 });
+  try {
+    const result = await runPoolFleet(dispatch("configure-and-accept"), lane.deps());
+    assert.equal(result.ok, false);
+    assert.equal("couldNotTest" in result && result.couldNotTest, true);
+    assert.match(String("cause" in result && result.cause), /could-not-test-cap/u);
+    // One burst was in flight when the cap answered; neither a second burst nor the root check
+    // after the disable sent another turn.
+    assert.equal(lane.turns(), 6);
+    assert.match(stepSummary(result), /could not test/u);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("a cap-coded 429 before crash-cell's crash sends no crash and ends could not test", async () => {
+  let capped = false;
+  const lane = await harness({ capped: () => capped });
+  try {
+    assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
+    const before = lane.turns();
+    capped = true;
+    const result = await runPoolFleet(
+      dispatch("crash-cell", { go: "coordinator-2026-11-18-crash" }),
+      lane.deps(),
+    );
+    assert.equal(result.ok, false);
+    assert.equal("couldNotTest" in result && result.couldNotTest, true);
+    assert.equal(lane.crashes.length, 0, "no cell is killed for a run that cannot test");
+    assert.equal(lane.turns() - before, 1, "nothing is sent after the cap");
+  } finally {
+    await lane.close();
+  }
+});
+
+test("with a device outside a dedicated acceptance pool, the device alone proves the fleet and its own usage, and no owner token is sent", async () => {
   const log: string[] = [];
   const lane = await harness({ deviceOnly: true });
   try {
@@ -296,14 +510,25 @@ test("with a device outside a dedicated acceptance pool, the fleet is proven by 
     assert.equal(result.ok, true, JSON.stringify(result));
     // No owner-token read of the pool at all: not its accounts, not its usage.
     assert.deepEqual(lane.poolReads, []);
+    // Six turns of the round a cell served, then the final turn: each read back by the device
+    // itself, on a pool with many members.
+    assert.equal(
+      lane.usageReads.reduce((sum, read) => sum + read.sessions, 0),
+      7,
+    );
+    for (const read of lane.usageReads) {
+      assert.equal(read.assertion, `assertion GET ${read.path}`);
+      assert.equal(read.authorization, null);
+    }
     const acceptance = ("result" in result && result.result) as {
-      acceptance?: { servedByCell?: unknown; usageRecords?: unknown };
+      acceptance?: { servedByCell?: unknown; usageRecords?: unknown; ownerUsageRecords?: unknown };
     };
     assert.ok(acceptance.acceptance?.servedByCell, "the served-by-a-cell proof still ran");
-    assert.equal(acceptance.acceptance?.usageRecords, "skipped");
+    assert.equal(acceptance.acceptance?.usageRecords, 7);
+    assert.equal(acceptance.acceptance?.ownerUsageRecords, "skipped");
     assert.ok(
       log.includes(
-        "usage_records skipped; the acceptance device is not in a dedicated acceptance pool",
+        "owner_usage_records skipped; the acceptance device is not in a dedicated acceptance pool",
       ),
       log.join("\n"),
     );
@@ -322,6 +547,29 @@ test("with a device outside a dedicated acceptance pool, the fleet is proven by 
   }
 });
 
+test("with a dedicated acceptance pool both usage checks cover every one of the lane's turns", async () => {
+  const lane = await harness();
+  try {
+    const result = await runPoolFleet(dispatch("configure-and-accept"), lane.deps());
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const acceptance = ("result" in result && result.result) as {
+      acceptance?: { usageRecords?: unknown; ownerUsageRecords?: unknown };
+    };
+    assert.equal(acceptance.acceptance?.usageRecords, 7);
+    assert.equal(acceptance.acceptance?.ownerUsageRecords, 7);
+    // The owner read asks for exactly the sessions the device read back: the six of the round a
+    // cell served and the final turn.
+    const owner = lane.poolReads.filter((read) => read.path === "/pool/v1/usage");
+    const device = lane.usageReads.flatMap((read) =>
+      new URL(read.path, "http://local").searchParams.getAll("session"),
+    );
+    assert.equal(owner.length, 7);
+    assert.deepEqual(new Set(owner.map((read) => read.session)), new Set(device));
+  } finally {
+    await lane.close();
+  }
+});
+
 test("with a dedicated acceptance pool the usage check still runs and fails on a foreign account", async () => {
   const lane = await harness({ usageAccount: "someone-else" });
   try {
@@ -332,6 +580,7 @@ test("with a dedicated acceptance pool the usage check still runs and fails on a
       /Usage contained an account outside the dedicated test pool/u,
     );
     assert.ok(lane.poolReads.some((read) => read.path === "/pool/v1/usage"));
+    assert.ok(lane.usageReads.length > 0, "the device's own read ran first and passed");
     assert.equal(
       (await lane.configuration.inspect())?.enabled,
       false,
