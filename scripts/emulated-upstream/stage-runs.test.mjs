@@ -452,19 +452,20 @@ test("a destroy the registry refuses keeps its record of closed facts before it 
   assert.equal(code, 1);
   const [deletes] = saved["stopped-destroy"].teardown;
   assert.deepEqual(deletes.registryDeletes, {
-    // The list held the tag and the two manifests of its image. The tag's own delete was accepted
-    // and took the index with it; the platform manifest, still listed, was refused by digest.
+    // The list held the tag and the two manifests of its image. The tag was read first, reaching
+    // both; its own delete was accepted and took the index with it, so the index's delete answered
+    // absent, and the platform manifest the tag reached was refused.
     tags: 1,
     digests: 2,
     byTag: { sent: 1, accepted: 1, absent: 0, refused: 0 },
-    tagRead: { ok: 0, absent: 0 },
-    delete: { accepted: 0, absent: 0, refused: 1 },
+    tagRead: { ok: 1, absent: 0 },
+    delete: { accepted: 0, absent: 1, refused: 1 },
     kept: [],
     refused: [
       {
-        entry: "digest",
-        digestShaped: true,
-        type: "application/vnd.oci.image.manifest.v1+json",
+        entry: "tag",
+        digestShaped: false,
+        type: "application/vnd.oci.image.index.v1+json",
         class: "403",
       },
     ],

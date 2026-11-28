@@ -81,9 +81,9 @@ export function emulatedAccount({
    * namespace. Its own image repository may be left; a deploy pushes to that same repository.
    */
   const inert = (resources) =>
-    resources.applications.length === 0 &&
-    resources.scripts.length === 0 &&
-    resources.namespaces.length === 0;
+    Object.entries(resources).every(
+      ([kind, rows]) => setApart.has(kind) || kind === "images" || rows.length === 0,
+    );
   /** How many of the stage's own repositories an inventory found, and their listed entries. */
   const repositoryLeft = (resources) => {
     const rows = resources.facts ?? [];

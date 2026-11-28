@@ -1181,7 +1181,8 @@ test("entries the list names with no manifest behind them end the destroy green,
       tags: 2,
       digests: 3,
       byTag: { sent: 2, accepted: 0, absent: 2, refused: 0 },
-      tagRead: { ok: 0, absent: 2 },
+      // Each tag read before its delete, and again while the list still named it after.
+      tagRead: { ok: 0, absent: 4 },
       delete: { accepted: 0, absent: 3, refused: 0 },
     },
   ]);
@@ -1205,8 +1206,9 @@ test("a manifest a read misses but its delete reaches is deleted, never set apar
   });
   const { lines } = await destroyOn(fake);
   assert.ok(lines.includes(nothingLeft), lines.join("\n"));
-  // The first tag's delete reaches the manifest; the second tag is then gone with it.
-  assert.equal(registryCalls(fake, "DELETE").length, 2);
+  // The first tag's delete reaches the manifest and the second tag goes with it; the digest the first
+  // list named is still tried, and answers absent.
+  assert.equal(registryCalls(fake, "DELETE").length, 3);
   assert.equal(fake.live.manifests[`acct/${prefix}-mock`].size, 0);
 });
 
@@ -1430,6 +1432,48 @@ test("on a registry that keeps a tagged manifest whose digest delete it accepts,
     absent: 0,
     refused: 0,
   });
+});
+
+test("an index is deleted before the manifests it names, whatever order the list gives them in", async () => {
+  // A registry that keeps a manifest an index it holds still names, listing the platform first.
+  const fake = cloudflareStage({
+    emptyEnd: true,
+    keepsTagged: true,
+    keepsIndexed: true,
+    childFirst: true,
+  });
+  const { lines } = await destroyOn(fake);
+  assert.ok(lines.includes(nothingLeft), lines.join("\n"));
+  const digests = registryCalls(fake, "DELETE")
+    .map((call) => call.path.split("/").at(-1))
+    .filter((reference) => reference.startsWith("sha256:"));
+  assert.ok(digests.indexOf(ownIndex) < digests.indexOf(ownPlatform), digests.join(" "));
+  assert.equal(fake.live.manifests[`acct/${prefix}-mock`].size, 0);
+});
+
+test("a second list that answers empty still leaves the first list's digest entries to delete", async () => {
+  const fake = cloudflareStage(
+    {
+      emptyEnd: true,
+      own: false,
+      ghosts: [],
+      artifacts: [{ digest: chain, body: imageManifest() }],
+    },
+    [],
+  );
+  let lists = 0;
+  // The destroy's own two list reads of the repository: the second answers empty.
+  const fetcher = async (url, init) => {
+    const { pathname, searchParams } = new URL(url);
+    if (pathname.endsWith("/tags/list") && !searchParams.get("last") && ++lists === 4)
+      return Response.json({ name: `acct/${prefix}-mock`, tags: [] });
+    return fake.fetcher(url, init);
+  };
+  await account(fetcher).destroy();
+  assert.equal(fake.live.manifests[`acct/${prefix}-mock`].size, 0);
+  assert.ok(
+    registryCalls(fake, "DELETE").some((call) => call.path.endsWith(`/manifests/${chain}`)),
+  );
 });
 
 test("a refused tag delete fails the destroy closed, with its record, and keeps nothing", async () => {
