@@ -27,6 +27,14 @@ const commitAt = (payload: unknown, path: string) => {
     throw new Error(`the event carries no commit at ${path}`);
   return value;
 };
+const isAncestor = (git: Git, commit: string, of: string) => {
+  try {
+    git("merge-base", "--is-ancestor", commit, of);
+    return true;
+  } catch {
+    return false;
+  }
+};
 const when = (seconds: string) => {
   const date = new Date(Number(seconds) * 1000);
   return Number.isNaN(date.getTime()) ? `@${seconds}` : date.toISOString();
@@ -62,11 +70,8 @@ function mainAsOf(git: Git, seconds: string) {
   // git's raw date form: a bare "@<seconds>" under nine digits reads as some other date.
   const commit = git("rev-list", "-1", "--first-parent", `--before=@${seconds} +0000`, main);
   if (!commit) throw new Error(`main has no first-parent commit dated ${when(seconds)} or earlier`);
-  try {
-    git("merge-base", "--is-ancestor", commit, main);
-  } catch {
+  if (!isAncestor(git, commit, main))
     throw new Error(`main as of ${when(seconds)}, ${commit}, is not an ancestor of origin/main`);
-  }
   // The rule reads each commit's date as when it landed, so along main's first parents, from the
   // tip down to the commit's parent, a date must never be later than its child's.
   const walk = [
@@ -105,7 +110,7 @@ function mergedInto(git: Git, merged: string, head: string) {
   const [target = "", second] = parents;
   if (second !== head)
     throw new Error(
-      `the event's merge commit ${merged} merges ${second}, not the pull request's head ${head}`,
+      `the event's merge commit ${merged} merges ${second}, not the pull request's head ${head}; a new push or label event brings a fresh merge commit`,
     );
   return target;
 }
@@ -128,9 +133,19 @@ export function comparisonBase(event: CheckEvent, git: Git) {
     const seconds = pushedAt(event.payload);
     git("fetch", "--no-tags", "origin", `+refs/heads/main:${main}`);
     const at = mainAsOf(git, seconds);
+    // A batch is never on main before its own push. If main as of the push already holds the head,
+    // main reached it by a direct push after this one, and the head would compare with itself.
+    if (isAncestor(git, event.sha, at))
+      throw new Error(
+        `the batch head ${event.sha} is already on main as of the push (${at}), so main reached it without a merge and there is nothing to compare`,
+      );
     found = git("merge-base", event.sha, at);
     note = `the merge-base of ${event.sha} with main as of the push at ${when(seconds)}, ${at}`;
   } else if ((found = commitAt(event.payload, "before")) !== "0".repeat(40)) {
+    if (!isAncestor(git, found, event.sha))
+      throw new Error(
+        `the push's previous commit ${found} is not in the checkout's history of ${event.sha}, as after a force push`,
+      );
     note = "the push's previous commit";
   } else {
     git("fetch", "--no-tags", "origin", `+refs/heads/main:${main}`);

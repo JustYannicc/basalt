@@ -102,6 +102,12 @@ const batchPush = (sha: string, pushedAt: unknown, ref = "refs/heads/batch/b"): 
   sha,
   payload: { ref, before: "0".repeat(40), after: sha, repository: { pushed_at: pushedAt } },
 });
+const mainPush = (sha: string, before: string): CheckEvent => ({
+  name: "push",
+  ref: "refs/heads/main",
+  sha,
+  payload: { ref: "refs/heads/main", before, after: sha },
+});
 // `sha` is GitHub's test merge of the head into the base branch, which the job checks out.
 const pullRequest = (head: string, base: string, sha: string): CheckEvent => ({
   name: "pull_request",
@@ -207,6 +213,71 @@ test("main as of the push takes a merge dated the push's own second, and none af
       [String(day + 400), a1],
     ] as const)
       assert.equal(resolved(resolve(job, "fast", batchPush(b1, seconds))), expected, `${seconds}`);
+  }));
+
+test("main as of the push reads a time under nine digits as seconds since 1970", () =>
+  fixture((root, origin) => {
+    const m0 = commit(origin, "m0", 1000);
+    git(origin, "switch", "-qc", "batch/a");
+    commit(origin, "a1", 1100);
+    git(origin, "switch", "-qc", "batch/b");
+    const b1 = commit(origin, "b1", 1200);
+    git(origin, "switch", "-q", "main");
+    merge(origin, "batch/a", 2000);
+    const job = checkout(root, "job", origin, b1);
+    // A bare "@1500" reads as some later date: main with batch/a merged, so the merge-base a1.
+    assert.equal(resolved(resolve(job, "fast", batchPush(b1, 1500))), m0);
+  }));
+
+test("a batch head that reached main without a merge fails, never compares with itself", () =>
+  fixture((root, origin) => {
+    const m1 = commit(origin, "m1", day + 100);
+    git(origin, "switch", "-qc", "batch/b");
+    commit(origin, "b0", day + 150);
+    const b1 = commit(origin, "b1", day + 200);
+    git(origin, "switch", "-q", "main");
+    const pushed = batchPush(b1, day + 300);
+    const early = checkout(root, "early", origin, b1);
+    assert.equal(resolved(resolve(early, "select", pushed)), m1);
+    // Someone fast-forwards main onto the batch by a direct push, and main moves on: main's
+    // first-parent history now holds b1, dated before the push.
+    git(origin, "merge", "-q", "--ff-only", "batch/b");
+    commit(origin, "m2", day + 400);
+    const late = checkout(root, "late", origin, b1);
+    for (const dir of [early, late])
+      refused(
+        resolve(dir, "fast", pushed),
+        new RegExp(`the batch head ${b1} is already on main as of the push \\(${b1}\\)`),
+      );
+  }));
+
+test("a main push compares with its previous commit, never with main's tip", () =>
+  fixture((root, origin) => {
+    commit(origin, "m0", day);
+    const m1 = commit(origin, "m1", day + 100);
+    // A push main later forced away, and one kept on another branch.
+    const gone = commit(origin, "gone", day + 150);
+    git(origin, "branch", "kept", gone);
+    git(origin, "reset", "-q", "--hard", m1);
+    git(origin, "switch", "-qc", "lost", m1);
+    const lost = commit(origin, "lost", day + 160);
+    git(origin, "switch", "-q", "main");
+    git(origin, "branch", "-D", "lost");
+    const m2 = commit(origin, "m2", day + 200);
+    // As a push leaves it: origin's main is the pushed commit.
+    const job = checkout(root, "job", origin, m2);
+    for (const name of comparing)
+      assert.equal(resolved(resolve(job, name, mainPush(m2, m1))), m1, name);
+    // With no previous commit, its merge-base with main, which here is itself.
+    assert.equal(resolved(resolve(job, "fast", mainPush(m2, "0".repeat(40)))), m2);
+    assert.throws(() => git(job, "cat-file", "-e", `${lost}^{commit}`));
+    for (const before of [gone, lost])
+      refused(
+        resolve(job, "fast", mainPush(m2, before)),
+        new RegExp(
+          `the push's previous commit ${before} is not in the checkout's history of ${m2}, as after a force push`,
+        ),
+      );
   }));
 
 test("a batch push without its time or main's history up to it fails, never on main's tip", () =>
