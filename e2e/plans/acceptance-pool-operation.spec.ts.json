@@ -1,0 +1,37 @@
+{
+  "scenarios": {
+    "acceptancePoolOperation": {
+      "fixtures": "actors",
+      "title": "The signed acceptance-pool operation sets up, verifies and tears down one inert test pool",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The operation is a Cloud route signed with the deploy's pool key."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no hosted pools."
+        }
+      }
+    }
+  },
+  "runs": {
+    "acceptancePoolOperation": ["production-ops:native-provider-links-through-the-cloud-hosted-api"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/infrastructure/acceptance-pool/**",
+    ".upstream/apps/hosted/cloud/src/implementation/auth-options.ts",
+    ".upstream/apps/hosted/cloud/src/implementation/billing-seats.ts",
+    ".upstream/apps/hosted/cloud/src/implementation/billing.ts",
+    ".upstream/apps/hosted/server/src/contracts/acceptance-pool.ts",
+    ".upstream/apps/hosted/server/src/implementation/acceptance-pool.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-account-links.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-app-upgrades.ts",
+    ".upstream/apps/hosted/server/src/implementation/pools.ts",
+    "src/catalog/provider-apps/custom.json"
+  ]
+}
