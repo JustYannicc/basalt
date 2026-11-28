@@ -2,6 +2,7 @@
 // control and the two account profiles. A custom endpoint account's base URL is `<origin>/a` or
 // `<origin>/b`; each profile's path reaches the mock without its prefix and with its own faults.
 import { mockRefusal, refusalPath, type MockPort } from "./mock-start.ts";
+import { markerIn, recorded, sendsControl, sendsPath, type SendStore } from "./sends.ts";
 
 /** The faults a profile adds: the share of calls aimock answers 429, and its first-byte delay. */
 export interface Chaos {
@@ -136,36 +137,78 @@ export function retimed(answer: Response): Response {
   });
 }
 
-/** One keyed model call to the mock. An unprefixed path goes exactly as it came. */
-export async function forward(mock: MockPort, request: Request, profileB: Chaos) {
+/** Where the mock keeps its record of the load sends it answers, and the clock it records on. */
+export interface SendRecord {
+  store: SendStore;
+  now(): number;
+}
+
+/**
+ * One keyed model call to the mock. An unprefixed path goes exactly as it came. A body that carries
+ * a load marker is answered through the mock's send record.
+ */
+export async function forward(
+  mock: MockPort,
+  request: Request,
+  profileB: Chaos,
+  record?: SendRecord,
+) {
+  const receivedAt = record?.now();
   const url = new URL(request.url);
   const route = profileRoute(url.pathname);
-  const target = new URL(`${route?.pathname ?? url.pathname}${url.search}`, "http://mock");
-  const forwarded = new Request(target, request);
-  if (!route) return mock.fetch(forwarded);
+  const pathname = route?.pathname ?? url.pathname;
+  const target = new URL(`${pathname}${url.search}`, "http://mock");
+  const body = record && request.body ? await request.text() : undefined;
+  const forwarded =
+    body === undefined
+      ? new Request(target, request)
+      : new Request(target, { method: request.method, headers: request.headers, body });
+  const marked = body === undefined ? undefined : markerIn(body);
+  const send = (answer: Response) =>
+    marked && record
+      ? recorded(answer, {
+          marker: marked.marker,
+          path: pathname,
+          receivedAt: receivedAt!,
+          now: record.now,
+          // A record that is not kept shows as missing to the driver, which fails the proof.
+          save: (sent) => void record.store.save(marked.run, sent).catch(() => {}),
+        })
+      : answer;
+  if (!route) return send(await mock.fetch(forwarded));
   const chaos = route.profile === "b" ? profileB : calm;
   for (const [header, value] of Object.entries(chaosHeaders))
     forwarded.headers.set(header, String(value(chaos)));
   const answer = await mock.fetch(forwarded);
-  return answer.status === 429 ? retimed(answer) : answer;
+  return send(answer.status === 429 ? retimed(answer) : answer);
 }
 
 /**
- * What the mock's Durable Object answers. Profile b's control needs no container, so changing a
- * profile never starts the mock; everything else waits until the mock answers its health route.
+ * What the mock's Durable Object answers. Profile b's control and the send record's read need no
+ * container, so neither starts the mock; everything else waits until the mock answers its health
+ * route.
  */
 export function mockCalls({
   store,
   start,
   key,
+  sends,
+  now = () => Date.now(),
 }: {
   store: ChaosStore;
   start(): Promise<MockPort>;
   key: string;
+  sends?: SendStore;
+  now?: () => number;
 }) {
+  const record = sends ? { store: sends, now } : undefined;
   return async (request: Request): Promise<Response> => {
     const { pathname } = new URL(request.url);
     if (pathname === profileControlPath) return profileControl(request, store);
+    if (pathname === sendsPath)
+      return sends
+        ? sendsControl(request, sends)
+        : Response.json({ error: { type: "not_found" } }, { status: 404 });
     let mock: MockPort;
     try {
       mock = await start();
@@ -183,6 +226,6 @@ export function mockCalls({
       );
     }
     if (pathname === refusalPath) return Response.json(await mockRefusal(mock, key));
-    return forward(mock, request, await store.read());
+    return forward(mock, request, await store.read(), record);
   };
 }

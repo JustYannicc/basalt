@@ -1,9 +1,10 @@
 // A stage's images in the account's container registry. Alchemy pushes a container's image to
 // `<account>/<application name>` and no destroy removes it, so the stage finds its repositories by
-// name and deletes their manifests itself, as the rehearsal teardown does
-// (scripts/release/stage-teardown.ts): the catalog, each repository's tag list, then every tagged
-// manifest with the platform manifests an index names, then every digest entry the list still
-// names. Every step is a request to the stage's choke point (request.mjs), which builds each URL
+// name and deletes their manifests itself, in the order the platform's own tool deletes an image:
+// the catalog, each repository's tag list, each tag's index and the platform manifests it names
+// (read while the tag still names them), then each tag by its tag, then what the tags reached,
+// index first, then every digest entry either list named. Every step is a request to the stage's
+// choke point (request.mjs), which builds each URL
 // from the repository this stage's catalog read recorded and refuses any tag or digest it did not
 // find there itself. What the registry keeps of a deleted repository is decided in
 // kept-entries.mjs.
@@ -35,8 +36,9 @@ export function registryOperations(send) {
     );
 
   /**
-   * Deletes every manifest of one repository `images` found: each tag's index and the platforms it
-   * names, then every digest entry the list still names. Every delete is tried. Returns the entries
+   * Deletes every manifest of one repository `images` found, as the platform's own tool deletes an
+   * image: each tag by its tag first, then, from the list read again, each tag still listed by its
+   * index and the platforms it names, and every digest entry still listed. Every delete is tried. Returns the entries
    * the registry keeps and `deletes`, closed counts of what each request answered; throws, with a
    * record of the same closed facts, when anything else is left.
    */
@@ -51,12 +53,14 @@ export function registryOperations(send) {
     const deletes = {
       tags: tags.length,
       digests: digests.length,
+      byTag: { sent: 0, accepted: 0, absent: 0, refused: 0 },
       tagRead: { ok: 0, absent: 0 },
       delete: { accepted: 0, absent: 0, refused: 0 },
     };
     const counted = () =>
       Object.freeze({
         ...deletes,
+        byTag: Object.freeze({ ...deletes.byTag }),
         tagRead: Object.freeze({ ...deletes.tagRead }),
         delete: Object.freeze({ ...deletes.delete }),
       });
@@ -83,33 +87,67 @@ export function registryOperations(send) {
           return { kind, type, refusal };
         }
       };
-      for (const tag of tags) {
+      // Each tag's manifests, read while the tag still names them: its index first, then what the
+      // index names, so an index is always deleted before the manifests it names.
+      const reached = [];
+      const reach = async (tag) => {
         const tagged = await read(image, tag);
         deletes.tagRead[tagged ? "ok" : "absent"] += 1;
-        if (!tagged) continue;
-        const reached = [tagged.digest];
-        for (let next = 0; next < reached.length; next++) {
-          const named = next === 0 ? tagged : await read(image, reached[next]);
-          for (const child of named?.children ?? [])
-            if (!reached.includes(child)) reached.push(child);
+        if (!tagged) return;
+        const order = [tagged.digest];
+        for (let next = 0; next < order.length; next++) {
+          const named = next === 0 ? tagged : await read(image, order[next]);
+          for (const child of named?.children ?? []) if (!order.includes(child)) order.push(child);
         }
-        for (const digest of reached) {
-          if (tried.has(digest)) continue;
-          const failed = await attempt(digest, "tag", tagged.type);
-          if (failed) refused.push(failed);
+        for (const digest of order)
+          if (!reached.some((entry) => entry.digest === digest))
+            reached.push({ digest, type: tagged.type });
+      };
+      for (const tag of tags) await reach(tag);
+      // Each tag by its tag, as the platform's own tool deletes an image. A registry may keep a
+      // tagged manifest whose digest delete it accepts.
+      for (const tag of tags) {
+        deletes.byTag.sent += 1;
+        try {
+          deletes.byTag[(await remove(image, tag)) ? "accepted" : "absent"] += 1;
+        } catch (error) {
+          const refusal = error !== null && typeof error === "object" ? error.refusal : undefined;
+          if (refusal === undefined) throw error;
+          deletes.byTag.refused += 1;
+          refused.push({ kind: "tag", type: undefined, refusal });
         }
       }
-      const kept = [];
-      for (const digest of digests) {
+      // What the list still names once its tags are gone; a tag the registry kept is read too.
+      const left = await send({ kind: "images", operation: "tags", target: image });
+      for (const tag of left.filter((entry) => !DIGEST.test(entry))) await reach(tag);
+      // What the tags reached, index first: an entry a tag reached is the stage's image.
+      for (const { digest, type } of reached) {
+        if (tried.has(digest)) continue;
+        const failed = await attempt(digest, "tag", type);
+        if (failed) refused.push(failed);
+      }
+      const candidates = [];
+      // Every digest entry either list named: a second list that answers empty still leaves the
+      // first list's entries to delete.
+      for (const digest of new Set([...digests, ...left.filter((entry) => DIGEST.test(entry))])) {
         if (tried.has(digest)) continue;
         const type = await typeOf(image, digest);
         const failed = await attempt(digest, "digest", type);
         if (!failed) continue;
-        // Kept only once no tag's manifest was refused: an entry a tag reached is the stage's image.
-        if (!refused.some((entry) => entry.kind === "tag") && keptByRegistry(type, failed.refusal))
-          kept.push({ type, class: refusalClass(failed.refusal), digest });
+        if (keptByRegistry(type, failed.refusal)) candidates.push({ ...failed, digest });
         else refused.push(failed);
       }
+      // Kept only once nothing of the stage's own image was refused, by tag or by digest: an entry
+      // beside a refused image is never the registry's.
+      const imageRefused = refused.length > 0;
+      const kept = imageRefused
+        ? []
+        : candidates.map(({ type, refusal, digest }) => ({
+            type,
+            class: refusalClass(refusal),
+            digest,
+          }));
+      if (imageRefused) refused.push(...candidates);
       if (refused.length) {
         const error = fail(
           `Registry repository ${image.name}: ${refused.length} manifest${refused.length === 1 ? "" : "s"} refused deletion (${[...new Set(refused.map((entry) => `HTTP ${refusalClass(entry.refusal)}`))].join(", ")})`,
