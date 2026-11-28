@@ -1,14 +1,23 @@
-// What deploy, check, destroy and the hourly expiry decide, given the account, a clock and the
+// What deploy, check, profile, destroy and the hourly expiry decide, given the account, a clock and the
 // stage's fetch. Raw provider output never reaches logs: only the release entry's own public lines
 // and this stage's counts and names.
 import { emulatedAccount } from "./cloudflare.mjs";
-import { plainReason, profileControlPath } from "./gateway.ts";
+import { chaosFrom, plainReason, profileControlPath } from "./gateway.ts";
 import { refusalPath } from "./mock-start.ts";
+import { sendsPath } from "./sends.ts";
 import { profileCheck, profileFailures, profileSummary } from "./profile-check.mjs";
 import { isCloudflareApiError } from "../stage-cloudflare/api.mjs";
 import { publicMessage, StageError } from "./public-error.mjs";
 import { paths, requestBody, verdict } from "./shapes.mjs";
-import { isMode, leaseHours, prefix, refusal as guardRefusal, stage, worker } from "./settings.ts";
+import {
+  isMode,
+  leaseHours,
+  prefix,
+  profileTarget,
+  refusal as guardRefusal,
+  stage,
+  worker,
+} from "./settings.ts";
 
 /** A long stream is paced like a model, about 60 s; one that ends within 30 s came as a burst. */
 export const LONG_MIN_MS = 30_000;
@@ -40,8 +49,14 @@ export function teardownDeadline(env, at) {
 export const mockWaitPauseMs = 5_000;
 const streamCount = Object.keys(paths).length * 2;
 const wholeCount = Object.keys(paths).length;
-/** Every route the Worker refuses without the right key, profile b's control included. */
-export const keyedRoutes = ["/v1/models", "/a/v1/models", "/b/v1/models", profileControlPath];
+/** Every route the Worker refuses without the right key, profile b's control and the send record included. */
+export const keyedRoutes = [
+  "/v1/models",
+  "/a/v1/models",
+  "/b/v1/models",
+  profileControlPath,
+  sendsPath,
+];
 const refusedCount = keyedRoutes.length * 2;
 
 const counts = (resources) =>
@@ -267,6 +282,70 @@ export function emulatedStage({
     if (failed.length) throw new StageError(`Emulated upstream check failed: ${failed.join("; ")}`);
   }
 
+  /**
+   * Sets profile b's two faults to `target` on the deployed stage through its keyed control, reads
+   * them back, and touches nothing else: no model call, no deploy, no lease.
+   */
+  async function profile(target) {
+    const deleteBy = await leased();
+    const base = await origin();
+    const headers = { authorization: `Bearer ${key}`, "content-type": "application/json" };
+    const control = [];
+    const send = async (step, init) => {
+      const answer = await call(
+        base,
+        `profile b ${step}`,
+        profileControlPath,
+        { ...init, headers },
+        (response) => (response.ok ? response.json() : response.body?.cancel()),
+      );
+      control.push({ step, status: answer.status });
+      return {
+        status: answer.status,
+        chaos: answer.ok
+          ? chaosFrom({
+              rateLimitRate: answer.body?.rateLimitRate,
+              latencyMs: answer.body?.latencyMs,
+            })
+          : undefined,
+      };
+    };
+    const faults = (chaos) => `429 share ${chaos.rateLimitRate}, latency ${chaos.latencyMs} ms`;
+    const read = await send("read", { method: "GET" });
+    if (!read.chaos)
+      throw new StageError(`profile b could not be read (HTTP ${read.status}); nothing was set`);
+    // From here b may have changed, so every stop keeps what it was before, to put it back by hand.
+    const stop = (message) =>
+      Object.assign(new StageError(message), {
+        record: { profile: "b", before: read.chaos, target, control },
+      });
+    const set = await send("set", { method: "PUT", body: JSON.stringify(target) }).catch(() => {
+      throw stop("profile b's setting got no answer; b may have changed");
+    });
+    if (set.status !== 200) throw stop(`profile b's setting was refused (HTTP ${set.status})`);
+    const back = await send("read back", { method: "GET" }).catch(() => {
+      throw stop("profile b could not be read back; b may have changed");
+    });
+    if (
+      !back.chaos ||
+      back.chaos.rateLimitRate !== target.rateLimitRate ||
+      back.chaos.latencyMs !== target.latencyMs
+    )
+      throw stop(
+        `profile b reads back ${back.chaos ? faults(back.chaos) : `HTTP ${back.status}`}, not what was set`,
+      );
+    save("profile", {
+      deleteBy: new Date(deleteBy).toISOString(),
+      profile: "b",
+      before: read.chaos,
+      now: back.chaos,
+      control,
+    });
+    summary(`- profile b before: ${faults(read.chaos)}`);
+    summary(`- profile b now: ${faults(back.chaos)}`);
+    summary(`- lease ends ${new Date(deleteBy).toISOString()}`);
+  }
+
   async function destroy() {
     const { before, failures, kept = [], gone = [], record } = await api.destroy();
     // Closed values only: a kept entry's type is on kept-entries.mjs's list, its class one of two.
@@ -314,6 +393,16 @@ export function emulatedStage({
       save("expire", { outcome: "nothing", ...facts });
       summary(`- nothing named ${prefix}-* is deployed`);
       return "nothing";
+    }
+    // Nothing runs, and only the stage's own image repository is left: inert, and the next deploy
+    // pushes to it. A destroy now would only repeat a teardown its record already reports.
+    if (api.inert(found)) {
+      const left = api.repositoryLeft(found);
+      save("expire", { outcome: "repository-only", ...facts });
+      summary(
+        `- nothing named ${prefix}-* runs; only its own image repository is left (${left.entries} entries), which the next deploy pushes to`,
+      );
+      return "repository";
     }
     const deleteBy = found.scripts.some((row) => row.id === worker)
       ? await api.lease(worker)
@@ -379,22 +468,35 @@ export function emulatedStage({
 
   async function deploy() {
     const existing = await api.inventory();
-    if (!api.empty(existing))
+    // The stage exists when anything of it runs. Its own image repository alone is inert: the
+    // deploy pushes to that same repository.
+    if (!api.inert(existing))
       throw Object.assign(
         new StageError(
           `The emulated upstream stage already exists (${api.describe(existing)}); run destroy first`,
         ),
         { record: Object.freeze({ found: api.counted(existing), repositories: existing.facts }) },
       );
+    const left = api.repositoryLeft(existing);
+    if (left.repositories)
+      summary(
+        `- the stage's own image repository is left from an earlier run (${left.entries} entries); nothing runs, and the deploy pushes its image there`,
+      );
     const deleteBy = now() + leaseHours * 60 * 60_000;
     // From here on a failed or cancelled run tears down what it may have created.
-    save("deploy-started", { stage, deleteBy: new Date(deleteBy).toISOString() });
+    save("deploy-started", {
+      stage,
+      deleteBy: new Date(deleteBy).toISOString(),
+      ...(left.repositories
+        ? { leftover: { found: api.counted(existing), repositories: existing.facts } }
+        : {}),
+    });
     deployEntry(deleteBy);
     await waitForMock();
     await check();
   }
 
-  return { deploy, check, destroy, expire };
+  return { deploy, check, profile, destroy, expire };
 }
 
 /**
@@ -408,7 +510,8 @@ export async function main(
   const refused = guardRefusal(env, { credentialsLoaded: true });
   const mode = env.EMULATED_MODE ?? "";
   if (refused || !isMode(mode)) {
-    const token = refused ?? "emulated_upstream_mode_expected_deploy_check_destroy_or_expire";
+    const token =
+      refused ?? "emulated_upstream_mode_expected_deploy_check_profile_destroy_or_expire";
     error(token);
     io.save?.(`stopped-${isMode(mode) ? mode : "run"}`, { guard: token });
     return 1;
@@ -426,14 +529,16 @@ export async function main(
         : {}),
       ...(wait ? { wait } : {}),
     });
-    await emulatedStage({
+    const run = emulatedStage({
       api,
       key: env.EMULATED_UPSTREAM_KEY,
       fetcher,
       now,
       ...(wait ? { wait } : {}),
       ...io,
-    })[mode]();
+    });
+    // The guard passed, so the profile's settings are in bounds.
+    await (mode === "profile" ? run.profile(profileTarget(env)) : run[mode]());
     return 0;
   } catch (caught) {
     error(publicMessage(caught));

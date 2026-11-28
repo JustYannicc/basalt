@@ -1,4 +1,4 @@
-// What deploy, check, destroy and the expiry decide on their own, and that no run prints the
+// What deploy, check, profile, destroy and the expiry decide on their own, and that no run prints the
 // account's workers.dev hostname.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -50,6 +50,11 @@ function fakeApi({ resources = none(), lease } = {}) {
       return "acctsub";
     },
     empty: (found) => Object.values(found).every((rows) => rows.length === 0),
+    inert: (found) =>
+      found.applications.length === 0 &&
+      found.scripts.length === 0 &&
+      found.namespaces.length === 0,
+    repositoryLeft: (found) => ({ repositories: found.images.length, entries: 0 }),
     counted: (found) =>
       Object.fromEntries(Object.entries(found).map(([kind, rows]) => [kind, rows.length])),
     describe: (found) => found.scripts.map((row) => `Worker ${row.id}`).join(", "),
@@ -214,7 +219,7 @@ test("a check passes only when every part does, and names each part that failed"
       profiles: { control: [{ step: "read", status: 200 }], calls: [], failure: "it stopped" },
     }),
     [
-      "7 of 8 calls without the right key ran",
+      "9 of 10 calls without the right key ran",
       "the mock itself did not refuse a call without the right key",
       "5 of 6 streams ran",
       "0 of 3 non-streamed calls ran",
@@ -308,6 +313,147 @@ test("a check names a burst stream, a latency or 429 share the mock never saw, a
     },
   );
   assert.deepEqual(stage.store.value, { rateLimitRate: 0, latencyMs: 0 });
+});
+
+/** A deployed stage's profile run: what it saved, printed and sent. */
+async function profileRun(target, options = {}) {
+  const { store = memoryStore(), fetcher } = options;
+  // An explicit undefined lease is a stage without one.
+  const lease = Object.hasOwn(options, "lease") ? options.lease : NOW + hour;
+  const stage = deployedStage({ store });
+  const saved = {};
+  const lines = [];
+  const sent = [];
+  const api = fakeApi({ resources: deployed(), lease });
+  const run = stageOf(api, {
+    key: stage.key,
+    fetcher: (url, init) => {
+      sent.push(`${init?.method ?? "GET"} ${new URL(url).pathname}`);
+      return (fetcher ?? stage.fetcher)(url, init);
+    },
+    now: () => stage.clock.ms,
+    save: (name, value) => (saved[name] = value),
+    summary: (line) => lines.push(line),
+  }).profile(target);
+  return { stage, saved, lines, sent, run, api };
+}
+
+test("profile sets profile b through its keyed control, reads it back, prints before and now, and changes nothing else", async () => {
+  const { stage, saved, lines, sent, run, api } = await profileRun(
+    { rateLimitRate: 1, latencyMs: 0 },
+    { store: memoryStore({ rateLimitRate: 0, latencyMs: 250 }) },
+  );
+  await run;
+  // The account is only asked for the lease: no inventory, deploy or destroy.
+  assert.deepEqual(api.calls, [`lease ${worker}`]);
+  assert.deepEqual(stage.store.value, { rateLimitRate: 1, latencyMs: 0 });
+  assert.deepEqual(sent, [
+    "GET /_emulated/profiles/b",
+    "PUT /_emulated/profiles/b",
+    "GET /_emulated/profiles/b",
+  ]);
+  assert.deepEqual(stage.aimock.calls, [], "no model call reached the mock");
+  assert.deepEqual(saved.profile, {
+    deleteBy: new Date(NOW + hour).toISOString(),
+    profile: "b",
+    before: { rateLimitRate: 0, latencyMs: 250 },
+    now: { rateLimitRate: 1, latencyMs: 0 },
+    control: [
+      { step: "read", status: 200 },
+      { step: "set", status: 200 },
+      { step: "read back", status: 200 },
+    ],
+  });
+  assert.deepEqual(lines, [
+    "- profile b before: 429 share 0, latency 250 ms",
+    "- profile b now: 429 share 1, latency 0 ms",
+    `- lease ends ${new Date(NOW + hour).toISOString()}`,
+  ]);
+});
+
+test("the restore is the same mode with zeros", async () => {
+  const { stage, saved, run } = await profileRun(
+    { rateLimitRate: 0, latencyMs: 0 },
+    { store: memoryStore({ rateLimitRate: 1, latencyMs: 0 }) },
+  );
+  await run;
+  assert.deepEqual(stage.store.value, { rateLimitRate: 0, latencyMs: 0 });
+  assert.deepEqual(saved.profile.before, { rateLimitRate: 1, latencyMs: 0 });
+});
+
+test("profile refuses a stage that is not deployed or past its lease, without calling it", async () => {
+  for (const [lease, refused] of [
+    [undefined, /The emulated upstream is not deployed/u],
+    [NOW, /lease ended at 2026-11-25T12:00:00.000Z/u],
+  ]) {
+    const { stage, sent, run } = await profileRun({ rateLimitRate: 1, latencyMs: 0 }, { lease });
+    await assert.rejects(run, refused);
+    assert.deepEqual(sent, []);
+    assert.deepEqual(stage.store.value, { rateLimitRate: 0, latencyMs: 0 });
+  }
+});
+
+test("profile fails when b cannot be read, its setting is refused, or it reads back otherwise", async () => {
+  const answer = (status, body) => Response.json(body, { status });
+  const cases = [
+    [
+      "unreadable",
+      async () => answer(500, {}),
+      /profile b could not be read \(HTTP 500\); nothing was set/u,
+      0,
+    ],
+    [
+      "refused",
+      async (url, init) =>
+        init?.method === "PUT"
+          ? answer(400, {})
+          : answer(200, { profile: "b", rateLimitRate: 0, latencyMs: 0 }),
+      /profile b's setting was refused \(HTTP 400\)/u,
+      1,
+    ],
+    [
+      "kept its old value",
+      async () => answer(200, { profile: "b", rateLimitRate: 0, latencyMs: 0 }),
+      /profile b reads back 429 share 0, latency 0 ms, not what was set/u,
+      1,
+    ],
+    [
+      "kept its old latency only",
+      async () => answer(200, { profile: "b", rateLimitRate: 1, latencyMs: 0 }),
+      /profile b reads back 429 share 1, latency 0 ms, not what was set/u,
+      1,
+      { rateLimitRate: 1, latencyMs: 500 },
+      { rateLimitRate: 1, latencyMs: 0 },
+    ],
+    [
+      "set with no answer",
+      async (url, init) => {
+        if (init?.method === "PUT") throw new TypeError("fetch failed");
+        return answer(200, { profile: "b", rateLimitRate: 0, latencyMs: 0 });
+      },
+      /profile b's setting got no answer; b may have changed/u,
+      1,
+    ],
+  ];
+  for (const [
+    label,
+    fetcher,
+    refused,
+    puts,
+    target = { rateLimitRate: 1, latencyMs: 0 },
+    before = { rateLimitRate: 0, latencyMs: 0 },
+  ] of cases) {
+    const { saved, run, sent } = await profileRun(target, { fetcher });
+    const error = await run.then(
+      () => assert.fail(label),
+      (caught) => caught,
+    );
+    assert.match(error.message, refused, label);
+    assert.equal(sent.filter((call) => call.startsWith("PUT")).length, puts, label);
+    assert.equal(saved.profile, undefined, label);
+    // Once b may have changed, the stop keeps what it was before, to put back by hand.
+    assert.deepEqual(error.record?.before, puts ? before : undefined, label);
+  }
 });
 
 test("a check refuses past the lease without calling the stage", async () => {
@@ -447,12 +593,14 @@ test("a destroy the registry refuses keeps its record of closed facts before it 
   assert.equal(code, 1);
   const [deletes] = saved["stopped-destroy"].teardown;
   assert.deepEqual(deletes.registryDeletes, {
-    // The list held the tag and the two manifests of its image; the tag's read reached both, the
-    // index's delete was accepted and the platform's refused.
+    // The list held the tag and the two manifests of its image. The tag was read first, reaching
+    // both; its own delete was accepted and took the index with it, so the index's delete answered
+    // absent, and the platform manifest the tag reached was refused.
     tags: 1,
     digests: 2,
+    byTag: { sent: 1, accepted: 1, absent: 0, refused: 0 },
     tagRead: { ok: 1, absent: 0 },
-    delete: { accepted: 1, absent: 0, refused: 1 },
+    delete: { accepted: 0, absent: 1, refused: 1 },
     kept: [],
     refused: [
       {
@@ -502,10 +650,10 @@ test("a teardown spends at most its budget on stage requests, and stops between 
 });
 
 test("a teardown out of time during its deletes keeps everything it gathered", async () => {
-  // Forty seconds a request: every delete is sent, then the read back runs out. Fifty: the
+  // Thirty-five seconds a request: every delete is sent, then the read back runs out. Fifty: the
   // repository's own delete runs out too, and the line names it.
   for (const [step, failedDeletes] of [
-    [40_000, 0],
+    [35_000, 0],
     [50_000, 1],
   ]) {
     const fake = fakeAccount({
@@ -689,6 +837,17 @@ test("every exit of a destroy or an expiry leaves its file", async () => {
       1,
       "stopped-expire",
     ],
+    // Nothing runs and only the stage's own repository is left: green, and it says so.
+    [
+      "expire, only its repository left",
+      expire,
+      fakeAccount({
+        tags: { [`acct/${prefix}-mock`]: ["h1"] },
+        cloudflare: { pageSize: 5, emptyEnd: true, collectAfter: 1_000 },
+      }),
+      0,
+      "expire",
+    ],
     // An expiry whose token may mint pull but not push: its deletes fail, and it says so.
     [
       "expire, push refused",
@@ -700,6 +859,16 @@ test("every exit of a destroy or an expiry leaves its file", async () => {
   ];
   for (const [name, env, fake, code, file] of cases) {
     const run = await runOf(env, fake.fetcher);
+    if (name === "expire, only its repository left") {
+      assert.equal(run.saved.expire.outcome, "repository-only");
+      assert.ok(
+        run.printed.includes(
+          `- nothing named ${prefix}-* runs; only its own image repository is left (3 entries), which the next deploy pushes to`,
+        ),
+        run.printed.join("\n"),
+      );
+      assert.equal(fake.calls.filter((call) => call.method === "DELETE").length, 0);
+    }
     if (name === "expire, push refused") {
       assert.match(
         run.printed.join("\n"),
@@ -831,6 +1000,59 @@ test("an expiry spends at most its budget too", async () => {
     started.every((at) => at + 30_000 <= NOW + teardownBudgetMs),
     started.join(","),
   );
+});
+
+test("a profile dispatch sets profile b to exactly its inputs, keeps its file, and prints no hostname", async () => {
+  // The stage's key is the dispatch's own.
+  const stage = deployedStage({
+    key: dispatch.EMULATED_UPSTREAM_KEY,
+    store: memoryStore({ rateLimitRate: 0, latencyMs: 0 }),
+  });
+  const fetcher = async (url, init) =>
+    new URL(url).hostname === "api.cloudflare.com"
+      ? leased.fetcher(url, init)
+      : stage.fetcher(url, init);
+  const printed = [];
+  const saved = {};
+  const env = {
+    ...dispatch,
+    EMULATED_MODE: "profile",
+    GITHUB_RUN_ATTEMPT: "1",
+    EMULATED_PROFILE: "b",
+    EMULATED_SHARE_429: "0.25",
+    EMULATED_LATENCY_MS: "1500",
+  };
+  const run = (extra, io = {}) =>
+    main(
+      { ...env, ...extra },
+      {
+        fetcher,
+        now: () => NOW,
+        error: (line) => printed.push(line),
+        summary: (line) => printed.push(line),
+        save: (name, value) => (saved[name] = value),
+        ...io,
+      },
+    );
+  assert.equal(await run({}), 0, printed.join("\n"));
+  assert.deepEqual(stage.store.value, { rateLimitRate: 0.25, latencyMs: 1500 });
+  assert.deepEqual(saved.profile.now, { rateLimitRate: 0.25, latencyMs: 1500 });
+  // The restore: the same mode with zeros.
+  assert.equal(await run({ EMULATED_SHARE_429: "0", EMULATED_LATENCY_MS: "0" }), 0);
+  assert.deepEqual(stage.store.value, { rateLimitRate: 0, latencyMs: 0 });
+  // A stop after the read keeps b's old value in its file.
+  const refusing = async (url, init) =>
+    init?.method === "PUT" ? Response.json({}, { status: 400 }) : fetcher(url, init);
+  assert.equal(await run({ EMULATED_SHARE_429: "1" }, { fetcher: refusing }), 1);
+  assert.deepEqual(saved["stopped-profile"].before, { rateLimitRate: 0, latencyMs: 0 });
+  for (const line of printed) assert.ok(!line.includes(subdomain), line);
+  // A re-run prints only its token and calls nothing.
+  printed.length = 0;
+  assert.equal(
+    await run({ GITHUB_RUN_ATTEMPT: "2" }, { fetcher: () => assert.fail("no call may run") }),
+    1,
+  );
+  assert.deepEqual(printed, ["emulated_upstream_profile_rerun_refused"]);
 });
 
 test("a refused guard prints only its token", async () => {

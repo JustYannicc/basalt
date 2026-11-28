@@ -83,6 +83,8 @@ const slotRefusals = [
   "unhealthy",
   "draining",
   "uncertain",
+  // The caller runs other controller code than this object: every release, so never an identity.
+  "controller_code",
 ] as const;
 export const PromotionRefusal = Schema.Literals([...slotRefusals, "timeout", "unclassified"]);
 export type PromotionRefusal = typeof PromotionRefusal.Type;

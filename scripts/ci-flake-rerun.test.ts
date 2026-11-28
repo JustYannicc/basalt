@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { test } from "node:test";
-import { flakeDecision, parseJobFlakes, type JobFlake } from "./ci/flake-rerun.ts";
+import {
+  candidates,
+  explains,
+  flakeDecision,
+  parseJobFlakes,
+  type JobFlake,
+} from "./ci/flake-rerun.ts";
 import { flakeNote, flakeRunTitle } from "./ci/flake-note.ts";
 import { parsePolicy } from "./ci/flake-policy.ts";
 import { attemptJobs, supersededPullRequest, type Run, type RunJob } from "./ci/workflow-run.ts";
@@ -152,6 +158,7 @@ test("every listed job flake names its issue, a signature and an expiry; test-sc
       ["cpa-websocket-429-test", "pool-runtime", 1656],
       ["zoho-mcp-browser-assertions", "catalog-compat", 1625],
       ["production-ops-cleanup-502", "production-ops-identity", 1657],
+      ["dashboard-hydration-markup-server-gave-up", "declared-self-host", 2137],
     ],
   );
   const ci = read(".github/workflows/ci.yml");
@@ -272,4 +279,53 @@ test("the shared reads count only this repository's newer Checks and never decid
   );
   const listed = { total_count: 2, jobs: [{ id: 1, name: "fast", conclusion: "failure" }] };
   await assert.rejects(attemptJobs(stub(listed), run), /read 1 of the run's 2 jobs/);
+});
+
+test("the hydration-markup listing re-runs only the server document's missing code block on self-host", () => {
+  const listing = parseJobFlakes(listed).find(
+    (entry) => entry.id === "dashboard-hydration-markup-server-gave-up",
+  );
+  assert.ok(listing);
+  const spec = "e2e/tests/dashboard-hydration-markup.spec.ts";
+  const suite = `${spec} > Dashboard hydration keeps server markup > `;
+  const title = "An app's server-rendered skills stay the server's markup after hydration";
+  const missingBlock = (target: string, width: string) => [
+    ` ×  ${target}  ${suite}${title} at ${width} width 8487ms`,
+    ` FAIL   ${target}  ${suite}${title} at ${width} width`,
+    "AssertionError: expected 'Executor(() => {\\n  const owned = (fo…' to contain 'const count: number = 42;'",
+    `    at /home/runner/work/basalt/basalt/.upstream/${spec}:190:66 {`,
+    // The declared runner's own lines name the spec too, but not a place in it.
+    `declared:${target} dashboard-hydration-markup.spec.ts: failed after 0m 33s; retrying once`,
+  ];
+  const log = (...lines: string[][]) => lines.flat().join("\n");
+  // The failure #2137 explains, on its first attempt and its retry alike.
+  assert.ok(
+    explains(
+      listing,
+      log(missingBlock("self-host", "phone"), missingBlock("self-host", "desktop")),
+    ),
+  );
+  assert.deepEqual(candidates([listing], "declared-self-host-3", "2026-11-28"), [listing]);
+  assert.deepEqual(candidates([listing], "declared-self-host-3", "2026-12-06"), []);
+  // The cloud target's shards are another job, and its logs name another target.
+  assert.deepEqual(candidates([listing], "declared-cloud-3", "2026-11-28"), []);
+  assert.ok(!explains(listing, log(missingBlock("cloud", "phone"))));
+  // The same spec failing anywhere else, alone or beside the listed failure, stays red.
+  const elsewhere = [
+    ` FAIL   self-host  ${suite}${title} at phone width`,
+    "AssertionError: expected false to be true",
+    `    at /home/runner/work/basalt/basalt/.upstream/${spec}:205:12 {`,
+  ];
+  assert.ok(!explains(listing, log(elsewhere)));
+  assert.ok(!explains(listing, log(missingBlock("self-host", "phone"), elsewhere)));
+  // A failure that is no assertion, such as a wait timing out at another place in the spec.
+  const timedOut = [
+    ` FAIL   self-host  ${suite}${title} at phone width`,
+    "TimeoutError: locator.waitFor: Timeout 30000ms exceeded.",
+    `    at /home/runner/work/basalt/basalt/.upstream/${spec}:193:24 {`,
+  ];
+  assert.ok(!explains(listing, log(missingBlock("self-host", "phone"), timedOut)));
+  // Another spec failing in the same shard stays red.
+  const other = [" FAIL   self-host  e2e/tests/account-identity-policy.spec.ts > A > b"];
+  assert.ok(!explains(listing, log(missingBlock("self-host", "phone"), other)));
 });

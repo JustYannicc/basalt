@@ -198,6 +198,18 @@ test("unrecognized exception values and hostile getters never enter logs or repl
   assert.doesNotMatch(JSON.stringify(fields), /private-/);
 });
 
+test("the fleet inspect's attestation read that an endpoint on older code doesn't know logs its own path", async (context) => {
+  const log = context.mock.method(console, "error", () => {});
+  const trace = new EndpointTrace(
+    new Request("http://runtime/attestation", { method: "POST" }),
+    "slot",
+    "cell",
+  );
+  const response = await trace.send(1, async () => new Response(null, { status: 404 }));
+  trace.finish(response);
+  assert.equal(JSON.parse(log.mock.calls[0]!.arguments[1]).path, "/attestation");
+});
+
 test("the shared health driver records primary endpoint failures without a fleet wrapper", async (context) => {
   const log = context.mock.method(console, "error", () => {});
   const { BoundSlotDriver } = await import("./runtime-slots/transport.ts");

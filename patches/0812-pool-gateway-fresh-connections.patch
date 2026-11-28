@@ -1,0 +1,54 @@
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -902,7 +902,11 @@ export const startCloudEnvironment = (input: {
+           binding = next;
+           yield* fs.writeFileString(
+             `${directory}/runtime-switches.ndjson`,
+-            JSON.stringify({ binding, launches: launchCount }) + "\n",
++            JSON.stringify({
++              binding,
++              launches: launchCount,
++              at: new Date(yield* Clock.currentTimeMillis).toISOString(),
++            }) + "\n",
+             { flag: "a", mode: 0o600 },
+           );
+           return {
+diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.ts
+--- a/e2e/support/cloud-pool-gateway.ts
++++ b/e2e/support/cloud-pool-gateway.ts
+@@ -45,6 +45,8 @@ const SignedMembership = Schema.Struct({
+ });
+ 
+ const ForwardingDiagnostic = Schema.Struct({
++  /** When the gateway saw it, to order it against the run's runtime switch records. */
++  at: Schema.String,
+   phase: Schema.Literals(["request-error", "upstream-response"]),
+   service: Schema.Literals(["api", "pool"]),
+   reusedSocket: Schema.Boolean,
+@@ -350,6 +352,9 @@ export const cloudPoolGateway = (origin: string, directory: string, api: URL) =>
+               : "api";
+           const forwarded = request(
+             {
++              // Moving the front listener to another Cloud closes the connections spliced to the
++              // old one; a fresh connection per request never offers one of those to the next.
++              agent: false,
+               hostname: "127.0.0.1",
+               port: service === "pool" ? backendPort : Number(api.port),
+               path: incoming.url,
+@@ -364,6 +369,7 @@ export const cloudPoolGateway = (origin: string, directory: string, api: URL) =>
+               }
+               if ((response.statusCode ?? 0) >= 500)
+                 Queue.offerUnsafe(failures, {
++                  at: new Date().toISOString(),
+                   phase: "upstream-response",
+                   service,
+                   reusedSocket: forwarded.reusedSocket,
+@@ -375,6 +381,7 @@ export const cloudPoolGateway = (origin: string, directory: string, api: URL) =>
+           );
+           forwarded.on("error", (cause) => {
+             Queue.offerUnsafe(failures, {
++              at: new Date().toISOString(),
+               phase: "request-error",
+               service,
+               reusedSocket: forwarded.reusedSocket,

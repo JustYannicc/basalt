@@ -28,7 +28,13 @@ import { assignEnvironment } from "./process-env.ts";
 import { failureReport, progressTracker } from "./public-report.ts";
 import { isRehearsalStage } from "./rehearsal-stage.ts";
 import { safeJson } from "./safe-json.ts";
-import { assertStateStage, isTestStage, stackConfig, stateStoreRefusal } from "./stack-config.ts";
+import {
+  assertStateStage,
+  isTestStage,
+  stackConfig,
+  stackRunsOn,
+  stateStoreRefusal,
+} from "./stack-config.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const cloud = resolve(root, ".upstream/apps/hosted/cloud");
@@ -74,6 +80,9 @@ const { config, scaleStack, state: stackState } = stackConfig(values.config, roo
 
 if (command !== "compare") {
   assertStateStage(stackState, stage);
+  // Before the stage checks below, the environment and any read: a stack runs only on its own stages.
+  if (!scaleStack && !stackRunsOn(config, stage))
+    throw new Error(`The stack ${config} does not run on stage ${stage || "(none)"}`);
   if (stage === "production") {
     if (
       process.env.GITHUB_ACTIONS !== "true" ||
@@ -807,7 +816,21 @@ try {
             }
           })();
           yield* Effect.promise(() => summary(line));
-          return { snapshot, digest, planned: changedRows(snapshot) };
+          const planned = changedRows(snapshot);
+          // Why the rows plan, past their names, from what the plan already holds; only printed.
+          const { planReasonLines } = yield* Effect.promise(() => import("./row-reasons.ts"));
+          const reasons = yield* Effect.promise(() =>
+            planReasonLines({
+              snapshot: snapshot as never,
+              rows: planned,
+              root,
+              candidate: process.env.BASALT_RELEASE_CANDIDATE || "HEAD",
+            }),
+          );
+          yield* Effect.promise(() =>
+            summary(["Why the rows plan:", ...reasons.map((reason) => `- ${reason}`)].join("\n")),
+          );
+          return { snapshot, digest, planned };
         }
         if (command === "apply" && values["plan-digest"] !== digest)
           return yield* Effect.die(

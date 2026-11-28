@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The local test stack's pool gateway forwards each request on a fresh connection, so a connection the front listener closed when a test moved it to another Cloud is never offered to a later request. Each request the gateway cannot forward, and each failed answer it passes on, is recorded with its time, its service, the transport error's code and whether the connection was reused, and each move of the front listener to a prebooted Cloud is recorded with its time, so a failure can be placed against the move."
+    }
+  }
+}

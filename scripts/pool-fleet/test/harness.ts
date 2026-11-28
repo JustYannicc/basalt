@@ -11,7 +11,15 @@ import { crashNonceKey } from "../../../src/pool/runtime-crash-contract.ts";
 import type { SlotIdentity } from "../../../src/pool/runtime-slots/contract.ts";
 import { openEnvelope } from "../../../src/pool/token.ts";
 import { nativeModelHeader } from "../../../src/pool/native-contract.ts";
-import { runtimeHandoffCommandPrefix } from "../../../src/pool/runtime-slots/handoff-command.ts";
+import {
+  nativeUsagePath,
+  type NativeUsageRecord,
+} from "../../../src/pool/native-usage-contract.ts";
+import {
+  runtimeHandoffCommandPrefix,
+  runtimeHandoffPath,
+} from "../../../src/pool/runtime-slots/handoff-command.ts";
+import { throughController } from "../../../src/pool/operations-call.ts";
 import { SlotMemory } from "../../pool-tests/runtime-slot-storage.ts";
 import { StorageBookmarks } from "../../../src/pool/storage-bookmark.ts";
 import { PoolAcceptanceClient } from "../../pool-acceptance/client.ts";
@@ -77,10 +85,20 @@ export interface HarnessOptions {
   startCell?: boolean;
   /** What the Worker's POOL_PROVIDER_OBSERVATION_TOKEN Secrets Store binding returns; null is empty. */
   providerSecret?: string | null;
+  /** Rows the device usage read returns for one of the lane's sessions, by the order it was first read. */
+  usage?: (index: number) => NativeUsageRecord[];
+  /** A status the device usage read answers instead of rows, as the route does failing closed. */
+  usageStatus?: number;
+  /** Turns, by call index, the pool refuses with its user-cap 429. */
+  capped?: (index: number) => boolean;
   /** The acceptance device is outside a dedicated acceptance pool: the lane holds no owner access. */
   deviceOnly?: boolean;
-  /** The account the pool's usage records name; a foreign one must fail the usage check. */
+  /** The account the pool's owner usage records name; a foreign one must fail the usage check. */
   usageAccount?: string;
+  /** How many success rows the pool owner's usage read returns for one session; one by default. */
+  ownerRows?: number;
+  /** Owner usage reads, by their order, that the route answers with HTTP 500 instead of rows. */
+  ownerFailure?: (read: number) => boolean;
   /** What the controller's inspect reports for the pool's own usage rollup backfill. */
   usageRollup?: unknown;
   /** What the controller's inspect reports for the pool's own capture-hour counts. */
@@ -94,7 +112,11 @@ export interface HarnessOptions {
    * an HTTP 503, `none` an empty list. By default it was days before any run.
    */
   deployedAt?: number | "unanswered" | "none";
-  /** A handoff command the bridge fails: a thrown error, or an answer the Worker never made. */
+  /**
+   * A handoff command the bridge fails: a thrown error, or an answer returned as it is. A bare
+   * answer carries no pool mark, so it is one the Worker never made; one built through
+   * `throughController` is the pool's own.
+   */
   handoffFailure?: (action: string) => Error | Response | undefined;
   /** As production's upkeep does, a disabled fleet's rows drain and retire (at once, here). */
   drainOnDisable?: boolean;
@@ -105,6 +127,22 @@ export interface HarnessOptions {
   /** A turn on this model is refused as the pool's node relays Home's quota refusal, with this code. */
   quota?: (model: string) => "usage_credit_policy_denied" | "model_cooldown" | undefined;
 }
+
+/** The acceptance device's own Home key, as the device usage read reports it. */
+export const deviceKey = 41;
+/** One success row of the device's key, served by one of the pool's many accounts. */
+export const ownRow = (
+  index: number,
+  extra: Partial<NativeUsageRecord> = {},
+): NativeUsageRecord => ({
+  id: `usage-${index}`,
+  status: "success",
+  at: new Date().toISOString(),
+  key: deviceKey,
+  account: `pool-account-${index % 12}`,
+  inPool: true,
+  ...extra,
+});
 
 export async function harness(options: HarnessOptions = {}) {
   const cloudflareReads: string[] = [];
@@ -407,44 +445,69 @@ export async function harness(options: HarnessOptions = {}) {
     lastRecovery: async () => options.lastRecovery ?? null,
     resetRecovery: async () => ({ restarts: [] }),
   } as unknown as Parameters<typeof handleRuntimeHandoff>[1];
-  const connect: PoolOperationsTarget["connect"] = async () => ({
-    env: {
-      POOL_OPERATIONS: {
-        fetch: async (request: Request) => {
-          const { envelope } = JSON.parse(await request.clone().text()) as { envelope: string };
-          const opened = await openEnvelope(signingKey, runtimeHandoffCommandPrefix, envelope);
-          const action = (opened as { action: string }).action;
-          actions.push(action);
-          const failure = options.handoffFailure?.(action);
-          if (failure instanceof Error) throw failure;
-          if (failure) return failure;
-          return handleRuntimeHandoff(
-            request,
-            slots,
-            code,
-            signingKey,
-            fleet,
-            undefined,
-            bookmarks,
-            undefined,
-            options.usageRollup === undefined ? undefined : async () => options.usageRollup,
-            options.captureHours === undefined ? undefined : async () => options.captureHours,
-          );
+  // Each connect is one session, as each production send opens its own bridge.
+  const opened = { sessions: 0 };
+  const connect: PoolOperationsTarget["connect"] = async () => {
+    opened.sessions++;
+    return {
+      env: {
+        POOL_OPERATIONS: {
+          fetch: async (request: Request) => {
+            const { envelope } = JSON.parse(await request.clone().text()) as { envelope: string };
+            const opened = await openEnvelope(signingKey, runtimeHandoffCommandPrefix, envelope);
+            const action = (opened as { action: string }).action;
+            actions.push(action);
+            const failure = options.handoffFailure?.(action);
+            if (failure instanceof Error) throw failure;
+            if (failure) return failure;
+            // Marked as the pool's PoolOperations entrypoint marks them (src/pool/worker.ts).
+            return throughController(
+              runtimeHandoffPath,
+              () =>
+                handleRuntimeHandoff(
+                  request,
+                  slots,
+                  code,
+                  signingKey,
+                  fleet,
+                  undefined,
+                  bookmarks,
+                  undefined,
+                  options.usageRollup === undefined ? undefined : async () => options.usageRollup,
+                  options.captureHours === undefined ? undefined : async () => options.captureHours,
+                ),
+              () => {},
+            );
+          },
         },
       },
-    },
-    dispose: async () => {},
-  });
+      dispose: async () => {},
+    };
+  };
 
   let turns = 0;
   /** How each model call was authorized: the lane's credential, never a bearer. */
   const modelCalls: { call: string; authorization: string | null; assertion: string | null }[] = [];
-  /** Every owner-token read of the pool, with the authorization it carried. */
-  const poolReads: { path: string; authorization: string | null }[] = [];
+  /** Each device usage read and how it was authorized. */
+  const usageReads: {
+    path: string;
+    assertion: string | null;
+    authorization: string | null;
+    sessions: number;
+  }[] = [];
+  const sessionOrder = new Map<string, number>();
+  let ownerReads = 0;
+  /** Every read of the pool's owner routes, with the authorization it carried. */
+  const poolReads: { path: string; session: string | null; authorization: string | null }[] = [];
   const pool = await listen(async (request, body) => {
-    const path = new URL(request.url!, "http://local").pathname;
-    if (path.startsWith("/pool/v1/"))
-      poolReads.push({ path, authorization: request.headers.authorization ?? null });
+    const url = new URL(request.url!, "http://local");
+    const path = url.pathname;
+    if (path.startsWith("/pool/v1/") && path !== nativeUsagePath)
+      poolReads.push({
+        path,
+        session: url.searchParams.get("session"),
+        authorization: request.headers.authorization ?? null,
+      });
     if (path === "/v1/models" || path === "/v1/chat/completions")
       modelCalls.push({
         call: `${request.method} ${path}`,
@@ -460,21 +523,44 @@ export async function harness(options: HarnessOptions = {}) {
         { data: (options.models ?? ["model-a"]).map((id) => ({ id })) },
         { headers },
       );
+    if (path === nativeUsagePath) {
+      const ids = url.searchParams.getAll("session");
+      usageReads.push({
+        path: url.pathname + url.search,
+        assertion: (request.headers[nativeModelHeader] as string | undefined) ?? null,
+        authorization: request.headers.authorization ?? null,
+        sessions: ids.length,
+      });
+      if (options.usageStatus) return new Response(null, { status: options.usageStatus });
+      const sessions = ids.map((session) => {
+        if (!sessionOrder.has(session)) sessionOrder.set(session, sessionOrder.size);
+        const index = sessionOrder.get(session)!;
+        return { session, complete: true, records: options.usage?.(index) ?? [ownRow(index)] };
+      });
+      return Response.json({ key: deviceKey, sessions });
+    }
     if (path === "/pool/v1/pool")
       return Response.json({ isOwner: true, accounts: [{ id: "test-1" }, { id: "test-2" }] });
+    if (path === "/pool/v1/usage" && options.ownerFailure?.(ownerReads++))
+      return new Response(null, { status: 500 });
     if (path === "/pool/v1/usage")
       return Response.json({
-        records: [
-          {
-            id: crypto.randomUUID(),
-            account: options.usageAccount ?? "test-1",
-            status: "success",
-            at: new Date().toISOString(),
-          },
-        ],
+        records: Array.from({ length: options.ownerRows ?? 1 }, () => ({
+          id: crypto.randomUUID(),
+          account: options.usageAccount ?? "test-1",
+          status: "success",
+          at: new Date().toISOString(),
+        })),
       });
     if (path === "/v1/chat/completions") {
       const index = turns++;
+      if (options.capped?.(index))
+        return Response.json(
+          {
+            error: { message: "cap", type: "rate_limit_error", code: "user_period_limit_exceeded" },
+          },
+          { status: 429 },
+        );
       const quota = options.quota?.((JSON.parse(body) as { model: string }).model);
       // Home's code as the message's prefix under the generic 429, as smoke-models.ts reads it.
       if (quota)
@@ -516,6 +602,8 @@ export async function harness(options: HarnessOptions = {}) {
     acceptance: {
       client: new PoolAcceptanceClient({ origin: pool.origin, delay: async () => {} }),
       credential: async (method, path) => ({ [nativeModelHeader]: `assertion ${method} ${path}` }),
+      // As in production: only the test pool's device ever holds an owner token.
+      device: options.deviceOnly ? ("release" as const) : ("test" as const),
       ...(options.deviceOnly ? {} : { access: { token: "pool-token", owner: "acceptance" } }),
     },
     sleep: async () => {},
@@ -525,8 +613,11 @@ export async function harness(options: HarnessOptions = {}) {
   return {
     deps,
     modelCalls,
+    turns: () => turns,
+    usageReads,
     poolReads,
     actions,
+    opened,
     crashes,
     retires,
     checks,
