@@ -292,3 +292,53 @@ test("a reply lost after the pool was created resumes without a second pool", ()
       assert.equal("verification" in resumed && resumed.verification?.ok, true);
     }),
   ));
+
+/** Steps whose named step fails once before calling the product, as a crash before any write. */
+const stoppingAt = (steps: AcceptancePoolSteps, stop: string): AcceptancePoolSteps => {
+  let stopped = false;
+  return {
+    ...steps,
+    run: (step, context) => {
+      if (step === stop && !stopped) {
+        stopped = true;
+        return Effect.fail(new Error("stopped before the step"));
+      }
+      return steps.run(step, context);
+    },
+  };
+};
+
+test("a resumed setup re-checks, at each step, that nothing it did not create has appeared", () =>
+  run(
+    Effect.gen(function* () {
+      yield* operationSchema;
+      const foreignPool = {
+        app: "app_foreign",
+        request: "r",
+        name: "acceptance-foreign",
+        owner: "acceptance",
+        primary: true,
+        account: null,
+        live: true,
+      };
+      // Stopped before create; another pool appears; the resumed create refuses.
+      const before = fixtureProduct();
+      const beforeSteps = stoppingAt(makeAcceptancePoolSteps(before.product), "create");
+      const planned = yield* dryRun(beforeSteps);
+      assert.equal(refusal(yield* Effect.flip(apply(beforeSteps, planned))), "step_failed");
+      before.state.pools.push(foreignPool);
+      assert.equal(refusal(yield* Effect.flip(apply(beforeSteps, planned))), "identity_holds_pool");
+      before.state.pools.pop();
+      before.state.apps.push({ id: "app_stray", name: "Something" });
+      assert.equal(refusal(yield* Effect.flip(apply(beforeSteps, planned))), "unrecorded_app");
+      assert.ok(!before.calls.includes("createPool"));
+      // Stopped before the provider; a stray app appears; the resumed install refuses.
+      const middle = fixtureProduct();
+      const middleSteps = stoppingAt(makeAcceptancePoolSteps(middle.product), "provider");
+      const middlePlan = yield* dryRun(middleSteps);
+      assert.equal(refusal(yield* Effect.flip(apply(middleSteps, middlePlan))), "step_failed");
+      middle.state.apps.push({ id: "app_stray", name: "Something" });
+      assert.equal(refusal(yield* Effect.flip(apply(middleSteps, middlePlan))), "unrecorded_app");
+      assert.ok(!middle.calls.includes("installProvider"));
+    }),
+  ));

@@ -82,6 +82,9 @@ test("ensure-identity refuses every shape that is not an inert identity, and wri
       Effect.gen(function* () {
         const sql = yield* schema;
         yield* sql.unsafe(statement);
+        // Only the shape itself may refuse, not a job its own insert queued.
+        yield* sql`delete from hosted_provisioning`;
+        yield* sql`delete from cloud_welcome_email`;
         const before = yield* identityRows;
         assert.equal(refusal(yield* Effect.flip(inspectIdentity)), "identity_conflict", shape);
         assert.equal(refusal(yield* Effect.flip(ensureIdentity)), "identity_conflict", shape);
@@ -94,6 +97,7 @@ test("ensure-identity refuses every shape that is not an inert identity, and wri
       yield* ensureIdentity;
       yield* sql`insert into "user" (id, name, email, "emailVerified") values ('person', 'P', 'p@example.invalid', true)`;
       yield* sql`insert into member (id, "organizationId", "userId", role) values ('m2', 'acceptance', 'person', 'member')`;
+      yield* sql`delete from hosted_provisioning`;
       assert.equal(
         refusal(yield* Effect.flip(ensureIdentity)),
         "identity_conflict",
@@ -103,6 +107,7 @@ test("ensure-identity refuses every shape that is not an inert identity, and wri
       yield* sql`delete from hosted_provisioning`;
       yield* sql`insert into organization (id, name, slug) values ('team', 'Team', 'team')`;
       yield* sql`insert into member (id, "organizationId", "userId", role) values ('m3', 'team', 'acceptance', 'member')`;
+      yield* sql`delete from hosted_provisioning`;
       assert.equal(
         refusal(yield* Effect.flip(ensureIdentity)),
         "identity_conflict",
@@ -259,8 +264,14 @@ test("no sign-in method opens a session for the identity, and no account can be 
       email: acceptanceIdentity.email,
     });
   verified(acceptanceIdentity.user);
-  db.account!.push({ ...control, id: "copied-credential", userId: acceptanceIdentity.user });
+  db.account!.push({
+    ...control,
+    id: "copied-credential",
+    userId: acceptanceIdentity.user,
+    accountId: acceptanceIdentity.user,
+  });
   const refused = await signIn(acceptanceIdentity.email);
-  assert.notEqual(refused.status, 200);
+  // The session hook's own refusal, not a wrong password: the same credential signs the control in.
+  assert.equal(refused.status, 403);
   assert.equal(db.session!.filter((row) => row.userId === acceptanceIdentity.user).length, 0);
 });

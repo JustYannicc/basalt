@@ -334,3 +334,83 @@ test("an interrupted teardown resumes, and a replayed teardown repeats nothing",
       assert.equal(fixture.calls.filter((call) => call === "removeApp").length, 2);
     }),
   ));
+
+test("teardown refuses a pool record that is not the setup's, another live pool, or a provider it did not record", () =>
+  run(
+    Effect.gen(function* () {
+      yield* operationSchema;
+      const shapes = [
+        [
+          "a record with another owner",
+          "pool_state",
+          (f: ReturnType<typeof fixtureProduct>) => {
+            f.state.pools[0] = { ...f.state.pools[0]!, owner: "someone" };
+          },
+        ],
+        [
+          "another live pool",
+          "unrecorded_app",
+          (f: ReturnType<typeof fixtureProduct>) => {
+            f.state.pools.push({ ...f.state.pools[0]!, app: "app_other_pool", request: "other" });
+          },
+        ],
+        [
+          "a provider it did not record",
+          "unrecorded_app",
+          (f: ReturnType<typeof fixtureProduct>) => {
+            const index = f.state.apps.findIndex((app) => app.name === "Custom endpoint");
+            f.state.apps[index] = { id: "app_other_custom", name: "Custom endpoint" };
+          },
+        ],
+      ] as const;
+      for (const [shape, reason, change] of shapes) {
+        const fixture = fixtureProduct();
+        const steps = makeAcceptancePoolSteps(fixture.product);
+        const planned = yield* setupDry(steps);
+        yield* setupApply(steps, planned);
+        change(fixture);
+        fixture.calls.length = 0;
+        assert.equal(
+          refusal(yield* Effect.flip(teardownDry(steps, planned.planSha256))),
+          reason,
+          shape,
+        );
+        assert.deepEqual(fixture.calls, [], `${shape}: nothing removed`);
+      }
+    }),
+  ));
+
+test("a link that appears on the provider app while the teardown runs stops it before the provider is removed", () =>
+  run(
+    Effect.gen(function* () {
+      yield* operationSchema;
+      const fixture = fixtureProduct();
+      const steps = makeAcceptancePoolSteps(fixture.product);
+      const planned = yield* setupDry(steps);
+      yield* setupApply(steps, planned);
+      const provider = fixture.state.apps.find((app) => app.name === "Custom endpoint")!.id;
+      const racing: AcceptancePoolSteps = {
+        ...steps,
+        run: (step, context) =>
+          Effect.tap(steps.run(step, context), () =>
+            Effect.sync(() => {
+              if (step === "disconnect:b")
+                fixture.state.links.push({
+                  app: provider,
+                  requirement: "custom",
+                  account: "acc_other",
+                });
+            }),
+          ),
+      };
+      const teardown = yield* teardownDry(steps, planned.planSha256);
+      assert.equal(
+        refusal(yield* Effect.flip(teardownApply(racing, planned.planSha256, teardown))),
+        "unrecorded_link",
+      );
+      assert.ok(
+        fixture.state.apps.some((app) => app.id === provider),
+        "the provider is not removed",
+      );
+    }),
+  ));

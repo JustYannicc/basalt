@@ -596,6 +596,21 @@ test("the receipt claim itself refuses a live lease and a repeated id without wr
       assert.equal((yield* claim("b", acceptanceLeaseMs)).outcome, "resumed");
       const [row] = yield* receipts;
       assert.deepEqual(row?.verification.envelopes, ["a", "b"]);
+      // While b holds a live lease, a's writes are refused and b's go through.
+      const write = (envelope: string) =>
+        updateReceipt({
+          planSha256: "2".repeat(64),
+          kind: "setup",
+          release: "release-a",
+          observedSha256: "3".repeat(64),
+          envelope,
+          now: acceptanceLeaseMs + 1,
+          change: (state) => ({ ...state, steps: { ...state.steps, [envelope]: true } }),
+        });
+      assert.equal(refusal(yield* Effect.flip(write("a"))), "operation_busy");
+      yield* write("b");
+      const [after] = yield* receipts;
+      assert.deepEqual(Object.keys(after?.verification.steps ?? {}), ["b"]);
     }),
   ));
 
@@ -654,5 +669,87 @@ test("nothing the route runs sees an enabled analytics sink, even when the reque
       assert.equal(planned.status, 200);
       assert.deepEqual(seen, [false]);
       assert.deepEqual(captured, []);
+    }),
+  ));
+
+test("a setup names exactly the two profiles, and an apply on another database is stale", () =>
+  runner(
+    Effect.gen(function* () {
+      yield* database;
+      const steps = fixtureSteps([]);
+      const one = { ...setupRequest, accounts: [setupRequest.accounts[0]] };
+      assert.equal(refusal(yield* Effect.flip(dryRun(steps, { request: one }))), "request_invalid");
+      const twice = {
+        ...setupRequest,
+        accounts: [setupRequest.accounts[0], setupRequest.accounts[0]],
+      };
+      assert.equal(
+        refusal(yield* Effect.flip(dryRun(steps, { request: twice }))),
+        "request_invalid",
+      );
+      const planned = yield* dryRun(steps);
+      const elsewhere = settings({
+        databaseOrigin: { host: "other-db.example.test", port: 5432, database: "postgres" },
+      });
+      assert.equal(
+        refusal(yield* Effect.flip(apply(applyOf(planned), steps, elsewhere))),
+        "stale_plan",
+      );
+      assert.equal((yield* receipts).length, 0);
+    }),
+  ));
+
+test("a receipt refuses another release's claim and bounds the envelopes it names", () =>
+  runner(
+    Effect.gen(function* () {
+      yield* database;
+      const claim = (envelope: string, now: number, release = "release-a") =>
+        claimReceipt({
+          planSha256: "4".repeat(64),
+          kind: "setup",
+          release,
+          observedSha256: "5".repeat(64),
+          request: setupRequest,
+          data: {},
+          envelope,
+          now,
+          guard: Effect.void,
+          fresh: Effect.void,
+        });
+      yield* claim("e0", 0);
+      assert.equal(
+        refusal(yield* Effect.flip(claim("x", acceptanceLeaseMs, "release-b"))),
+        "receipt_mismatch",
+      );
+      for (let index = 1; index < 64; index++) yield* claim(`e${index}`, index * acceptanceLeaseMs);
+      assert.equal(
+        refusal(yield* Effect.flip(claim("e64", 64 * acceptanceLeaseMs))),
+        "receipt_full",
+      );
+    }),
+  ));
+
+test("a teardown waits out a setup that still holds its lease", () =>
+  runner(
+    Effect.gen(function* () {
+      const sql = yield* database;
+      const steps = fixtureSteps([], new Set(["third"]));
+      const planned = yield* dryRun(steps);
+      assert.equal(refusal(yield* Effect.flip(apply(applyOf(planned), steps))), "step_failed");
+      yield* sql`update private_production_ops_receipts set verification = jsonb_set(verification,
+        '{lease}', ${JSON.stringify({ envelope: "holder", until: acceptanceLeaseMs })}::jsonb)`;
+      const teardown = runAcceptancePool(
+        settings(),
+        signed({
+          kind: "teardown",
+          action: "dry-run",
+          request: { setup: planned.planSha256 },
+          recipient,
+        }),
+        steps,
+      );
+      assert.equal(refusal(yield* Effect.flip(teardown)), "operation_busy");
+      yield* TestClock.adjust(acceptanceLeaseMs);
+      yield* teardown;
     }),
   ));

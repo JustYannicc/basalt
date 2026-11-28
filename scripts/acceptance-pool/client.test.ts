@@ -172,7 +172,7 @@ const run = (env: Record<string, string>, response: unknown, status = 200) => {
   const fixture = join(directory, "fetch.mjs");
   writeFileSync(
     fixture,
-    `globalThis.fetch = async () => new Response(${JSON.stringify(JSON.stringify(response))}, {status: ${status}});`,
+    `import { appendFileSync } from "node:fs"; globalThis.fetch = async () => { appendFileSync(${JSON.stringify(join(directory, "fetched"))}, "x"); return new Response(${JSON.stringify(JSON.stringify(response))}, {status: ${status}}); };`,
   );
   const result = spawnSync(
     process.execPath,
@@ -210,11 +210,16 @@ const run = (env: Record<string, string>, response: unknown, status = 200) => {
   try {
     summary = readFileSync(join(directory, "step-summary"), "utf8");
   } catch {}
+  let fetched = 0;
+  try {
+    fetched = readFileSync(join(directory, "fetched"), "utf8").length;
+  } catch {}
   rmSync(directory, { recursive: true, force: true });
   return {
     result,
     files,
     summary,
+    fetched,
     everything: [...files, summary, result.stdout, result.stderr].join("\n"),
   };
 };
@@ -251,6 +256,7 @@ test("no file, summary or log line the driver writes holds the key or the origin
 test("the driver refuses any ref but main and any target but production or a rehearsal stage, before sending", () => {
   const offMain = run({ GITHUB_REF: "refs/heads/feature" }, {});
   assert.equal(offMain.result.status, 1);
+  assert.equal(offMain.fetched, 0, "nothing is sent from another ref");
   for (const stage of ["https://evil.example.test", "test-rehearsal-1", "test-pr-1", ""]) {
     const refused = run({ ACCEPTANCE_TARGET: stage }, {});
     assert.equal(refused.result.status, 1, stage);
