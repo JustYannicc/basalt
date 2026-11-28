@@ -103,13 +103,12 @@ test("a fleet cell's first start that never attested is stopped gracefully", asy
   assert.equal(f.ctx.container.running, false);
 });
 
-test("a fleet cell's first start that attested is fenced but never stopped, though the stop was asked for", async (context) => {
-  // The same start as the one above, which is stopped, except that it attested.
-  const { f, answer } = await abandoned(context, "runtime", "initial-start", true);
-  assert.deepEqual(answer, { stopped: false });
+test("a fleet cell's first start that attested is stopped gracefully too, as its fence leaves it nothing to serve", async (context) => {
+  // The same start as the one above, except that it attested before the fence.
+  const { f } = await abandoned(context, "runtime", "initial-start", true);
   const store = new RuntimeWitnessStore(f.ctx.storage, f.env.POOL_DEPLOYMENT_KEY!);
+  assert.ok((await store.retained(f.target.slotId))?.attestation, "the start never attested");
   assert.equal(await store.abandoned(f.target.slotId), true, "the fence didn't land");
-  assert.deepEqual(f.calls.signals, [], "an attested start was stopped");
-  assert.equal(f.calls.destroy, 0);
-  assert.equal(f.ctx.container.running, true);
+  assert.deepEqual(f.calls.signals, [15], "an attested start was spared");
+  assert.equal(f.ctx.container.running, false);
 });

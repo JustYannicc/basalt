@@ -525,6 +525,18 @@ export class RuntimeEndpoint {
       await this.store.put(proof.target, { ...record, attestation: proof });
     });
   }
+  /**
+   * Whether this slot's record holds its start's attestation, read from the record itself, so a
+   * fenced slot still answers. For the fleet inspect: it never fences, stops, starts or renews.
+   */
+  async attested(target: SlotTarget) {
+    this.bound(target);
+    const record = await this.store.retained(target.slotId);
+    return {
+      attested:
+        record?.attestation !== undefined && sameTarget(record.authorization.target, target),
+    };
+  }
   async ready(identity: SlotIdentity, fingerprint: string, imageInput: string) {
     const { record } = await this.store.read(identity);
     if (!record.attestation) throw new Error("Unattested active runtime");
@@ -627,8 +639,8 @@ export class RuntimeEndpoint {
   /**
    * Fences a fleet start its controller abandoned. Queued behind any start already running here, it
    * is durable before it answers, and from then on this slot is never admitted or started again, so
-   * a container it finds stopped can't come back. With `stop`, a container that a first start which
-   * never attested left running is then stopped, once (`RuntimeAbandonedStop`).
+   * a container it finds stopped can't come back. With `stop`, which its cell asks only for a first
+   * start that never activated, that start's container is then stopped, once (`RuntimeAbandonedStop`).
    */
   abandonStart(target: SlotTarget, stop = false) {
     return this.serialize(async () => {
