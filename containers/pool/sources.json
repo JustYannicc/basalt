@@ -361,8 +361,8 @@
     },
     "node": {
       "repository": "router-for-me/CLIProxyAPI",
-      "commit": "47f18e4d82bd72f7d2b5ecf5ede93e4837a4625e",
-      "sha256": "a4f7b758ce83d4a2a344eb60169838b9c2046168c569a1e85c0b79b9a9c517e4",
+      "commit": "dbe641f286a489ecb39e3c041c554371e6add864",
+      "sha256": "72d43359b3896b7f77cbf6cc1bafb5a16cf99aae5f6246a4a4ae7447a9ca23f7",
       "patches": [
         {
           "identity": "cliproxy-node-metadata-only-diagnostics",
