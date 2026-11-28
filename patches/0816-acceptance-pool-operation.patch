@@ -81,18 +81,21 @@ index e26a1fb..a70755f 100644
        if (current === undefined) return yield* new BillingUnavailable();
 diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/cloud.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/cloud.ts
 new file mode 100644
-index 0000000..9202fca
+index 0000000..01e1a36
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/cloud.ts
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,75 @@
 +import {
 +  acceptanceMembership,
 +  acceptanceState,
 +  createAcceptancePool,
 +  createCustomAccount,
 +  customProviderName,
++  disconnectAcceptanceAccount,
 +  installCustomProvider,
 +  linkCustomAccount,
++  removeAcceptanceApp,
++  unlinkCustomAccount,
 +} from "@executor-js/hosted-server/acceptance-pool-product";
 +import { Config, Effect, Option, Redacted } from "effect";
 +import { productionOpsRelease } from "../../implementation/production-ops-release.ts";
@@ -115,6 +118,9 @@ index 0000000..9202fca
 +  | Needs<typeof installCustomProvider>
 +  | Needs<typeof createCustomAccount>
 +  | Needs<typeof linkCustomAccount>
++  | Needs<typeof unlinkCustomAccount>
++  | Needs<typeof disconnectAcceptanceAccount>
++  | Needs<typeof removeAcceptanceApp>
 +  | Needs<typeof acceptanceMembership>;
 +
 +const steps = makeAcceptancePoolSteps<ProductNeeds>({
@@ -124,6 +130,9 @@ index 0000000..9202fca
 +  providerName: customProviderName,
 +  createAccount: createCustomAccount,
 +  link: linkCustomAccount,
++  unlink: unlinkCustomAccount,
++  disconnect: disconnectAcceptanceAccount,
++  removeApp: removeAcceptanceApp,
 +  membership: acceptanceMembership,
 +});
 +
@@ -658,6 +667,105 @@ index 0000000..63dd29b
 +      return yield* refuse("stale_plan");
 +    return { plan, planSha256: operation.planSha256 };
 +  });
+diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/product.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/product.ts
+new file mode 100644
+index 0000000..cf3b18f
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/product.ts
+@@ -0,0 +1,93 @@
++import { refuse, type Json, type StepContext } from "@executor-js/hosted-server/acceptance-pool";
++import { Effect, Schema } from "effect";
++import { canonical, sha256 } from "../production-ops/crypto.ts";
++import { upstreamProfiles } from "./request.ts";
++
++/** The acceptance organization's pools, apps, links and accounts, as the product reads them. */
++export interface AcceptanceState {
++  readonly pools: ReadonlyArray<{
++    readonly app: string;
++    readonly request: string | null;
++    readonly name: string | null;
++    readonly owner: string | null;
++    readonly primary: boolean | null;
++    /** The pool's token account, which its record names. */
++    readonly account: string | null;
++    readonly live: boolean;
++  }>;
++  readonly apps: ReadonlyArray<{ readonly id: string; readonly name: string }>;
++  readonly links: ReadonlyArray<{
++    readonly app: string;
++    readonly requirement: string;
++    readonly account: string;
++  }>;
++  readonly accounts: readonly string[];
++  readonly access: ReadonlyArray<{
++    readonly app: string;
++    readonly audience: string | null;
++    readonly creator: string | null;
++    readonly groups: number;
++  }>;
++}
++
++/** The product calls the steps make, each run by the tools service as the acceptance identity. */
++export interface AcceptanceProduct<R> {
++  readonly state: Effect.Effect<AcceptanceState, unknown, R>;
++  readonly createPool: (name: string, requestId: string) => Effect.Effect<string, unknown, R>;
++  readonly installProvider: Effect.Effect<string, unknown, R>;
++  readonly providerName: string;
++  readonly createAccount: (input: {
++    readonly app: string;
++    readonly creation: string;
++    readonly method: string;
++    readonly label: string;
++    readonly fields: { readonly baseUrl: string; readonly models: string; readonly token: string };
++  }) => Effect.Effect<string, unknown, R>;
++  readonly link: (pool: string, account: string) => Effect.Effect<void, unknown, R>;
++  readonly unlink: (pool: string, account: string) => Effect.Effect<void, unknown, R>;
++  readonly disconnect: (account: string) => Effect.Effect<void, unknown, R>;
++  readonly removeApp: (app: string) => Effect.Effect<void, unknown, R>;
++  readonly membership: (
++    pool: string,
++  ) => Effect.Effect<
++    { readonly native: boolean; readonly accounts: readonly string[] },
++    unknown,
++    R
++  >;
++}
++
++/** The ids a setup plan fixes when it is made, so a resumed apply reuses every one of them. */
++export const SetupData = Schema.Struct({
++  pool: Schema.String,
++  requestId: Schema.String,
++  accounts: Schema.Array(
++    Schema.Struct({
++      profile: Schema.Literals(upstreamProfiles),
++      method: Schema.Literals(["anthropic", "openai"]),
++      models: Schema.String,
++      creation: Schema.String,
++    }),
++  ),
++});
++export type SetupData = typeof SetupData.Type;
++export const setupData = (data: Json) =>
++  Schema.decodeUnknownEffect(SetupData)(data).pipe(Effect.mapError(() => refuse("stale_plan")));
++
++/** The account id the product derives from a creation id. */
++export const accountOf = (creation: string) => `acc_${creation.toLowerCase()}`;
++
++const Recorded = Schema.Struct({ app: Schema.String });
++const RecordedAccount = Schema.Struct({ account: Schema.String });
++export const recorded = (progress: StepContext["progress"], step: string) =>
++  Schema.decodeUnknownOption(Recorded)(progress[step]);
++export const recordedAccount = (progress: StepContext["progress"], step: string) =>
++  Schema.decodeUnknownOption(RecordedAccount)(progress[step]);
++
++/** Every account a setup has recorded so far, in profile order. */
++export const recordedAccounts = (progress: StepContext["progress"]) =>
++  upstreamProfiles.flatMap((profile) => {
++    const value = recordedAccount(progress, `account:${profile}`);
++    return value._tag === "Some" ? [value.value.account] : [];
++  });
++
++export const digest = (value: unknown) => sha256(`${canonical(value)}\n`);
 diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/receipt.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/receipt.ts
 new file mode 100644
 index 0000000..1baa37f
@@ -891,7 +999,7 @@ index 0000000..1baa37f
 +  });
 diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/request.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/request.ts
 new file mode 100644
-index 0000000..12067b8
+index 0000000..7040eab
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/request.ts
 @@ -0,0 +1,51 @@
@@ -930,9 +1038,9 @@ index 0000000..12067b8
 +    );
 +    if (!acceptancePoolName.test(setup.pool)) return yield* refuse("name_pattern");
 +    const profiles = new Set(setup.accounts.map((account) => account.profile));
++    // Exactly the two test accounts, one per profile.
 +    if (
-+      setup.accounts.length === 0 ||
-+      setup.accounts.length > upstreamProfiles.length ||
++      setup.accounts.length !== upstreamProfiles.length ||
 +      profiles.size !== setup.accounts.length
 +    )
 +      return yield* refuse("request_invalid");
@@ -948,11 +1056,12 @@ index 0000000..12067b8
 +  kind === "setup" ? Effect.asVoid(setupRequest(request)) : Effect.asVoid(teardownRequest(request));
 diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/runner.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/runner.ts
 new file mode 100644
-index 0000000..3ad6eac
+index 0000000..dacd689
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/runner.ts
-@@ -0,0 +1,279 @@
+@@ -0,0 +1,303 @@
 +import {
++  acceptanceIdentity,
 +  AcceptancePoolRefused,
 +  refuse,
 +  type AcceptanceKind,
@@ -1050,6 +1159,22 @@ index 0000000..3ad6eac
 +    ? Effect.fail(error)
 +    : Effect.fail(new AcceptancePoolRefused({ reason: "step_failed", step }));
 +
++/**
++ * The receipt as its readers see it, under names they rely on: the operation, the organization,
++ * whether it was applied, and what the steps name (the pool app and its accounts).
++ */
++const receiptOf = <R>(
++  steps: AcceptancePoolSteps<R>,
++  kind: AcceptanceKind,
++  completed: boolean,
++  stepContext: StepContext,
++) => ({
++  migration: acceptanceMigration(kind),
++  organization: acceptanceIdentity.organization,
++  status: completed ? ("applied" as const) : ("incomplete" as const),
++  ...(steps.describe(stepContext) as Record<string, Json>),
++});
++
 +const checksPass = (verification: Verification) =>
 +  verification.ok && Object.values(verification.checks).every(Boolean);
 +
@@ -1087,12 +1212,14 @@ index 0000000..3ad6eac
 +              Effect.flatMap((request) => recordedSetup(request.setup)),
 +            )
 +          : undefined;
-+      const verification = yield* steps.verify(context(settings, kind, state.value, setup));
++      const stepContext = context(settings, kind, state.value, setup);
++      const verification = yield* steps.verify(stepContext);
 +      return {
 +        action: "verify" as const,
 +        kind,
 +        planSha256: operation.planSha256,
 +        completed: state.value.completed,
++        receipt: receiptOf(steps, kind, state.value.completed, stepContext),
 +        verification,
 +      };
 +    }
@@ -1177,6 +1304,7 @@ index 0000000..3ad6eac
 +        planSha256,
 +        repeated: true,
 +        resumed: false,
++        receipt: receiptOf(steps, kind, true, context(settings, kind, claim.state, undefined)),
 +        verification: claim.state.verification,
 +      };
 +
@@ -1216,10 +1344,13 @@ index 0000000..3ad6eac
 +        lease: null,
 +      }));
 +      if (!passed) return yield* refuse("verification_failed");
-+      return verification;
++      return {
++        verification,
++        receipt: receiptOf(steps, kind, true, context(settings, kind, state, setup)),
++      };
 +    });
 +    // A stopped apply gives its lease back, so a retry need not wait for it to run out.
-+    const verification = yield* work.pipe(
++    const { verification, receipt } = yield* work.pipe(
 +      Effect.tapError(() => update((current) => ({ ...current, lease: null })).pipe(Effect.ignore)),
 +    );
 +    return {
@@ -1228,93 +1359,38 @@ index 0000000..3ad6eac
 +      planSha256,
 +      repeated: false,
 +      resumed: claim.outcome === "resumed",
++      receipt,
 +      verification,
 +    };
 +  });
-diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/steps.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/steps.ts
+diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/setup.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/setup.ts
 new file mode 100644
-index 0000000..b4e99b9
+index 0000000..0ede1c6
 --- /dev/null
-+++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/steps.ts
-@@ -0,0 +1,272 @@
++++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/setup.ts
+@@ -0,0 +1,212 @@
 +import {
 +  refuse,
-+  type AcceptancePoolSteps,
 +  type Json,
 +  type PlannedWrite,
 +  type StepContext,
 +} from "@executor-js/hosted-server/acceptance-pool";
-+import { Effect, Schema } from "effect";
-+import { canonical, sha256 } from "../production-ops/crypto.ts";
++import { Effect } from "effect";
++import { canonical } from "../production-ops/crypto.ts";
 +import { ensureIdentity, inspectIdentity, verifyIdentity } from "./identity.ts";
-+import { setupRequest, upstreamProfiles } from "./request.ts";
++import {
++  accountOf,
++  digest,
++  recorded,
++  recordedAccount,
++  recordedAccounts,
++  setupData,
++  type AcceptanceProduct,
++  type AcceptanceState,
++  type SetupData,
++} from "./product.ts";
++import { setupRequest } from "./request.ts";
 +
-+/** The organization's pools, apps and links, as the product reads them. */
-+export interface AcceptanceState {
-+  readonly pools: ReadonlyArray<{
-+    readonly app: string;
-+    readonly request: string | null;
-+    readonly name: string | null;
-+    readonly owner: string | null;
-+    readonly primary: boolean | null;
-+    readonly live: boolean;
-+  }>;
-+  readonly apps: ReadonlyArray<{ readonly id: string; readonly name: string }>;
-+  readonly links: ReadonlyArray<{
-+    readonly app: string;
-+    readonly requirement: string;
-+    readonly account: string;
-+  }>;
-+}
-+
-+/** The product calls the steps make, each run as the acceptance identity by the tools service. */
-+export interface AcceptanceProduct<R> {
-+  readonly state: Effect.Effect<AcceptanceState, unknown, R>;
-+  readonly createPool: (name: string, requestId: string) => Effect.Effect<string, unknown, R>;
-+  readonly installProvider: Effect.Effect<string, unknown, R>;
-+  readonly providerName: string;
-+  readonly createAccount: (input: {
-+    readonly app: string;
-+    readonly creation: string;
-+    readonly method: string;
-+    readonly label: string;
-+    readonly fields: { readonly baseUrl: string; readonly models: string; readonly token: string };
-+  }) => Effect.Effect<string, unknown, R>;
-+  readonly link: (pool: string, account: string) => Effect.Effect<void, unknown, R>;
-+  readonly membership: (
-+    pool: string,
-+  ) => Effect.Effect<
-+    { readonly native: boolean; readonly accounts: readonly string[] },
-+    unknown,
-+    R
-+  >;
-+}
-+
-+/** The ids a setup plan fixes when it is made, so a resumed apply reuses every one of them. */
-+const SetupData = Schema.Struct({
-+  pool: Schema.String,
-+  requestId: Schema.String,
-+  accounts: Schema.Array(
-+    Schema.Struct({
-+      profile: Schema.Literals(upstreamProfiles),
-+      method: Schema.Literals(["anthropic", "openai"]),
-+      models: Schema.String,
-+      creation: Schema.String,
-+    }),
-+  ),
-+});
-+type SetupData = typeof SetupData.Type;
-+const setupData = (data: Json) =>
-+  Schema.decodeUnknownEffect(SetupData)(data).pipe(Effect.mapError(() => refuse("stale_plan")));
-+
-+const Recorded = Schema.Struct({ app: Schema.String });
-+const RecordedAccount = Schema.Struct({ account: Schema.String });
-+const recorded = (progress: StepContext["progress"], step: string) =>
-+  Schema.decodeUnknownOption(Recorded)(progress[step]);
-+const recordedAccount = (progress: StepContext["progress"], step: string) =>
-+  Schema.decodeUnknownOption(RecordedAccount)(progress[step]);
-+
-+const digest = (value: unknown) => sha256(`${canonical(value)}\n`);
 +const uuid = Effect.sync(() => crypto.randomUUID());
 +
 +const identityWrites = (observed: Readonly<Record<string, string>>): PlannedWrite[] =>
@@ -1328,24 +1404,19 @@ index 0000000..b4e99b9
 +    .filter(([key]) => observed[key] === "absent")
 +    .map(([, table, key]) => ({ store: "tools", table, key, action: "insert" }));
 +
-+const setupSteps = (data: Pick<SetupData, "accounts">) => [
++const setupStepNames = (data: Pick<SetupData, "accounts">) => [
 +  "identity",
 +  "create",
 +  "provider",
 +  ...data.accounts.flatMap((account) => [`account:${account.profile}`, `link:${account.profile}`]),
 +];
 +
-+/** Every account the setup has recorded so far. */
-+const recordedAccounts = (progress: StepContext["progress"]) =>
-+  upstreamProfiles.flatMap((profile) => {
-+    const value = recordedAccount(progress, `account:${profile}`);
-+    return value._tag === "Some" ? [value.value.account] : [];
-+  });
++/** The pool this setup created, found by the request id its plan fixed. */
++const ourPool = (state: AcceptanceState, data: SetupData) =>
++  state.pools.find((pool) => pool.request === data.requestId)?.app;
 +
-+export const makeAcceptancePoolSteps = <R>(
-+  product: AcceptanceProduct<R>,
-+): AcceptancePoolSteps<R> => {
-+  const inspectSetup = (request: Json) =>
++export const setupSteps = <R>(product: AcceptanceProduct<R>) => {
++  const inspect = (request: Json) =>
 +    Effect.gen(function* () {
 +      const parsed = yield* setupRequest(request);
 +      const identity = yield* inspectIdentity;
@@ -1356,43 +1427,42 @@ index 0000000..b4e99b9
 +      const accounts = [];
 +      for (const account of parsed.accounts) accounts.push({ ...account, creation: yield* uuid });
 +      const data = { pool: parsed.pool, requestId: yield* uuid, accounts };
++      const writes: PlannedWrite[] = [
++        ...identityWrites(identity),
++        { store: "tools", table: "executor_apps", key: parsed.pool, action: "insert" },
++        { store: "tools", table: "executor_apps", key: product.providerName, action: "insert" },
++        ...accounts.flatMap((account): PlannedWrite[] => [
++          {
++            store: "tools",
++            table: "executor_accounts",
++            key: accountOf(account.creation),
++            action: "insert",
++          },
++          {
++            store: "tools",
++            table: "hosted_app_account_links",
++            key: accountOf(account.creation),
++            action: "insert",
++          },
++        ]),
++        { store: "pool", table: "pool-directory-v1", key: parsed.pool, action: "call" },
++        { store: "home", table: "channel-group", key: parsed.pool, action: "call" },
++      ];
 +      return {
 +        observed: {
 +          ...identity,
 +          "acceptance.pools": digest(state.pools),
 +          "acceptance.apps": digest(state.apps),
 +          "acceptance.links": digest(state.links),
++          "acceptance.accounts": digest(state.accounts),
 +        },
-+        steps: setupSteps(data),
-+        writes: <PlannedWrite[]>[
-+          ...identityWrites(identity),
-+          { store: "tools", table: "executor_apps", key: parsed.pool, action: "insert" },
-+          { store: "tools", table: "executor_apps", key: product.providerName, action: "insert" },
-+          ...accounts.flatMap((account): PlannedWrite[] => [
-+            {
-+              store: "tools",
-+              table: "executor_accounts",
-+              key: `acc_${account.creation}`,
-+              action: "insert",
-+            },
-+            {
-+              store: "tools",
-+              table: "hosted_app_account_links",
-+              key: `acc_${account.creation}`,
-+              action: "insert",
-+            },
-+          ]),
-+          { store: "pool", table: "pool-directory-v1", key: parsed.pool, action: "call" },
-+          { store: "home", table: "channel-group", key: parsed.pool, action: "call" },
-+        ],
++        steps: setupStepNames(data),
++        writes,
 +        data,
 +      };
 +    });
 +
-+  const ourPool = (state: AcceptanceState, data: SetupData) =>
-+    state.pools.find((pool) => pool.request === data.requestId)?.app;
-+
-+  const runSetup = (step: string, context: StepContext) =>
++  const run = (step: string, context: StepContext) =>
 +    Effect.gen(function* () {
 +      const data = yield* setupData(context.data);
 +      if (step === "identity") return (yield* ensureIdentity) as Json;
@@ -1455,7 +1525,7 @@ index 0000000..b4e99b9
 +      return yield* refuse("pool_state");
 +    });
 +
-+  const verifySetup = (context: StepContext) =>
++  const verify = (context: StepContext) =>
 +    Effect.gen(function* () {
 +      const identity = yield* verifyIdentity;
 +      const data = yield* setupData(context.data);
@@ -1466,7 +1536,10 @@ index 0000000..b4e99b9
 +      const app = pool._tag === "Some" ? pool.value.app : undefined;
 +      const live = state.pools.filter((entry) => entry.live);
 +      const poolLinks = state.links.filter((link) => link.app === app);
-+      const membership = app === undefined ? undefined : yield* product.membership(app);
++      const membership =
++        app === undefined
++          ? undefined
++          : yield* product.membership(app).pipe(Effect.orElseSucceed(() => undefined));
 +      return {
 +        ...identity,
 +        onePool:
@@ -1480,6 +1553,8 @@ index 0000000..b4e99b9
 +          provider._tag === "Some" &&
 +          canonical(state.apps.map((entry) => entry.id).toSorted()) ===
 +            canonical([app, provider.value.app].toSorted()),
++        // Exactly two recorded test accounts, and nothing else linked but the pool's token.
++        twoAccounts: accounts.length === 2,
 +        poolLinks:
 +          poolLinks.filter((link) => link.requirement === "pool").length === 1 &&
 +          canonical(
@@ -1495,19 +1570,327 @@ index 0000000..b4e99b9
 +      };
 +    });
 +
-+  return {
-+    inspect: (kind, request) =>
-+      kind === "setup" ? inspectSetup(request) : Effect.fail(refuse("pool_state")),
-+    run: (step, context) =>
-+      context.kind === "setup" ? runSetup(step, context) : Effect.fail(refuse("pool_state")),
-+    verify: (context) =>
-+      context.kind === "setup"
-+        ? Effect.map(verifySetup(context), (checks) => ({
-+            ok: Object.values(checks).every(Boolean),
-+            checks,
-+          }))
-+        : Effect.fail(refuse("pool_state")),
++  /** What the setup receipt names: the pool app it created and its two accounts. */
++  const describe = (context: StepContext): Json => {
++    const pool = recorded(context.progress, "create");
++    return {
++      app: pool._tag === "Some" ? pool.value.app : null,
++      accounts: recordedAccounts(context.progress),
++    };
 +  };
++
++  return { inspect, run, verify, describe };
++};
+diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/steps.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/steps.ts
+new file mode 100644
+index 0000000..36d19d8
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/steps.ts
+@@ -0,0 +1,28 @@
++import { type AcceptancePoolSteps } from "@executor-js/hosted-server/acceptance-pool";
++import { Effect } from "effect";
++import type { AcceptanceProduct } from "./product.ts";
++import { setupSteps } from "./setup.ts";
++import { teardownSteps } from "./teardown.ts";
++
++export type { AcceptanceProduct, AcceptanceState } from "./product.ts";
++
++const checked = <E, R>(checks: Effect.Effect<Readonly<Record<string, boolean>>, E, R>) =>
++  Effect.map(checks, (result) => ({ ok: Object.values(result).every(Boolean), checks: result }));
++
++/** The steps the route runs, one set per plan kind. */
++export const makeAcceptancePoolSteps = <R>(
++  product: AcceptanceProduct<R>,
++): AcceptancePoolSteps<R> => {
++  const setup = setupSteps(product);
++  const teardown = teardownSteps(product);
++  return {
++    inspect: (kind, request, recorded) =>
++      kind === "setup" ? setup.inspect(request) : teardown.inspect(recorded),
++    run: (step, context) =>
++      context.kind === "setup" ? setup.run(step, context) : teardown.run(step, context),
++    verify: (context) =>
++      checked(context.kind === "setup" ? setup.verify(context) : teardown.verify(context)),
++    describe: (context) =>
++      context.kind === "setup" ? setup.describe(context) : teardown.describe(context),
++  };
++};
+diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/teardown.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/teardown.ts
+new file mode 100644
+index 0000000..8b7afb5
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/teardown.ts
+@@ -0,0 +1,271 @@
++import {
++  acceptanceIdentity,
++  acceptancePoolName,
++  refuse,
++  type Json,
++  type PlannedWrite,
++  type RecordedSetup,
++  type StepContext,
++} from "@executor-js/hosted-server/acceptance-pool";
++import { Effect, Schema } from "effect";
++import { inspectIdentity, verifyIdentity } from "./identity.ts";
++import {
++  accountOf,
++  digest,
++  recorded,
++  setupData,
++  type AcceptanceProduct,
++  type AcceptanceState,
++  type SetupData,
++} from "./product.ts";
++import { upstreamProfiles } from "./request.ts";
++
++/** What a teardown removes, fixed when it is planned. Null means it is already gone. */
++const TeardownData = Schema.Struct({
++  pool: Schema.NullOr(Schema.String),
++  provider: Schema.NullOr(Schema.String),
++  token: Schema.NullOr(Schema.String),
++  accounts: Schema.Array(
++    Schema.Struct({ profile: Schema.Literals(upstreamProfiles), id: Schema.String }),
++  ),
++});
++type TeardownData = typeof TeardownData.Type;
++const teardownData = (data: Json) =>
++  Schema.decodeUnknownEffect(TeardownData)(data).pipe(Effect.mapError(() => refuse("stale_plan")));
++
++/**
++ * Everything the setup created, found by the ids its plan fixed rather than only by what it
++ * recorded, so a setup that stopped before recording a step is still cleaned up. Anything in the
++ * organization that this setup did not create refuses the teardown.
++ */
++const targetsOf = (
++  state: AcceptanceState,
++  data: SetupData,
++  progress: StepContext["progress"],
++  providerName: string,
++) =>
++  Effect.gen(function* () {
++    const record = state.pools.find((pool) => pool.request === data.requestId);
++    if (
++      record !== undefined &&
++      (record.owner !== acceptanceIdentity.user ||
++        record.name !== data.pool ||
++        !acceptancePoolName.test(record.name ?? ""))
++    )
++      return yield* refuse("pool_state");
++    if (state.pools.some((pool) => pool.live && pool.request !== data.requestId))
++      return yield* refuse("unrecorded_app");
++    const pool = record?.live === true ? record.app : null;
++    const others = state.apps.filter((app) => app.id !== pool);
++    if (others.length > 1 || others.some((app) => app.name !== providerName))
++      return yield* refuse("unrecorded_app");
++    const provider = others[0]?.id ?? null;
++    const providerRecorded = recorded(progress, "provider");
++    if (
++      provider !== null &&
++      providerRecorded._tag === "Some" &&
++      providerRecorded.value.app !== provider
++    )
++      return yield* refuse("unrecorded_app");
++    const accounts = data.accounts.map((account) => ({
++      profile: account.profile,
++      id: accountOf(account.creation),
++    }));
++    const ids = new Set(accounts.map((account) => account.id));
++    const token = record?.account ?? null;
++    if (state.accounts.some((id) => !ids.has(id) && id !== token))
++      return yield* refuse("unrecorded_account");
++    if (
++      state.links.some(
++        (link) =>
++          !ids.has(link.account) &&
++          !(link.app === pool && link.requirement === "pool" && link.account === token),
++      )
++    )
++      return yield* refuse("unrecorded_link");
++    if (pool !== null) {
++      const access = state.access.find((entry) => entry.app === pool);
++      if (
++        access === undefined ||
++        access.audience !== "private" ||
++        access.creator !== acceptanceIdentity.user ||
++        access.groups !== 0
++      )
++        return yield* refuse("pool_state");
++    }
++    return {
++      pool,
++      provider,
++      token: token !== null && state.accounts.includes(token) ? token : null,
++      accounts,
++    } satisfies TeardownData;
++  });
++
++const teardownStepNames = (targets: TeardownData) => [
++  ...(targets.pool === null ? [] : targets.accounts.map((account) => `unlink:${account.profile}`)),
++  ...(targets.provider === null ? [] : ["remove-provider"]),
++  ...targets.accounts.map((account) => `disconnect:${account.profile}`),
++  ...(targets.pool === null ? [] : ["remove-pool"]),
++  ...(targets.token === null ? [] : ["disconnect-token"]),
++];
++
++export const teardownSteps = <R>(product: AcceptanceProduct<R>) => {
++  const inspect = (setup: RecordedSetup | undefined) =>
++    Effect.gen(function* () {
++      if (setup === undefined) return yield* refuse("setup_missing");
++      const data = yield* setupData(setup.data);
++      const identity = yield* inspectIdentity;
++      const state = yield* product.state;
++      const targets = yield* targetsOf(state, data, setup.progress, product.providerName);
++      const writes: PlannedWrite[] = [
++        ...(targets.pool === null
++          ? []
++          : targets.accounts.map((account): PlannedWrite => ({
++              store: "tools",
++              table: "hosted_app_account_links",
++              key: account.id,
++              action: "delete",
++            }))),
++        ...(targets.provider === null
++          ? []
++          : [
++              {
++                store: "tools",
++                table: "executor_apps",
++                key: targets.provider,
++                action: "delete",
++              } as const,
++            ]),
++        ...targets.accounts.map((account): PlannedWrite => ({
++          store: "tools",
++          table: "executor_accounts",
++          key: account.id,
++          action: "delete",
++        })),
++        ...(targets.pool === null
++          ? []
++          : [
++              {
++                store: "tools",
++                table: "executor_apps",
++                key: targets.pool,
++                action: "delete",
++              } as const,
++              {
++                store: "pool",
++                table: "pool-directory-v1",
++                key: targets.pool,
++                action: "call",
++              } as const,
++            ]),
++        ...(targets.token === null
++          ? []
++          : [
++              {
++                store: "tools",
++                table: "executor_accounts",
++                key: targets.token,
++                action: "delete",
++              } as const,
++            ]),
++      ];
++      return {
++        observed: {
++          ...identity,
++          "acceptance.pools": digest(state.pools),
++          "acceptance.apps": digest(state.apps),
++          "acceptance.links": digest(state.links),
++          "acceptance.accounts": digest(state.accounts),
++        },
++        steps: teardownStepNames(targets),
++        writes,
++        data: targets,
++      };
++    });
++
++  /** Each step acts only on a target its plan named, and does nothing once that target is gone. */
++  const run = (step: string, context: StepContext) =>
++    Effect.gen(function* () {
++      const targets = yield* teardownData(context.data);
++      const state = yield* product.state;
++      const ids = new Set(targets.accounts.map((account) => account.id));
++      const [kind, profile] = step.split(":");
++      const account = targets.accounts.find((entry) => entry.profile === profile);
++      if (kind === "unlink" && account !== undefined && targets.pool !== null) {
++        if (state.links.some((link) => link.app === targets.pool && link.account === account.id))
++          yield* product.unlink(targets.pool, account.id);
++        return { unlinked: account.id };
++      }
++      if (step === "remove-provider" && targets.provider !== null) {
++        if (state.apps.some((app) => app.id === targets.provider)) {
++          if (state.links.some((link) => link.app === targets.provider && !ids.has(link.account)))
++            return yield* refuse("unrecorded_link");
++          yield* product.removeApp(targets.provider);
++        }
++        return { removed: targets.provider };
++      }
++      if (kind === "disconnect" && account !== undefined) {
++        if (state.accounts.includes(account.id)) yield* product.disconnect(account.id);
++        return { disconnected: account.id };
++      }
++      if (step === "remove-pool" && targets.pool !== null) {
++        if (state.apps.some((app) => app.id === targets.pool)) {
++          // By now only the pool's own token link may remain.
++          if (
++            state.links.some(
++              (link) =>
++                link.app === targets.pool &&
++                !(link.requirement === "pool" && link.account === targets.token),
++            )
++          )
++            return yield* refuse("unrecorded_link");
++          yield* product.removeApp(targets.pool);
++        }
++        return { removed: targets.pool };
++      }
++      if (step === "disconnect-token" && targets.token !== null) {
++        if (state.accounts.includes(targets.token)) yield* product.disconnect(targets.token);
++        return { disconnected: targets.token };
++      }
++      return yield* refuse("pool_state");
++    });
++
++  const verify = (context: StepContext) =>
++    Effect.gen(function* () {
++      const identity = yield* verifyIdentity;
++      const targets = yield* teardownData(context.data);
++      const data = context.setup === undefined ? undefined : yield* setupData(context.setup.data);
++      const state = yield* product.state;
++      const gone = new Set(
++        [
++          targets.pool,
++          targets.provider,
++          targets.token,
++          ...targets.accounts.map((a) => a.id),
++        ].filter((id): id is string => id !== null),
++      );
++      const membership =
++        targets.pool === null
++          ? { native: false, accounts: [] }
++          : yield* product.membership(targets.pool).pipe(Effect.orElseSucceed(() => undefined));
++      return {
++        ...identity,
++        appsGone: !state.apps.some((app) => gone.has(app.id)),
++        noLivePool:
++          data !== undefined &&
++          !state.pools.some((pool) => pool.request === data.requestId && pool.live),
++        accountsGone: !state.accounts.some((id) => gone.has(id)),
++        linksGone: !state.links.some((link) => gone.has(link.app) || gone.has(link.account)),
++        membershipGone: membership !== undefined && !membership.native,
++      };
++    });
++
++  const describe = (context: StepContext): Json => {
++    const targets = Schema.decodeUnknownOption(TeardownData)(context.data);
++    return targets._tag === "Some"
++      ? { app: targets.value.pool, accounts: targets.value.accounts.map((account) => account.id) }
++      : { app: null, accounts: [] };
++  };
++
++  return { inspect, run, verify, describe };
 +};
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
 index 88d5697..4568ad9 100644
@@ -1556,10 +1939,10 @@ index bafb8cd..bd90491 100644
      "./hosted-routes/contracts": "./src/contracts/hosted-routes.ts",
 diff --git a/apps/hosted/server/src/contracts/acceptance-pool.ts b/apps/hosted/server/src/contracts/acceptance-pool.ts
 new file mode 100644
-index 0000000..ac8b103
+index 0000000..f74c51c
 --- /dev/null
 +++ b/apps/hosted/server/src/contracts/acceptance-pool.ts
-@@ -0,0 +1,124 @@
+@@ -0,0 +1,126 @@
 +import { Data, Schema, type Effect } from "effect";
 +import type { SqlClient } from "effect/sql";
 +
@@ -1683,13 +2066,15 @@ index 0000000..ac8b103
 +  readonly verify: (
 +    context: StepContext,
 +  ) => Effect.Effect<Verification, unknown, SqlClient.SqlClient | R>;
++  /** What the receipt names beside its kind and status: the pool app and its accounts. */
++  readonly describe: (context: StepContext) => Json;
 +}
 diff --git a/apps/hosted/server/src/implementation/acceptance-pool.ts b/apps/hosted/server/src/implementation/acceptance-pool.ts
 new file mode 100644
-index 0000000..7a0f014
+index 0000000..83b66e4
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/acceptance-pool.ts
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,181 @@
 +/**
 + * The product paths the signed acceptance-pool operation drives, each run as the acceptance
 + * identity exactly as an owner's own request would run it. Nothing here bypasses a product check:
@@ -1699,6 +2084,7 @@ index 0000000..7a0f014
 +import { AccountId, AppId } from "@executor-js/sdk/core";
 +import { Effect, Redacted, Schema } from "effect";
 +import { acceptanceIdentity } from "../contracts/acceptance-pool.ts";
++import { AccountTargets } from "../contracts/account-grants.ts";
 +import { CurrentUserId } from "../contracts/auth.ts";
 +import { HostedExecutor } from "../contracts/executor.ts";
 +import {
@@ -1706,7 +2092,8 @@ index 0000000..7a0f014
 +  OrganizationId,
 +  organizationOwner,
 +} from "../contracts/organization.ts";
-+import { appLinkSelection } from "./app-account-links.ts";
++import { disconnectAccount } from "./accounts.ts";
++import { appLinkSelection, unlink } from "./app-account-links.ts";
 +import { installApp } from "./apps.ts";
 +import { nativePoolMembership } from "./pool-membership.ts";
 +import { createPool } from "./pools.ts";
@@ -1745,6 +2132,12 @@ index 0000000..7a0f014
 +  requirement: Schema.String,
 +  account: Schema.String,
 +});
++const Access = Schema.Struct({
++  app: Schema.String,
++  audience: Schema.NullOr(Schema.String),
++  creator: Schema.NullOr(Schema.String),
++  groups: Schema.Number,
++});
 +
 +/** What the acceptance organization holds now: its pool records, its apps and their links. */
 +export const acceptanceState = Effect.gen(function* () {
@@ -1765,7 +2158,18 @@ index 0000000..7a0f014
 +    order by l.app, l.requirement, l.account`.pipe(
 +    Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Link))),
 +  );
-+  return { pools, apps, links };
++  const accounts = yield* sql`select id from executor_accounts where owner = ${acceptanceOwner}
++    order by id`.pipe(
++    Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ id: Schema.String })))),
++    Effect.map((rows) => rows.map((row) => row.id)),
++  );
++  const access = yield* sql`select a.id as app, x.audience, x.creator_id as creator,
++      (select count(*) from hosted_app_groups g where g.app_id = a.id)::int as groups
++    from executor_apps a left join hosted_app_access x on x.id = a.id
++    where a.owner = ${acceptanceOwner} order by a.id`.pipe(
++    Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Access))),
++  );
++  return { pools, apps, links, accounts, access };
 +});
 +export type AcceptanceState = Effect.Success<typeof acceptanceState>;
 +
@@ -1810,6 +2214,37 @@ index 0000000..7a0f014
 +      account: AccountId.make(account),
 +    }),
 +  ).pipe(Effect.asVoid);
++
++/** The pool's own unlink path, which removes the link and lets Home drop the mirrored account. */
++export const unlinkCustomAccount = (pool: string, account: string) =>
++  asAcceptance(
++    unlink("app", {
++      app: AppId.make(pool),
++      requirement: customRequirement,
++      account: AccountId.make(account),
++    }),
++  ).pipe(Effect.asVoid);
++
++/** The account's own deletion, which refuses an account still linked to an app for everyone. */
++export const disconnectAcceptanceAccount = (account: string) =>
++  asAcceptance(
++    disconnectAccount.pipe(
++      Effect.provideService(AccountTargets.delete, { account: AccountId.make(account) }),
++    ),
++  ).pipe(Effect.asVoid);
++
++/**
++ * The SDK's app removal, which runs the hosted lifecycle: links and the service install go with
++ * the app, and a pool's removal tells the pool Worker inside the same transaction. The dashboard
++ * also forgets MCP connections naming the app; the identity never has a session, so it has none.
++ */
++export const removeAcceptanceApp = (app: string) =>
++  asAcceptance(
++    Effect.gen(function* () {
++      const executor = yield* Effect.flatten(HostedExecutor);
++      yield* executor.apps.remove({ owner: acceptanceOwner, app: AppId.make(app) });
++    }),
++  );
 +
 +/** The read the pool Worker itself uses to decide a pool's accounts. */
 +export const acceptanceMembership = (pool: string) =>

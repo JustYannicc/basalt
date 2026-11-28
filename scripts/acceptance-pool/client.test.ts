@@ -263,3 +263,32 @@ test("the production target's host comes from the brand", async () => {
   assert.equal(targetOf("production").origin, `https://${brand.host}`);
   assert.throws(() => targetOf("test-rehearsal-3"), AcceptanceRefusal);
 });
+
+test("the public summary says what a receipt records without naming its pool or accounts", () => {
+  const read = run(
+    { ACCEPTANCE_ACTION: "verify", ACCEPTANCE_PLAN_SHA256: planSha256 },
+    {
+      action: "verify",
+      kind: "setup",
+      planSha256,
+      completed: true,
+      receipt: {
+        migration: "acceptance-pool-setup-v1",
+        organization: "acceptance",
+        status: "applied",
+        app: "app_synthetic_pool",
+        accounts: ["acc_synthetic_a", "acc_synthetic_b"],
+      },
+      verification: { ok: true, checks: { onePool: true } },
+    },
+  );
+  assert.equal(read.result.status, 0, read.result.stderr);
+  assert.match(read.summary, /"status": "applied"/u);
+  assert.match(read.summary, /"accounts": 2/u);
+  assert.ok(!read.summary.includes("app_synthetic_pool"));
+  assert.ok(!read.summary.includes("acc_synthetic_a"));
+  assert.ok(
+    read.files.some((file) => file.includes("app_synthetic_pool")),
+    "operation.json keeps the ids",
+  );
+});

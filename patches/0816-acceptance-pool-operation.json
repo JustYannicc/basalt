@@ -1,7 +1,7 @@
 {
   "identity": "basalt-acceptance-pool-operation",
   "file": "0816-acceptance-pool-operation.patch",
-  "content_sha256": "d1534e773390a9fd04b87a89b88d4e5d458114391397aae21248f3ae652e1e2c",
+  "content_sha256": "bcffda61ff960cda4edb942f7bf2519609b5ff0fe4744dae1f2445a972c89158",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

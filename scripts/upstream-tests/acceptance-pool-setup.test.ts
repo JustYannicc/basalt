@@ -188,6 +188,7 @@ test("an identity that already holds a pool, or owns an app the operation did no
         name: "acceptance-old",
         owner: "acceptance",
         primary: true,
+        account: null,
         live: true,
       });
       held.state.apps.push({ id: "app_old", name: "acceptance-old" });
@@ -209,6 +210,7 @@ test("an identity that already holds a pool, or owns an app the operation did no
         name: "acceptance-old",
         owner: "acceptance",
         primary: true,
+        account: null,
         live: false,
       });
       yield* dryRun(makeAcceptancePoolSteps(marked.product));
@@ -222,6 +224,7 @@ test("an identity that already holds a pool, or owns an app the operation did no
         name: "acceptance-late",
         owner: "acceptance",
         primary: true,
+        account: null,
         live: true,
       });
       assert.equal(refusal(yield* Effect.flip(apply(steps, planned))), "identity_holds_pool");

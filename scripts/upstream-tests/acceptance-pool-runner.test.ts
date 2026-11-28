@@ -101,6 +101,7 @@ const fixtureSteps = (log: string[], failOnce = new Set<string>()): AcceptancePo
       ok: true,
       checks: { allSteps: ["first", "second", "third"].every((step) => step in context.progress) },
     }),
+  describe: () => ({ app: null, accounts: [] }),
 });
 
 const signed = (operation: Operation, id: string = randomUUID()) => ({

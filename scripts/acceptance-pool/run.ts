@@ -15,6 +15,16 @@ const summarize = (text: string) => {
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, text);
 };
 
+function receiptSummary(receipt: unknown) {
+  if (typeof receipt !== "object" || receipt === null) return undefined;
+  const value = receipt as Record<string, unknown>;
+  return {
+    migration: value.migration,
+    status: value.status,
+    accounts: Array.isArray(value.accounts) ? value.accounts.length : undefined,
+  };
+}
+
 async function sourceRun(source: string): Promise<unknown> {
   if (
     !/^[1-9][0-9]{0,19}$/u.test(source) ||
@@ -93,6 +103,8 @@ try {
     repeated: result.repeated,
     resumed: result.resumed,
     completed: result.completed,
+    // Ids stay in operation.json; the public summary says only what was applied and how much.
+    receipt: receiptSummary(result.receipt),
     verification: result.verification,
   };
   write("summary.json", summary);

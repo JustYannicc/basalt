@@ -55,7 +55,9 @@ export const operationSchema = Effect.gen(function* () {
 /**
  * The product calls as the real paths behave on a repeat: the same request id returns the same
  * pool, the provider install reuses the organization's default, the same creation id returns the
- * same account and a repeated link changes nothing. `failAfter` makes one call commit and then
+ * same account and a repeated link or unlink changes nothing. Like the product, a disconnect
+ * refuses an account still linked to an app, an app's removal takes its links with it, and a
+ * removed pool leaves its record as a deletion marker. `failAfter` makes one call commit and then
  * fail, as a reply lost after the product wrote.
  */
 export function fixtureProduct(options: { readonly failAfter?: Set<string> } = {}) {
@@ -63,6 +65,8 @@ export function fixtureProduct(options: { readonly failAfter?: Set<string> } = {
     pools: [] as Array<AcceptanceState["pools"][number]>,
     apps: [] as Array<AcceptanceState["apps"][number]>,
     links: [] as Array<AcceptanceState["links"][number]>,
+    accounts: [] as string[],
+    access: [] as Array<AcceptanceState["access"][number]>,
   };
   const calls: string[] = [];
   const accounts: Array<{
@@ -78,38 +82,49 @@ export function fixtureProduct(options: { readonly failAfter?: Set<string> } = {
       if (options.failAfter?.delete(name)) return Effect.fail(new Error(`${name} reply lost`));
       return Effect.succeed(value);
     });
+  const addApp = (id: string, name: string) => {
+    state.apps.push({ id, name });
+    state.access.push({ app: id, audience: "private", creator: "acceptance", groups: 0 });
+  };
   const product: AcceptanceProduct<never> = {
     state: Effect.sync(() => structuredClone(state)),
     providerName: "Custom endpoint",
     createPool: (name, requestId) =>
       Effect.suspend(() => {
-        const existing = state.pools.find((pool) => pool.request === requestId);
+        const existing = state.pools.find((pool) => pool.request === requestId && pool.live);
         if (existing) return after("createPool", existing.app);
         const app = `app_pool_${++serial}`;
+        const token = `acc_token_${serial}`;
         state.pools.push({
           app,
           request: requestId,
           name,
           owner: "acceptance",
           primary: true,
+          account: token,
           live: true,
         });
-        state.apps.push({ id: app, name });
-        state.links.push({ app, requirement: "pool", account: `acc_token_${serial}` });
+        addApp(app, name);
+        state.accounts.push(token);
+        state.links.push({ app, requirement: "pool", account: token });
         return after("createPool", app);
       }),
     installProvider: Effect.suspend(() => {
       const existing = state.apps.find((app) => app.name === "Custom endpoint");
       if (existing) return after("installProvider", existing.id);
       const app = `app_custom_${++serial}`;
-      state.apps.push({ id: app, name: "Custom endpoint" });
+      addApp(app, "Custom endpoint");
       return after("installProvider", app);
     }),
     createAccount: (input) =>
       Effect.suspend(() => {
         const id = `acc_${input.creation.toLowerCase()}`;
-        if (!accounts.some((account) => account.id === id))
+        if (!state.accounts.includes(id)) {
           accounts.push({ id, app: input.app, method: input.method, fields: { ...input.fields } });
+          state.accounts.push(id);
+          // The provider's requirement keeps the account it acquired, as an app-scoped link.
+          state.links.push({ app: input.app, requirement: "custom", account: id });
+        }
         return after("createAccount", id);
       }),
     link: (pool, account) =>
@@ -117,6 +132,31 @@ export function fixtureProduct(options: { readonly failAfter?: Set<string> } = {
         if (!state.links.some((link) => link.app === pool && link.account === account))
           state.links.push({ app: pool, requirement: "custom", account });
         return after("link", undefined);
+      }),
+    unlink: (pool, account) =>
+      Effect.suspend(() => {
+        state.links = state.links.filter(
+          (link) => !(link.app === pool && link.account === account),
+        );
+        return after(`unlink`, undefined);
+      }),
+    disconnect: (account) =>
+      Effect.suspend(() => {
+        if (state.links.some((link) => link.account === account && link.requirement !== "pool"))
+          return Effect.fail(new Error("AccountLinkedToApp"));
+        state.links = state.links.filter((link) => link.account !== account);
+        state.accounts = state.accounts.filter((id) => id !== account);
+        return after("disconnect", undefined);
+      }),
+    removeApp: (app) =>
+      Effect.suspend(() => {
+        state.apps = state.apps.filter((entry) => entry.id !== app);
+        state.access = state.access.filter((entry) => entry.app !== app);
+        state.links = state.links.filter((link) => link.app !== app);
+        state.pools = state.pools.map((pool) =>
+          pool.app === app ? { ...pool, live: false } : pool,
+        );
+        return after("removeApp", undefined);
       }),
     membership: (pool) =>
       Effect.sync(() => ({
