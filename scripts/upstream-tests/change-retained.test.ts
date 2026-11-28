@@ -76,7 +76,14 @@ function backend() {
     ["accounts", "1"],
     ["session", "1"],
   ]);
-  const state = { identity: "viewer-a", streamOpens: 0, currentReads: 0, urls: [] as string[] };
+  const state = {
+    identity: "viewer-a",
+    streamOpens: 0,
+    currentReads: 0,
+    urls: [] as string[],
+    /** Runs on every head read before it answers, as another writer committing would. */
+    beforeCurrent: undefined as (() => void) | undefined,
+  };
   const streams: Array<{
     controller: ReadableStreamDefaultController<Uint8Array>;
     closed: boolean;
@@ -108,6 +115,7 @@ function backend() {
     assert.equal(pathname, CURRENT);
     state.currentReads++;
     await gate;
+    state.beforeCurrent?.();
     return new Response(JSON.stringify({ revisions: revisions(), identity: state.identity }), {
       status: 200,
       headers: { "content-type": "application/json" },
@@ -124,6 +132,8 @@ function backend() {
     fetch,
     streamOpen: (index = -1) => streams.at(index)?.closed === false,
     send,
+    /** The server's keep-alive comment on the open stream. */
+    heartbeat: (index = -1) => streams.at(index)?.controller.enqueue(encoder.encode(": ping\n\n")),
     handshake: (index = -1) =>
       send(index, "current", {
         kind: "current",
@@ -587,9 +597,10 @@ test("pool-scoped protected reads ignore unrelated and duplicate revisions and c
 
 /**
  * A read whose value came with the server's document: the registry holds the server's accepted
- * body and receipt for it, as hydration leaves them, at the backend's current heads.
+ * body and receipt for it, as hydration leaves them, at the backend's current heads unless the
+ * server read it at an older `accounts` head.
  */
-function hydratedRead(registry: RegistryType.AtomRegistry, body: string) {
+function hydratedRead(registry: RegistryType.AtomRegistry, body: string, accounts = "1") {
   const key = `fixture-document-read:${body}`;
   const src = source();
   const read = src.atom.pipe(
@@ -603,7 +614,7 @@ function hydratedRead(registry: RegistryType.AtomRegistry, body: string) {
         body: { _tag: "Success", value: body, waiting: false, timestamp: 1_000_000 },
         receipt: {
           revisions: [
-            { topic: "accounts", resource: ORGANIZATION, revision: "1" },
+            { topic: "accounts", resource: ORGANIZATION, revision: accounts },
             { topic: "session", resource: ORGANIZATION, revision: "1" },
           ],
           identity: "viewer-a",
@@ -726,4 +737,79 @@ test("a document that never finishes hydrating stops counting as hydrating after
   const again = mount(registry, read.atom);
   assert.deepEqual(bodies(again.values), [], "nothing shows before the feed confirms it");
   again.stop();
+});
+
+test("a read the server rendered behind moving heads shows the server's value, then reads again once, quietly", async (t) => {
+  const { server, flush, mount } = setup(t);
+  // The server read its body after the accounts head at 1, and the head moved on to 4.
+  server.heads.set("accounts", "4");
+  const registry = AtomRegistry.make();
+  const read = hydratedRead(registry, "server body", "1");
+  const view = mount(registry, read.atom);
+  await flush();
+  finishDocumentHydration(registry);
+  server.handshake();
+  await flush();
+  assert.equal(read.loads.length, 1, "the feed marked the read behind and read it again");
+  read.loads[0]!.resolve("current body");
+  await flush();
+  assert.equal(view.current().value, "current body");
+  assert.equal(view.current().waiting, false);
+  assert.equal(bodies(view.values)[0], "server body", "the page opens with the server's value");
+  assert.ok(
+    view.values.every((value) => value._tag === "Success"),
+    "the page never drops to loading or shows a failure while it reads again",
+  );
+  // Nothing moves any more: no further read, whatever time passes.
+  t.mock.timers.tick(60_000);
+  await flush();
+  assert.equal(read.loads.length, 1);
+  view.stop();
+});
+
+test("a read the server rendered behind, whose heads keep moving, reads again once and then waits", async (t) => {
+  const { server, flush, mount } = setup(t);
+  server.heads.set("accounts", "4");
+  const registry = AtomRegistry.make();
+  const read = hydratedRead(registry, "server body", "1");
+  const view = mount(registry, read.atom);
+  await flush();
+  finishDocumentHydration(registry);
+  // From now on another writer commits with every head read, and no hint reaches the page.
+  let head = 4;
+  server.state.beforeCurrent = () => server.heads.set("accounts", String(++head));
+  const reads = server.state.currentReads;
+  server.handshake();
+  await flush();
+  for (const load of read.loads) load.resolve("moving body");
+  await flush();
+  for (let index = 0; index < 5; index++) {
+    for (const load of read.loads) load.resolve("moving body");
+    await flush();
+  }
+  const once = { loads: read.loads.length, heads: server.state.currentReads - reads };
+  assert.equal(once.heads, 6, "one refresh: three attempts, each reading the heads twice");
+  assert.equal(once.loads, 3, "each attempt read the body once");
+  assert.ok(
+    view.values.every((value) => bodies([value]).length > 0),
+    "the server's value stays on the page while the refresh cannot settle",
+  );
+  // The feed's bounded reconfirmations (after 1, 3 and 9 seconds) are all a moving read gets. The
+  // stream stays open, with the server's keep-alive every few seconds.
+  const wait = async (seconds: number) => {
+    for (let second = 1; second <= seconds; second++) {
+      t.mock.timers.tick(1_000);
+      if (second % 5 === 0) server.heartbeat();
+      await flush();
+      for (const load of read.loads) load.resolve("moving body");
+      await flush();
+    }
+  };
+  await wait(60);
+  assert.equal(server.state.streamOpens, 1, "the page kept its one stream");
+  const total = read.loads.length;
+  await wait(600);
+  assert.equal(read.loads.length, total, "no read follows the last reconfirmation");
+  assert.equal(total, 12, "the refresh and three reconfirmations, three attempts each");
+  view.stop();
 });

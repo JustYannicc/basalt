@@ -1,7 +1,7 @@
 {
   "identity": "basalt-account-traffic-committed-reads",
   "file": "0637-account-traffic-committed-reads.patch",
-  "content_sha256": "0ccf5a3c11259bcaee5a25f82d8fb2d24e5f1627c14dbce8c1c766548467ef8e",
+  "content_sha256": "b765a1c26e01539412f2f42fe2a605fca2b281cbe255200686c306ba4f564f38",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
