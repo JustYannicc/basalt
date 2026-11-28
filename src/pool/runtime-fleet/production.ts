@@ -312,16 +312,26 @@ export class PoolRuntimeFleet {
   }
   async inspect(operationId?: string) {
     const permission = await this.configuration.inspect(operationId);
+    // Only its reads: a fleet that can't be built leaves each row's first start out.
+    const fleet = await this.fleet().catch(() => undefined);
+    const now = Date.now();
     return {
       permission,
       // The stored record can say enabled while launches are refused; this says which holds now.
       ...this.configuration.standing(operationId ? await this.configuration.inspect() : permission),
       replacement: operationId ? await this.replacement.inspect(operationId) : undefined,
-      // A held row has no time exit, so its age and reason show wherever the fleet is inspected.
-      resources: (await this.state.inspect()).map((row) => ({
-        ...row,
-        inPhaseMs: inPhaseFor(row, Date.now()),
-      })),
+      // A held row has no time exit, so its age and reason show wherever the fleet is inspected, and
+      // a start held without an identity says how far it got.
+      resources: await Promise.all(
+        (await this.state.inspect()).map(async (row) => {
+          const firstStart = await fleet?.firstStart(row);
+          return {
+            ...row,
+            inPhaseMs: inPhaseFor(row, now),
+            ...(firstStart === undefined ? {} : { firstStart }),
+          };
+        }),
+      ),
       bindings: this.deps
         .namespaces()
         .map(({ color, applicationId, imageInput }) => ({ color, applicationId, imageInput })),

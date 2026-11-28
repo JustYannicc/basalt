@@ -10,6 +10,13 @@ import {
  * a place on time alone.
  */
 export type PhaseBound = "start_unproven" | "drain_unproven" | "absence_unproven";
+/**
+ * How far a start quarantined without an identity got, as the fleet inspect reads it: its selection
+ * committed (`activated`), its endpoint recorded its attestation but nothing was selected
+ * (`attested`), or `neither`.
+ */
+export const firstStarts = ["activated", "attested", "neither"] as const;
+export type FirstStart = (typeof firstStarts)[number];
 
 /** A start answers within the container's startup allowance plus its activation, as a restart's does. */
 export const startingBoundMs = restartStartBoundMs;
