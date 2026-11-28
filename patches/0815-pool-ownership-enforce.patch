@@ -264,3 +264,80 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
      headers: { "cache-control": "no-store" },
    });
  }).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 503 }))));
+diff --git a/e2e/support/owned-pool.ts b/e2e/support/owned-pool.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/owned-pool.ts
+@@ -0,0 +1,51 @@
++import { expect } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "./actors.ts";
++import { Api, body } from "./api.ts";
++import { appsManifest } from "./apps-release.ts";
++import { writeRows } from "./cloud-rows.ts";
++import { removeAppWhenStopped } from "./webhook-sources.ts";
++
++/**
++ * A pool its organization owns, as the tools service's ownership check reads one: an app the
++ * organization owns, named by a record in the organization's pools. A token for any other pool is
++ * refused before the pool Worker runs a route. The app keeps no active deployment and the record
++ * names no membership, so the host's native membership read finds a pool that is neither native
++ * nor due a handoff and leaves membership to the pool Worker's Home, as for a pool the host never
++ * registered. Both go when the case ends.
++ */
++export const ownedPool = Effect.gen(function* () {
++  const api = yield* Api,
++    actors = yield* Actors;
++  const organization = actors.organization.id;
++  const prefix = `/api/organizations/${organization}`;
++  const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++    name: `Owned pool ${crypto.randomUUID().slice(0, 8)}`,
++    files: [
++      {
++        path: "index.ts",
++        content: `import { defineApp } from "apps";\nexport default defineApp({}, async () => ({}));`,
++      },
++      appsManifest,
++    ],
++  });
++  expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++  const app = yield* body(Schema.Struct({ id: Schema.String }), deployed);
++  const rows = (sql: string, params: ReadonlyArray<string> = [app.id, organization]) =>
++    writeRows("sso-database.json", [{ sql, params }]);
++  yield* Effect.addFinalizer(() =>
++    Effect.gen(function* () {
++      yield* rows(`update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb),
++        '{basaltPools}', coalesce(metadata::jsonb -> 'basaltPools', '{}'::jsonb) - $1::text)::text
++        where id = $2`);
++      expect(yield* removeAppWhenStopped(actors.owner, `${prefix}/apps/${app.id}`)).toBe(200);
++    }).pipe(Effect.orDie),
++  );
++  yield* rows("update executor_apps set active_deployment = null where id = $1", [app.id]);
++  // One record of its own, keyed by the app, so the organization's other records stay as they are.
++  yield* rows(`update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb),
++    '{basaltPools}', coalesce(metadata::jsonb -> 'basaltPools', '{}'::jsonb)
++      || jsonb_build_object($1::text, jsonb_build_object('app', $1::text)))::text
++    where id = $2`);
++  return app.id;
++});
+diff --git a/e2e/tests/pool-empty-home.spec.ts b/e2e/tests/pool-empty-home.spec.ts
+--- a/e2e/tests/pool-empty-home.spec.ts
++++ b/e2e/tests/pool-empty-home.spec.ts
+@@ -5,6 +5,7 @@ import { Api, body } from "../support/api.ts";
+ import { withHostedHttpCase } from "../support/case.ts";
+ import { Evidence } from "../support/evidence.ts";
+ import { driver, RuntimeLive, Target } from "../support/platform.ts";
++import { ownedPool } from "../support/owned-pool.ts";
+ import { poolWorkerRuntime } from "../support/pool-worker-runtime.ts";
+ import {
+   emptyHomeAccount,
+@@ -48,7 +49,8 @@ layer(RuntimeLive, { excludeTestServices: true })("Empty Home pool reads", (it)
+           api = yield* Api,
+           target = yield* Target,
+           evidence = yield* Evidence;
+-        const pool = `app_${crypto.randomUUID()}`;
++        // The token names a pool its organization owns: the check refuses any other.
++        const pool = yield* ownedPool;
+         const identities = yield* Effect.forEach(
+           [actors.owner, actors.member, actors.admin],
+           (actor) =>

@@ -247,6 +247,29 @@ test("the person's own token passes the same check silently on every route", asy
     }
 });
 
+test("the organization's own token for a pool it neither records nor owns is refused on every route, whatever the Worker holds", async () => {
+  await database();
+  // A pool the Worker knows from envelopes alone: its audience and membership state, but no app
+  // and no record of the organization behind it.
+  const unrecorded = { ...own, pool: "app_unrecorded_pool" };
+  for (const stored of [false, true])
+    for (const route of routes) {
+      const visited = await visit(route, unrecorded, stored);
+      assert.deepEqual(
+        { status: visited.status, body: visited.body },
+        { status: 403, body: refusal },
+        route,
+      );
+      assert.deepEqual(
+        visited.checks,
+        [{ status: 403, lines: [refused(person, "cleared-association", "app_unrecorded_pool")] }],
+        route,
+      );
+      assert.deepEqual(visited.membershipReads, [], route);
+      assert.equal(visited.containerCalls, 0, route);
+    }
+});
+
 test("an organization whose metadata cannot be read gets the pool's unavailable answer, never the refusal", async () => {
   await database();
   const unreadable = { owner: "person-owner", organization: "org_unreadable" };
