@@ -145,12 +145,16 @@ export const crashReadyCell = (input: CrashInput) =>
           break;
         }
       }
-      if (!sentTo)
+      if (!sentTo) {
+        // The run may have stopped testing while the last cell refused: that is its ending.
+        const halt = input.halted?.();
+        if (halt) return yield* halt;
         return yield* refuse(
           "other-pool-in-flight",
           `The controller refused the kill on every ready non-primary cell (${cellsTried} tried): a call from a pool other than the test's own, or one whose pool it can't name, was in flight on each. Nothing was killed.`,
           "Rerun under the same GO when only the test's calls run on the cells; POOL_CRASH_REFUSED in the PoolWorker logs counts the calls that refused it.",
         );
+      }
       const target = sentTo;
       const killedAt = now();
       let detectedMs: number | undefined;

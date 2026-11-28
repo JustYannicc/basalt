@@ -435,6 +435,8 @@ test("crash-cell refuses a test device whose pool is not a real pool's id, sends
     try {
       assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
       const calls = lane.modelCalls.length;
+      const actions = lane.actions.length;
+      const reads = lane.cloudflareReads.length;
       const log: string[] = [];
       const result = await runPoolFleet(
         dispatch("crash-cell", { go: "coordinator-2026-11-18-crash" }),
@@ -452,9 +454,46 @@ test("crash-cell refuses a test device whose pool is not a real pool's id, sends
         assert.ok(!output.includes(devicePool), `${devicePool} is never printed`);
       assert.deepEqual(lane.crashes, []);
       assert.equal(lane.modelCalls.length, calls, "no model call was sent for the proof");
+      assert.equal(lane.actions.length, actions, "no controller command, before or after");
+      assert.equal(lane.cloudflareReads.length, reads, "no Cloudflare read");
     } finally {
       await lane.close();
     }
+  }
+});
+
+test("a run that stops testing while the last cell refuses ends as its own stop, not as other-pool-in-flight", async () => {
+  let halted = false;
+  const lane = await harness({
+    cells: 1,
+    crashRefusal: () => {
+      halted = true;
+      return new CrashPoolRefused(1, 0);
+    },
+  });
+  try {
+    assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
+    const deps = lane.deps();
+    const controller = deps.controller(await Effect.runPromise(poolWorkerName(deps.cloudflare)));
+    const stop = refuse("cap-reached", "The user's cap answered.", "Rerun after the cap resets.");
+    const result = await Effect.runPromise(
+      Effect.result(
+        crashReadyCell({
+          controller,
+          go: "coordinator-2026-11-18-crash",
+          operator: "pool-fleet",
+          pool: testPool,
+          request: async () => {},
+          sleep: () => new Promise((resolve) => setTimeout(resolve, 0)),
+          now: Date.now,
+          halted: () => (halted ? stop : undefined),
+        }),
+      ),
+    );
+    assert.equal(result._tag === "Failure" && result.failure, stop);
+    assert.equal(lane.crashes.length, 1);
+  } finally {
+    await lane.close();
   }
 });
 
