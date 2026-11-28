@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-emulator-loopback-services",
+  "file": "0807-emulator-loopback-services.patch",
+  "content_sha256": "a3ae022cf027e86aa173e4d6e85d9b8b10d20f2cc4bc7971ad355585e8dcf86b",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
