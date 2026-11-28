@@ -11,7 +11,7 @@ import {
   acceptanceTestDevice,
   isAcceptanceIdentity,
   testDeviceSecret,
-} from "../release/acceptance-test-device.ts";
+} from "../release/acceptance-test-device-secret.ts";
 import { checkoutControllerCode } from "./controller.ts";
 import type { DispatchDependencies, DispatchInput, FleetAcceptance } from "./dispatch.ts";
 import { FleetLaneRefused, refuse } from "./errors.ts";
