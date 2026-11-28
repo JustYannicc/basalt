@@ -89,6 +89,8 @@ export interface HarnessOptions {
   capped?: (index: number) => boolean;
   /** The acceptance device is outside a dedicated acceptance pool: the lane holds no owner access. */
   deviceOnly?: boolean;
+  /** The test device of an identity other than acceptance: device-only, and no pool a crash may cut. */
+  otherIdentity?: boolean;
   /** The account the pool's owner usage records name; a foreign one must fail the usage check. */
   usageAccount?: string;
   /** What the controller's inspect reports for the pool's own usage rollup backfill. */
@@ -110,7 +112,7 @@ export interface HarnessOptions {
   crashRefusal?: (identity: SlotIdentity) => Error | undefined;
   /** Ready cells the controller starts once the fleet is enabled; 1 when unset. */
   cells?: number;
-  /** The pool the acceptance device's secret names; `testPool` when unset. */
+  /** The pool the test device's secret names; `testPool` when unset. */
   devicePool?: string;
   /** As production's upkeep does, a disabled fleet's rows drain and retire (at once, here). */
   drainOnDisable?: boolean;
@@ -607,8 +609,14 @@ export async function harness(options: HarnessOptions = {}) {
     acceptance: {
       client: new PoolAcceptanceClient({ origin: pool.origin, delay: async () => {} }),
       credential: async (method, path) => ({ [nativeModelHeader]: `assertion ${method} ${path}` }),
-      pool: options.devicePool ?? testPool,
-      ...(options.deviceOnly ? {} : { access: { token: "pool-token", owner: "acceptance" } }),
+      // As in production: only the test pool's device ever holds an owner token.
+      device: options.deviceOnly ? ("release" as const) : ("test" as const),
+      ...(options.deviceOnly || options.otherIdentity
+        ? {}
+        : {
+            pool: options.devicePool ?? testPool,
+            access: { token: "pool-token", owner: "acceptance" },
+          }),
     },
     sleep: async () => {},
     now: Date.now,
