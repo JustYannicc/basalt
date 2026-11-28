@@ -21,7 +21,8 @@ import {
 import { killTime, parseLoadShape } from "./load-shape.ts";
 import { mockWitness } from "./load-witness.ts";
 import { RuntimeOrdinals } from "./load-runtimes.ts";
-import { AcceptanceFailure, isPoolAppId } from "./types.ts";
+import { isPoolAppId } from "./pool-app.ts";
+import { AcceptanceFailure } from "./types.ts";
 
 /** Writes one JSON line per item, each its own write. */
 function writeLines(path: string, items: readonly unknown[]) {

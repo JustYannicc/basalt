@@ -2,12 +2,12 @@ import { PoolAcceptanceClient } from "./pool-acceptance/client.ts";
 import { observeRestart } from "./pool-acceptance/restart-observation.ts";
 import {
   AcceptanceFailure,
-  isPoolAppId,
   type Conversation,
   type ModelCatalog,
   type PoolAccess,
   type UsageRecord,
 } from "./pool-acceptance/types.ts";
+import { isPoolAppId } from "./pool-acceptance/pool-app.ts";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { signPoolToken } from "../src/pool/token.ts";
