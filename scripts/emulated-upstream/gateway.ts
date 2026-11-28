@@ -2,7 +2,7 @@
 // control and the two account profiles. A custom endpoint account's base URL is `<origin>/a` or
 // `<origin>/b`; each profile's path reaches the mock without its prefix and with its own faults.
 import { mockRefusal, refusalPath, type MockPort } from "./mock-start.ts";
-import { maxLatencyMs as MAX_LATENCY_MS, plainDecimal } from "./chaos-bounds.ts";
+import { latencyAccepted, maxLatencyMs, rateAccepted } from "./chaos-bounds.ts";
 import { markerIn, recorded, sendsControl, sendsPath, type SendStore } from "./sends.ts";
 
 /** The faults a profile adds: the share of calls aimock answers 429, and its first-byte delay. */
@@ -80,11 +80,7 @@ export function chaosFrom(value: unknown): Chaos | undefined {
   if (Object.keys(value).sort().join() !== "latencyMs,rateLimitRate") return undefined;
   if (!("rateLimitRate" in value) || !("latencyMs" in value)) return undefined;
   const { rateLimitRate, latencyMs } = value;
-  if (typeof rateLimitRate !== "number" || !plainDecimal.test(String(rateLimitRate)))
-    return undefined;
-  if (rateLimitRate > 1 || typeof latencyMs !== "number" || !Number.isSafeInteger(latencyMs))
-    return undefined;
-  if (latencyMs < 0 || latencyMs > MAX_LATENCY_MS) return undefined;
+  if (!rateAccepted(rateLimitRate) || !latencyAccepted(latencyMs)) return undefined;
   return { rateLimitRate, latencyMs };
 }
 
@@ -102,7 +98,7 @@ export async function profileControl(request: Request, store: ChaosStore): Promi
       {
         error: {
           type: "invalid_request_error",
-          message: `Expected exactly { rateLimitRate: a plain decimal in [0, 1], latencyMs: a whole number in [0, ${MAX_LATENCY_MS}] }`,
+          message: `Expected exactly { rateLimitRate: a plain decimal in [0, 1], latencyMs: a whole number in [0, ${maxLatencyMs}] }`,
         },
       },
       { status: 400 },

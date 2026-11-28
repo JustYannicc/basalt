@@ -1,4 +1,4 @@
-// What deploy, check, destroy and the expiry decide on their own, and that no run prints the
+// What deploy, check, profile, destroy and the expiry decide on their own, and that no run prints the
 // account's workers.dev hostname.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -324,7 +324,8 @@ async function profileRun(target, options = {}) {
   const saved = {};
   const lines = [];
   const sent = [];
-  const run = stageOf(fakeApi({ resources: deployed(), lease }), {
+  const api = fakeApi({ resources: deployed(), lease });
+  const run = stageOf(api, {
     key: stage.key,
     fetcher: (url, init) => {
       sent.push(`${init?.method ?? "GET"} ${new URL(url).pathname}`);
@@ -334,15 +335,17 @@ async function profileRun(target, options = {}) {
     save: (name, value) => (saved[name] = value),
     summary: (line) => lines.push(line),
   }).profile(target);
-  return { stage, saved, lines, sent, run };
+  return { stage, saved, lines, sent, run, api };
 }
 
 test("profile sets profile b through its keyed control, reads it back, prints before and now, and changes nothing else", async () => {
-  const { stage, saved, lines, sent, run } = await profileRun(
+  const { stage, saved, lines, sent, run, api } = await profileRun(
     { rateLimitRate: 1, latencyMs: 0 },
     { store: memoryStore({ rateLimitRate: 0, latencyMs: 250 }) },
   );
   await run;
+  // The account is only asked for the lease: no inventory, deploy or destroy.
+  assert.deepEqual(api.calls, [`lease ${worker}`]);
   assert.deepEqual(stage.store.value, { rateLimitRate: 1, latencyMs: 0 });
   assert.deepEqual(sent, [
     "GET /_emulated/profiles/b",
@@ -414,12 +417,42 @@ test("profile fails when b cannot be read, its setting is refused, or it reads b
       /profile b reads back 429 share 0, latency 0 ms, not what was set/u,
       1,
     ],
+    [
+      "kept its old latency only",
+      async () => answer(200, { profile: "b", rateLimitRate: 1, latencyMs: 0 }),
+      /profile b reads back 429 share 1, latency 0 ms, not what was set/u,
+      1,
+      { rateLimitRate: 1, latencyMs: 500 },
+      { rateLimitRate: 1, latencyMs: 0 },
+    ],
+    [
+      "set with no answer",
+      async (url, init) => {
+        if (init?.method === "PUT") throw new TypeError("fetch failed");
+        return answer(200, { profile: "b", rateLimitRate: 0, latencyMs: 0 });
+      },
+      /profile b's setting got no answer; b may have changed/u,
+      1,
+    ],
   ];
-  for (const [label, fetcher, refused, puts] of cases) {
-    const { saved, run, sent } = await profileRun({ rateLimitRate: 1, latencyMs: 0 }, { fetcher });
-    await assert.rejects(run, refused, label);
+  for (const [
+    label,
+    fetcher,
+    refused,
+    puts,
+    target = { rateLimitRate: 1, latencyMs: 0 },
+    before = { rateLimitRate: 0, latencyMs: 0 },
+  ] of cases) {
+    const { saved, run, sent } = await profileRun(target, { fetcher });
+    const error = await run.then(
+      () => assert.fail(label),
+      (caught) => caught,
+    );
+    assert.match(error.message, refused, label);
     assert.equal(sent.filter((call) => call.startsWith("PUT")).length, puts, label);
     assert.equal(saved.profile, undefined, label);
+    // Once b may have changed, the stop keeps what it was before, to put back by hand.
+    assert.deepEqual(error.record?.before, puts ? before : undefined, label);
   }
 });
 
@@ -967,6 +1000,59 @@ test("an expiry spends at most its budget too", async () => {
     started.every((at) => at + 30_000 <= NOW + teardownBudgetMs),
     started.join(","),
   );
+});
+
+test("a profile dispatch sets profile b to exactly its inputs, keeps its file, and prints no hostname", async () => {
+  // The stage's key is the dispatch's own.
+  const stage = deployedStage({
+    key: dispatch.EMULATED_UPSTREAM_KEY,
+    store: memoryStore({ rateLimitRate: 0, latencyMs: 0 }),
+  });
+  const fetcher = async (url, init) =>
+    new URL(url).hostname === "api.cloudflare.com"
+      ? leased.fetcher(url, init)
+      : stage.fetcher(url, init);
+  const printed = [];
+  const saved = {};
+  const env = {
+    ...dispatch,
+    EMULATED_MODE: "profile",
+    GITHUB_RUN_ATTEMPT: "1",
+    EMULATED_PROFILE: "b",
+    EMULATED_SHARE_429: "0.25",
+    EMULATED_LATENCY_MS: "1500",
+  };
+  const run = (extra, io = {}) =>
+    main(
+      { ...env, ...extra },
+      {
+        fetcher,
+        now: () => NOW,
+        error: (line) => printed.push(line),
+        summary: (line) => printed.push(line),
+        save: (name, value) => (saved[name] = value),
+        ...io,
+      },
+    );
+  assert.equal(await run({}), 0, printed.join("\n"));
+  assert.deepEqual(stage.store.value, { rateLimitRate: 0.25, latencyMs: 1500 });
+  assert.deepEqual(saved.profile.now, { rateLimitRate: 0.25, latencyMs: 1500 });
+  // The restore: the same mode with zeros.
+  assert.equal(await run({ EMULATED_SHARE_429: "0", EMULATED_LATENCY_MS: "0" }), 0);
+  assert.deepEqual(stage.store.value, { rateLimitRate: 0, latencyMs: 0 });
+  // A stop after the read keeps b's old value in its file.
+  const refusing = async (url, init) =>
+    init?.method === "PUT" ? Response.json({}, { status: 400 }) : fetcher(url, init);
+  assert.equal(await run({ EMULATED_SHARE_429: "1" }, { fetcher: refusing }), 1);
+  assert.deepEqual(saved["stopped-profile"].before, { rateLimitRate: 0, latencyMs: 0 });
+  for (const line of printed) assert.ok(!line.includes(subdomain), line);
+  // A re-run prints only its token and calls nothing.
+  printed.length = 0;
+  assert.equal(
+    await run({ GITHUB_RUN_ATTEMPT: "2" }, { fetcher: () => assert.fail("no call may run") }),
+    1,
+  );
+  assert.deepEqual(printed, ["emulated_upstream_profile_rerun_refused"]);
 });
 
 test("a refused guard prints only its token", async () => {

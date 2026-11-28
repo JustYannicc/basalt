@@ -1,4 +1,4 @@
-import { maxLatencyMs, plainDecimal } from "./chaos-bounds.ts";
+import { chaosFromText } from "./chaos-bounds.ts";
 
 /**
  * The emulated upstream's one stage and the guard every run passes. The release entry deploys only
@@ -28,13 +28,8 @@ const goText = /^coordinator-20\d\d-\d\d-\d\d-[A-Za-z0-9-]{1,96}$/u;
 const keyed: ReadonlyArray<Mode> = ["deploy", "check", "profile"];
 
 /** Profile b's two faults as a profile run's inputs name them, or undefined outside the bounds. */
-export function profileTarget(env: Record<string, string | undefined>) {
-  const share = env.EMULATED_SHARE_429 ?? "";
-  const latency = env.EMULATED_LATENCY_MS ?? "";
-  if (!plainDecimal.test(share) || Number(share) > 1) return undefined;
-  if (!/^(?:0|[1-9]\d{0,4})$/u.test(latency) || Number(latency) > maxLatencyMs) return undefined;
-  return { rateLimitRate: Number(share), latencyMs: Number(latency) };
-}
+export const profileTarget = (env: Record<string, string | undefined>) =>
+  chaosFromText(env.EMULATED_SHARE_429 ?? "", env.EMULATED_LATENCY_MS ?? "");
 const credentials = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "EMULATED_UPSTREAM_KEY"];
 
 /** Why a run must not go ahead, or undefined. Names what the rule expected, never the value it saw. */

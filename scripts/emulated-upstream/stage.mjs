@@ -1,4 +1,4 @@
-// What deploy, check, destroy and the hourly expiry decide, given the account, a clock and the
+// What deploy, check, profile, destroy and the hourly expiry decide, given the account, a clock and the
 // stage's fetch. Raw provider output never reaches logs: only the release entry's own public lines
 // and this stage's counts and names.
 import { emulatedAccount } from "./cloudflare.mjs";
@@ -314,16 +314,24 @@ export function emulatedStage({
     const read = await send("read", { method: "GET" });
     if (!read.chaos)
       throw new StageError(`profile b could not be read (HTTP ${read.status}); nothing was set`);
-    const set = await send("set", { method: "PUT", body: JSON.stringify(target) });
-    if (set.status !== 200)
-      throw new StageError(`profile b's setting was refused (HTTP ${set.status})`);
-    const back = await send("read back", { method: "GET" });
+    // From here b may have changed, so every stop keeps what it was before, to put it back by hand.
+    const stop = (message) =>
+      Object.assign(new StageError(message), {
+        record: { profile: "b", before: read.chaos, target, control },
+      });
+    const set = await send("set", { method: "PUT", body: JSON.stringify(target) }).catch(() => {
+      throw stop("profile b's setting got no answer; b may have changed");
+    });
+    if (set.status !== 200) throw stop(`profile b's setting was refused (HTTP ${set.status})`);
+    const back = await send("read back", { method: "GET" }).catch(() => {
+      throw stop("profile b could not be read back; b may have changed");
+    });
     if (
       !back.chaos ||
       back.chaos.rateLimitRate !== target.rateLimitRate ||
       back.chaos.latencyMs !== target.latencyMs
     )
-      throw new StageError(
+      throw stop(
         `profile b reads back ${back.chaos ? faults(back.chaos) : `HTTP ${back.status}`}, not what was set`,
       );
     save("profile", {

@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { alchemyPreviewStateReader } from "../preview/inventory.ts";
 import { isRehearsalStage, stageOwnsName } from "../release/rehearsal-stage.ts";
 import { stageRepositories } from "../release/stage-teardown.ts";
+import { chaosFrom } from "./gateway.ts";
 import { container, prefix, profileTarget, refusal, stage, worker } from "./settings.ts";
 
 const dispatch = {
@@ -88,7 +89,7 @@ test("only the schedule expires, and it needs no go; a dispatch cannot expire", 
   );
 });
 
-test("the guard runs before credentials; only deploy and check need the key once they are loaded", () => {
+test("the guard runs before credentials; only deploy, check and profile need the key once they are loaded", () => {
   assert.equal(
     refusal({ ...dispatch, CLOUDFLARE_API_TOKEN: "x" }),
     "emulated_upstream_guard_saw_credential",
@@ -119,6 +120,20 @@ test("profile takes exactly profile b's two settings within the mock's own bound
   const zeros = { ...profiling, EMULATED_SHARE_429: "0", EMULATED_LATENCY_MS: "0" };
   assert.equal(refusal(zeros), undefined);
   assert.deepEqual(profileTarget(zeros), { rateLimitRate: 0, latencyMs: 0 });
+  // Whatever the guard takes, the stage's own control takes as sent.
+  for (const [share, latency] of [
+    ["1", "30000"],
+    ["0.000001", "1"],
+    ["0.5", "0"],
+    ["1.", "7"],
+  ]) {
+    const target = profileTarget({
+      ...profiling,
+      EMULATED_SHARE_429: share,
+      EMULATED_LATENCY_MS: latency,
+    });
+    assert.deepEqual(chaosFrom(JSON.parse(JSON.stringify(target))), target, share);
+  }
   assert.deepEqual(
     profileTarget({ ...profiling, EMULATED_SHARE_429: "1", EMULATED_LATENCY_MS: "30000" }),
     {
@@ -126,7 +141,8 @@ test("profile takes exactly profile b's two settings within the mock's own bound
       latencyMs: 30_000,
     },
   );
-  for (const share of ["", "1.5", "1e-3", "-0.1", "abc", " 0.5", "0x1", "NaN"])
+  // 0.0000009 is typed plain but is sent as 9e-7, which the control refuses.
+  for (const share of ["", "1.5", "1e-3", "-0.1", "abc", " 0.5", "0x1", "NaN", "0.0000009"])
     assert.equal(
       refusal({ ...profiling, EMULATED_SHARE_429: share }),
       "emulated_upstream_profile_settings_out_of_bounds",
@@ -198,7 +214,7 @@ test("no rehearsal or preview tool treats the stage or its names as its own", as
   assert.equal(ran, false);
 });
 
-test("the workflow offers only the stage; the key reaches only the dispatched job's deploy and check", () => {
+test("the workflow offers only the stage; the key reaches only the dispatched job's deploy, check and profile", () => {
   const workflow = readFileSync(
     new URL("../../.github/workflows/emulated-upstream.yml", import.meta.url),
     "utf8",
