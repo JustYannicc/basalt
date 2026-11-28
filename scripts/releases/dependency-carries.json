@@ -133,7 +133,7 @@
     },
     "0814-alchemy-container-diff-reason": {
       "packages": ["alchemy"],
-      "upstream": null,
+      "upstream": "https://github.com/alchemy-run/alchemy/issues/3846",
       "owner": "release owner"
     }
   }
