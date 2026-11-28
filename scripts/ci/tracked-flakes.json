@@ -23,6 +23,24 @@
     "signature": "remove-400-after-passed-body"
   },
   {
+    "id": "aws-approval-answered-not-ok",
+    "scope": "job",
+    "job": "aws-connectors",
+    "match": [
+      " FAIL   self-host  e2e/tests/aws-identity-center.spec.ts > AWS Identity Center > AWS Identity Center acquires assigned accounts and roles through the actual hosted catalog app",
+      "expected { ok: false, ",
+      "support/aws-production-approval.ts:104:"
+    ],
+    "only": [
+      { "marker": " FAIL ", "allow": " FAIL   self-host  e2e/tests/aws-identity-center.spec.ts > AWS Identity Center > AWS Identity Center acquires assigned accounts and roles through the actual hosted catalog app" },
+      { "marker": "AssertionError", "allow": "expected { ok: false, " },
+      { "marker": "support/aws-production-approval.ts:", "allow": "support/aws-production-approval.ts:104:" }
+    ],
+    "issue": 1880,
+    "listed": "2026-11-28",
+    "expires": "2026-12-05"
+  },
+  {
     "id": "cpa-websocket-429-test",
     "scope": "job",
     "job": "pool-runtime",
