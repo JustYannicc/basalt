@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "A Container's plan reads its application through the readiness window that update and rollout already wait out: an application Cloudflare still reads as not found right after its create plans as noop, so the fresh plan after a deploy that created it is all noop, and only an application still missing once the window has passed plans an update."
+    }
+  }
+}

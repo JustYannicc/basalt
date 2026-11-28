@@ -1,0 +1,49 @@
+diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
+--- a/patches/alchemy@2.0.0-beta.80.patch
++++ b/patches/alchemy@2.0.0-beta.80.patch
+@@ -9094,3 +9094,45 @@
+                          digest: existing.hash.digest,
+                      }
+                      : yield* buildAndPushImage(id, news, build, imageRef, imageHash, undefined, session);
++diff --git a/src/Cloudflare/Containers/ContainerProvider.ts b/src/Cloudflare/Containers/ContainerProvider.ts
++--- a/src/Cloudflare/Containers/ContainerProvider.ts
+++++ b/src/Cloudflare/Containers/ContainerProvider.ts
++@@ -1235,10 +1235,16 @@
++             return { action: "update", stables: ["accountId"] } as const;
++           }
++ 
++-          const application = yield* Containers.getContainerApplication({
++-            accountId: output.accountId,
++-            applicationId: output.applicationId,
++-          }).pipe(
+++          // A just-created application can read as not found for a moment.
+++          // Wait that out, as update and rollout do, before calling it gone.
+++          const application = yield* retryForContainerApplicationReadiness(
+++            "diff",
+++            output.applicationId,
+++            Containers.getContainerApplication({
+++              accountId: output.accountId,
+++              applicationId: output.applicationId,
+++            }),
+++          ).pipe(
++             Effect.catchTag("ContainerApplicationNotFound", () =>
++               Effect.succeed(undefined),
++             ),
++diff --git a/lib/Cloudflare/Containers/ContainerProvider.js b/lib/Cloudflare/Containers/ContainerProvider.js
++--- a/lib/Cloudflare/Containers/ContainerProvider.js
+++++ b/lib/Cloudflare/Containers/ContainerProvider.js
++@@ -825,10 +825,12 @@
++                 // Override stables to only include the accountId because the applicationId is going to change.
++                 return { action: "update", stables: ["accountId"] };
++             }
++-            const application = yield* Containers.getContainerApplication({
+++            // A just-created application can read as not found for a moment.
+++            // Wait that out, as update and rollout do, before calling it gone.
+++            const application = yield* retryForContainerApplicationReadiness("diff", output.applicationId, Containers.getContainerApplication({
++                 accountId: output.accountId,
++                 applicationId: output.applicationId,
++-            }).pipe(Effect.catchTag("ContainerApplicationNotFound", () => Effect.succeed(undefined)));
+++            })).pipe(Effect.catchTag("ContainerApplicationNotFound", () => Effect.succeed(undefined)));
++             if (application &&
++                 (application.id !== output.applicationId ||
++                     application.name !== output.applicationName ||
