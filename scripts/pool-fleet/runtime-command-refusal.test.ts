@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { BarrierRefusal } from "./refusal.ts";
 import { describeError } from "./errors.ts";
+import { refusedCode } from "./operations.ts";
+import { otherCodeRefusal } from "./test/other-code.ts";
 import { sendRuntimeCommand } from "./runtime-command-rpc.ts";
 import { throughController } from "../../src/pool/operations-call.ts";
 import { runtimeErrorResponse } from "../../src/pool/runtime-slots/request-error.ts";
@@ -63,6 +65,21 @@ test("a 409 with a known runtime reason reaches failure.json", async (t) => {
     ],
     ["adopt", "endpoint_route", "slot_draining", "runtime_endpoint_route_slot_draining"],
   );
+});
+
+test("a command signed for other controller code is refused for its code, and the lane's evidence and the pool's line name the same reason", async (t) => {
+  const lines: string[] = [];
+  t.mock.method(console, "warn", (line: string) => {
+    lines.push(line);
+  });
+  const { fields } = await refusedEvidence(t, otherCodeRefusal);
+  // The bridge's own code refusal, under whichever reason this checkout's Worker writes for it.
+  const reason = String(fields["handoff.response.reason"]);
+  assert.ok(refusedCode(reason), `the lane didn't read ${reason} as old code`);
+  assert.equal(fields["handoff.response.code"], `runtime_endpoint_route_${reason}`);
+  assert.deepEqual(lines, [
+    `POOL_RUNTIME_COMMAND_REFUSED {"action":"adopt","candidate":"${candidate}","operationId":null,"status":409,"step":"endpoint_route","reason":"${reason}"}`,
+  ]);
 });
 
 test("a 500 the bridge built reads unmarked, and either 500 the pool gives reads pool", async (t) => {
