@@ -13,6 +13,7 @@ import {
   type Json,
 } from "../../.upstream/apps/hosted/server/src/contracts/acceptance-pool.ts";
 import { GroupDatabase } from "../../.upstream/apps/hosted/server/src/contracts/groups.ts";
+import { ProductAnalytics } from "../../.upstream/apps/hosted/server/src/contracts/product-analytics.ts";
 import {
   openEnvelope,
   signEnvelope,
@@ -602,3 +603,55 @@ test("the workflow's digest of the origin is the one the server builds from its 
   assert.equal(driverDigest(`https://${host}/`), digest);
   assert.notEqual(driverDigest("https://other.example.test"), digest);
 });
+
+test("nothing the route runs sees an enabled analytics sink, even when the request installed one", () =>
+  live(
+    Effect.gen(function* () {
+      const sql = yield* database;
+      const seen: boolean[] = [];
+      const captured: unknown[] = [];
+      const steps = fixtureSteps([]);
+      const handler = acceptancePoolHandler({
+        signingKey: Option.some(Redacted.make(key)),
+        target,
+        settings: Effect.succeed(settings()),
+        steps: {
+          ...steps,
+          inspect: (...args) =>
+            Effect.flatMap(ProductAnalytics, (sink) => {
+              seen.push(sink.enabled);
+              sink.capture({} as never);
+              return steps.inspect(...args);
+            }),
+        },
+      }).pipe(
+        Effect.provideService(ProductAnalytics, {
+          enabled: true,
+          capture: (event) => {
+            captured.push(event);
+          },
+          submitFeedback: () => Effect.void,
+        }),
+      );
+      const server = HttpRouter.toWebHandler(
+        HttpRouter.add("POST", acceptancePoolPath, handler).pipe(
+          HttpRouter.provideRequest(Layer.succeed(GroupDatabase, Effect.succeed(sql))),
+          Layer.provide(HttpServer.layerServices),
+        ),
+        { disableLogger: true },
+      );
+      const planned = yield* post(
+        server,
+        yield* envelope({
+          kind: "setup",
+          action: "dry-run",
+          request: setupRequest,
+          recipient,
+          upstreamOriginSha256: digest,
+        }),
+      );
+      assert.equal(planned.status, 200);
+      assert.deepEqual(seen, [false]);
+      assert.deepEqual(captured, []);
+    }),
+  ));

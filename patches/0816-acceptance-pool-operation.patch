@@ -1,10 +1,90 @@
+diff --git a/apps/hosted/cloud/src/implementation/auth-options.ts b/apps/hosted/cloud/src/implementation/auth-options.ts
+index 07e78ae..9814519 100644
+--- a/apps/hosted/cloud/src/implementation/auth-options.ts
++++ b/apps/hosted/cloud/src/implementation/auth-options.ts
+@@ -31,6 +31,7 @@ import { cloudSsoPolicy, ssoVerifiedEmail } from "./sso-policy.ts";
+ import { chatGptSettings, chatGptSignIn } from "./chatgpt-sign-in.ts";
+ import { cloudMemberLimit } from "./member-limit.ts";
+ import { CurrentProductBrand } from "@executor-js/utils/product-brand";
++import { isAcceptanceUser } from "@executor-js/hosted-server/acceptance-pool";
+ 
+ /** The better-auth endpoint that creates accounts from a verified email code. */
+ const emailCodeSignInPath = "/sign-in/email-otp";
+@@ -213,10 +214,13 @@ export const cloudAuthOptions = (
+     databaseHooks: {
+       account: {
+         create: {
+-          before: async (account) =>
+-            account.providerId === "openai"
++          before: async (account) => {
++            // The acceptance identity has no sign-in method, and none is ever added.
++            if (isAcceptanceUser(account.userId)) throw new APIError("FORBIDDEN");
++            return account.providerId === "openai"
+               ? { data: { ...account, idToken: null, accessToken: null, refreshToken: null } }
+-              : undefined,
++              : undefined;
++          },
+         },
+         update: {
+           before: async (account, context) =>
+@@ -268,6 +272,8 @@ export const cloudAuthOptions = (
+             });
+           },
+           before: async (session, context) => {
++            // No sign-in method, present or future, opens a session for this identity.
++            if (isAcceptanceUser(session.userId)) throw new APIError("FORBIDDEN");
+             if (!context) throw new APIError("UNAUTHORIZED");
+             const user = await context.context.internalAdapter.findUserById(session.userId);
+             if (!user?.emailVerified)
+diff --git a/apps/hosted/cloud/src/implementation/billing-seats.ts b/apps/hosted/cloud/src/implementation/billing-seats.ts
+index 9f1789f..940144b 100644
+--- a/apps/hosted/cloud/src/implementation/billing-seats.ts
++++ b/apps/hosted/cloud/src/implementation/billing-seats.ts
+@@ -4,6 +4,7 @@
+  * confirmed, so an unchanged count needs no provider call.
+  */
+ import { OrganizationId } from "@executor-js/hosted-server";
++import { acceptanceIdentity } from "@executor-js/hosted-server/acceptance-pool";
+ import { Effect, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
+ 
+@@ -59,8 +60,9 @@ export const seatReconcileCandidates = Effect.gen(function* () {
+   const sql = yield* SqlClient.SqlClient;
+   const rows = yield* sql`select o.id as organization from organization o
+       left join cloud_billing_seats s on s.organization_id = o.id
+-      where s.organization_id is null or s.seat_plan
+-        or s.synced_count is distinct from (select count(*) from member m where m."organizationId" = o.id)`;
++      where o.id <> ${acceptanceIdentity.organization}
++        and (s.organization_id is null or s.seat_plan
++          or s.synced_count is distinct from (select count(*) from member m where m."organizationId" = o.id))`;
+   return yield* Schema.decodeUnknownEffect(
+     Schema.Array(Schema.Struct({ organization: OrganizationId })),
+   )(rows);
+diff --git a/apps/hosted/cloud/src/implementation/billing.ts b/apps/hosted/cloud/src/implementation/billing.ts
+index e26a1fb..a70755f 100644
+--- a/apps/hosted/cloud/src/implementation/billing.ts
++++ b/apps/hosted/cloud/src/implementation/billing.ts
+@@ -1,4 +1,5 @@
+ import { BillingMeter } from "../contracts/billing-meter.ts";
++import { isAcceptanceOrganization } from "@executor-js/hosted-server/acceptance-pool";
+ import { billingMembers } from "../infrastructure/billing-members.ts";
+ import {
+   Authentication,
+@@ -177,6 +178,8 @@ export const billingLive = Effect.gen(function* () {
+     checkoutPlan?: string,
+   ) =>
+     Effect.gen(function* () {
++      // The acceptance identity is never a billing customer.
++      if (isAcceptanceOrganization(organization)) return;
+       let current: { readonly count: number; readonly synced: number | null } | undefined =
+         yield* members.use(seatCounts(organization));
+       if (current === undefined) return yield* new BillingUnavailable();
 diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/cloud.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/cloud.ts
 new file mode 100644
-index 0000000..3d19bef
+index 0000000..f50f08c
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/cloud.ts
 @@ -0,0 +1,33 @@
-+import { acceptancePoolSteps } from "@executor-js/hosted-server/acceptance-pool-steps";
 +import { Config, Effect, Option, Redacted } from "effect";
 +import { productionOpsRelease } from "../../implementation/production-ops-release.ts";
 +import { cloudDirectDatabaseConnection } from "../database.ts";
@@ -12,6 +92,7 @@ index 0000000..3d19bef
 +import { cloudEncryptionKey } from "../secrets.ts";
 +import { cloudHosts } from "../stage.ts";
 +import { acceptancePoolHandler } from "./http.ts";
++import { acceptancePoolSteps } from "./steps.ts";
 +
 +/** The deployed route: production-ops' key, hosts, release and database identity. */
 +export const cloudAcceptancePool = Effect.gen(function* () {
@@ -146,15 +227,17 @@ index 0000000..5f8440d
 +  sha256(`basalt-acceptance-upstream-origin-v1\n${origin}`);
 diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/http.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/http.ts
 new file mode 100644
-index 0000000..e0cb84b
+index 0000000..dd4a912
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/http.ts
-@@ -0,0 +1,112 @@
+@@ -0,0 +1,121 @@
 +import {
 +  AcceptancePoolRefused,
 +  type AcceptancePoolSteps,
 +} from "@executor-js/hosted-server/acceptance-pool";
++import { ProductAnalytics } from "@executor-js/hosted-server";
 +import { GroupDatabase } from "@executor-js/hosted-server/groups";
++import { feedbackDisabled } from "@executor-js/telemetry/product-analytics";
 +import { Cause, Clock, Effect, Option, Redacted, Schema, Stream } from "effect";
 +import { HttpServerRequest, HttpServerResponse } from "effect/http";
 +import { SqlClient } from "effect/sql";
@@ -165,6 +248,12 @@ index 0000000..e0cb84b
 +export { acceptancePoolPath } from "./contracts.ts";
 +
 +const noStore = { "cache-control": "no-store" } as const;
++/** The request's sink, forced off: nothing this route runs records a product event. */
++const noAnalytics = {
++  enabled: false,
++  capture: () => {},
++  submitFeedback: () => Effect.fail(feedbackDisabled()),
++};
 +const fixed = (status: number, body: Record<string, string | boolean>) =>
 +  HttpServerResponse.json(body, { status, headers: noStore });
 +
@@ -239,6 +328,7 @@ index 0000000..e0cb84b
 +      return yield* runAcceptancePool(settings, signed, route.steps);
 +    }).pipe(
 +      Effect.provideService(SqlClient.SqlClient, sql),
++      Effect.provideService(ProductAnalytics, noAnalytics),
 +      Effect.timeout(acceptanceRequestTimeoutMs),
 +    );
 +    return yield* HttpServerResponse.json(result, { headers: noStore });
@@ -262,6 +352,165 @@ index 0000000..e0cb84b
 +    }),
 +    Effect.withTracerEnabled(false),
 +  );
+diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/identity.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/identity.ts
+new file mode 100644
+index 0000000..e7b85cb
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/identity.ts
+@@ -0,0 +1,153 @@
++import {
++  acceptanceIdentity,
++  poolAccessJobPrefix,
++  poolRotationJobPrefix,
++  refuse,
++  type Json,
++} from "@executor-js/hosted-server/acceptance-pool";
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++import { canonical, sha256 } from "../production-ops/crypto.ts";
++
++const { user, organization, member, slug, name, email } = acceptanceIdentity;
++const digest = (value: unknown) =>
++  value === undefined ? "absent" : sha256(`${canonical(value)}\n`);
++
++/** The three rows the identity is, exactly as the operation writes them. */
++const expected = {
++  user: { id: user, name, email, verified: true },
++  organization: { id: organization, name, slug },
++  member: { id: member, organization, user, role: "owner" },
++};
++
++const rows = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  const [person] = yield* sql<Record<string, Json>>`select id, name, email,
++    "emailVerified" as verified from "user" where id = ${user}`;
++  const [team] = yield* sql<Record<string, Json>>`select id, name, slug
++    from organization where id = ${organization}`;
++  const [owner] = yield* sql<Record<string, Json>>`select id, "organizationId" as organization,
++    "userId" as user, role from member where id = ${member}`;
++  return { user: person, organization: team, member: owner };
++});
++
++const count = (query: Effect.Effect<ReadonlyArray<{ readonly count: string | number }>, unknown>) =>
++  Effect.map(query, (result) => Number(result[0]?.count ?? 0));
++
++/**
++ * Everything that would make the identity something other than inert: rows that differ from what
++ * the operation writes, a sign-in or credential row, another member or membership, a slug or
++ * email used by another row, a removal in progress, or a lifecycle job still waiting to run.
++ */
++const conflicts = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  const current = yield* rows;
++  const changed = (["user", "organization", "member"] as const).filter(
++    (key) => current[key] !== undefined && canonical(current[key]) !== canonical(expected[key]),
++  );
++  const found = {
++    changed: changed.length,
++    email: yield* count(sql`select count(*) as count from "user"
++      where lower(email) = lower(${email}) and id <> ${user}`),
++    slug: yield* count(sql`select count(*) as count from organization
++      where slug = ${slug} and id <> ${organization}`),
++    accounts: yield* count(sql`select count(*) as count from account where "userId" = ${user}`),
++    sessions: yield* count(sql`select count(*) as count from session where "userId" = ${user}`),
++    keys: yield* count(sql`select count(*) as count from apikey where "referenceId" = ${user}`),
++    passkeys: yield* count(sql`select count(*) as count from passkey where "userId" = ${user}`),
++    invitations: yield* count(sql`select count(*) as count from invitation
++      where "organizationId" = ${organization}`),
++    members: yield* count(sql`select count(*) as count from member
++      where ("organizationId" = ${organization} or "userId" = ${user}) and id <> ${member}`),
++    removing: yield* count(sql`select count(*) as count from hosted_organization_removal
++      where organization_id = ${organization}`),
++    jobs: yield* count(sql`select count(*) as count from hosted_provisioning
++      where (organization_id = ${organization} or user_id = ${user})
++        and status in ('queued', 'running')
++        and not starts_with(id, ${poolAccessJobPrefix})
++        and not starts_with(id, ${poolRotationJobPrefix})`),
++  };
++  return found;
++});
++
++const inert = (found: Effect.Success<typeof conflicts>) =>
++  Object.values(found).every((value) => value === 0);
++
++/** The identity's preconditions for a plan: one digest per row, "absent" for a missing one. */
++export const inspectIdentity = Effect.gen(function* () {
++  const found = yield* conflicts;
++  if (!inert(found)) return yield* refuse("identity_conflict");
++  const current = yield* rows;
++  return {
++    "identity.user": digest(current.user),
++    "identity.organization": digest(current.organization),
++    "identity.member": digest(current.member),
++  };
++});
++
++/**
++ * Writes only the rows that are absent, in one serializable transaction. The inserts fire the
++ * lifecycle triggers (team, billing, domain, member and user jobs, and the welcome email); every
++ * row they queue is deleted before commit, and the transaction proves none remains. The queue's
++ * dispatcher claims only committed rows, so none of them ever runs.
++ */
++export const ensureIdentity = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  return yield* sql.withTransaction(
++    Effect.gen(function* () {
++      yield* sql`set transaction isolation level serializable`;
++      yield* sql`set local statement_timeout = '5s'`;
++      yield* sql`set local lock_timeout = '500ms'`;
++      yield* sql`set local idle_in_transaction_session_timeout = '10s'`;
++      if (!inert(yield* conflicts)) return yield* refuse("identity_conflict");
++      const before = yield* rows;
++      yield* sql`insert into "user" (id, name, email, "emailVerified", image, "createdAt", "updatedAt")
++        values (${user}, ${name}, ${email}, true, null, now(), now()) on conflict (id) do nothing`;
++      yield* sql`insert into organization (id, name, slug, logo, "createdAt")
++        values (${organization}, ${name}, ${slug}, null, now()) on conflict (id) do nothing`;
++      yield* sql`insert into member (id, "organizationId", "userId", role, "createdAt")
++        values (${member}, ${organization}, ${user}, 'owner', now()) on conflict (id) do nothing`;
++      yield* sql`delete from hosted_provisioning
++        where (organization_id = ${organization} or user_id = ${user})
++          and status = 'queued'
++          and not starts_with(id, ${poolAccessJobPrefix})
++          and not starts_with(id, ${poolRotationJobPrefix})`;
++      yield* sql`delete from cloud_welcome_email where user_id = ${user}`;
++      const after = yield* conflicts;
++      const left = yield* count(sql`select count(*) as count from cloud_welcome_email
++        where user_id = ${user}`);
++      if (!inert(after) || left !== 0) return yield* refuse("identity_conflict");
++      const written = yield* rows;
++      if (
++        (["user", "organization", "member"] as const).some(
++          (key) => canonical(written[key]) !== canonical(expected[key]),
++        )
++      )
++        return yield* refuse("identity_conflict");
++      return {
++        inserted: (["user", "organization", "member"] as const).filter(
++          (key) => before[key] === undefined,
++        ),
++      };
++    }),
++  );
++});
++
++/** Read-only: the identity is exactly what the operation wrote, and still inert. */
++export const verifyIdentity = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  const found = yield* conflicts;
++  const current = yield* rows;
++  const welcome = yield* count(sql`select count(*) as count from cloud_welcome_email
++    where user_id = ${user}`);
++  const seats = yield* count(sql`select count(*) as count from cloud_billing_seats
++    where organization_id = ${organization}`);
++  return {
++    identityRows: (["user", "organization", "member"] as const).every(
++      (key) => canonical(current[key]) === canonical(expected[key]),
++    ),
++    identityInert: inert(found),
++    noWelcomeEmail: welcome === 0,
++    noBillingSeats: seats === 0,
++  };
++});
 diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/plan.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/plan.ts
 new file mode 100644
 index 0000000..63dd29b
@@ -949,6 +1198,51 @@ index 0000000..3ad6eac
 +      verification,
 +    };
 +  });
+diff --git a/apps/hosted/cloud/src/infrastructure/acceptance-pool/steps.ts b/apps/hosted/cloud/src/infrastructure/acceptance-pool/steps.ts
+new file mode 100644
+index 0000000..d476b3c
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/acceptance-pool/steps.ts
+@@ -0,0 +1,39 @@
++import {
++  refuse,
++  type AcceptancePoolSteps,
++  type PlannedWrite,
++} from "@executor-js/hosted-server/acceptance-pool";
++import { Effect } from "effect";
++import { ensureIdentity, inspectIdentity, verifyIdentity } from "./identity.ts";
++
++const identityWrites = (observed: Readonly<Record<string, string>>): PlannedWrite[] =>
++  (
++    [
++      ["identity.user", "user", "acceptance"],
++      ["identity.organization", "organization", "acceptance"],
++      ["identity.member", "member", "acceptance-owner"],
++    ] as const
++  )
++    .filter(([key]) => observed[key] === "absent")
++    .map(([, table, key]) => ({ store: "tools", table, key, action: "insert" }));
++
++/** The steps the deployed route runs, in plan order. */
++export const acceptancePoolSteps: AcceptancePoolSteps = {
++  inspect: (kind) =>
++    kind === "setup"
++      ? Effect.map(inspectIdentity, (observed) => ({
++          observed,
++          steps: ["identity"],
++          writes: identityWrites(observed),
++          data: {},
++        }))
++      : Effect.fail(refuse("pool_state")),
++  run: (step) => (step === "identity" ? ensureIdentity : Effect.fail(refuse("pool_state"))),
++  verify: (context) =>
++    context.kind === "setup"
++      ? Effect.map(verifyIdentity, (checks) => ({
++          ok: Object.values(checks).every(Boolean),
++          checks,
++        }))
++      : Effect.fail(refuse("pool_state")),
++};
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
 index 88d5697..4568ad9 100644
 --- a/apps/hosted/cloud/src/main.ts
@@ -982,24 +1276,23 @@ index 88d5697..4568ad9 100644
          HttpRouter.provideRequest(executor),
        ),
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
-index bafb8cd..332e376 100644
+index bafb8cd..4c6bcd4 100644
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
-@@ -59,6 +59,8 @@
+@@ -59,6 +59,7 @@
      "./pool-account-acquisition-contract": "./src/implementation/pool-account-acquisition-contract.ts",
      "./account-key-mirror": "./src/implementation/account-key-mirror.ts",
      "./pool-token": "./src/implementation/pool-token.ts",
 +    "./acceptance-pool": "./src/contracts/acceptance-pool.ts",
-+    "./acceptance-pool-steps": "./src/implementation/acceptance-pool/steps.ts",
      "./hosted-routes": "./src/implementation/hosted-routes-accounts.ts",
      "./hosted-routes-token": "./src/implementation/hosted-routes-token.ts",
      "./hosted-routes/contracts": "./src/contracts/hosted-routes.ts",
 diff --git a/apps/hosted/server/src/contracts/acceptance-pool.ts b/apps/hosted/server/src/contracts/acceptance-pool.ts
 new file mode 100644
-index 0000000..6fae418
+index 0000000..ac8b103
 --- /dev/null
 +++ b/apps/hosted/server/src/contracts/acceptance-pool.ts
-@@ -0,0 +1,121 @@
+@@ -0,0 +1,124 @@
 +import { Data, Schema, type Effect } from "effect";
 +import type { SqlClient } from "effect/sql";
 +
@@ -1021,6 +1314,9 @@ index 0000000..6fae418
 +  user === acceptanceIdentity.user;
 +export const isAcceptanceOrganization = (organization: string | null | undefined) =>
 +  organization === acceptanceIdentity.organization;
++
++/** The pool's own audience and token-rotation jobs are the only lifecycle jobs it keeps. */
++export { poolAccessJobPrefix, poolRotationJobPrefix } from "./pool-defaults.ts";
 +
 +/** Every pool the operation creates is named so; the server refuses any other name. */
 +export const acceptancePoolName = /^acceptance-[a-z0-9][a-z0-9-]{0,47}$/u;
@@ -1121,18 +1417,33 @@ index 0000000..6fae418
 +    context: StepContext,
 +  ) => Effect.Effect<Verification, unknown, SqlClient.SqlClient | R>;
 +}
-diff --git a/apps/hosted/server/src/implementation/acceptance-pool/steps.ts b/apps/hosted/server/src/implementation/acceptance-pool/steps.ts
-new file mode 100644
-index 0000000..5701735
---- /dev/null
-+++ b/apps/hosted/server/src/implementation/acceptance-pool/steps.ts
-@@ -0,0 +1,9 @@
-+import { Effect } from "effect";
-+import { refuse, type AcceptancePoolSteps } from "../../contracts/acceptance-pool.ts";
-+
-+// Skeleton: the identity, setup and teardown steps replace this. Until then every plan refuses.
-+export const acceptancePoolSteps: AcceptancePoolSteps = {
-+  inspect: () => Effect.fail(refuse("pool_state")),
-+  run: () => Effect.fail(refuse("pool_state")),
-+  verify: () => Effect.fail(refuse("pool_state")),
-+};
+diff --git a/apps/hosted/server/src/implementation/pool-app-upgrades.ts b/apps/hosted/server/src/implementation/pool-app-upgrades.ts
+index eb034b5..6c7aa38 100644
+--- a/apps/hosted/server/src/implementation/pool-app-upgrades.ts
++++ b/apps/hosted/server/src/implementation/pool-app-upgrades.ts
+@@ -6,6 +6,7 @@ import {
+   poolRotationJobPrefix,
+ } from "../contracts/pool-defaults.ts";
+ import { poolTokenKeyVersion } from "./pool-account.ts";
++import { acceptanceIdentity } from "../contracts/acceptance-pool.ts";
+ 
+ /**
+  * Bump when what a reconcile does changes, such as a new repair or decision log, so every pool is
+@@ -36,6 +37,7 @@ export const queuePoolAppUpgrades = (key: Redacted.Redacted<string>, version?: s
+             'member', team.id, coalesce(pool.value ->> 'owner', pool.key), now() + interval '15 minutes' from organization team
+           cross join lateral jsonb_each(coalesce(team.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) pool
+           where pool.value ->> 'tokenKeyVersion' is distinct from ${keyVersion}
++            and team.id <> ${acceptanceIdentity.organization}
+           group by team.id, coalesce(pool.value ->> 'owner', pool.key)`,
+       },
+       {
+@@ -45,7 +47,8 @@ export const queuePoolAppUpgrades = (key: Redacted.Redacted<string>, version?: s
+           select ${poolBundleJobPrefix} || ${poolRollout(poolAppVersion)} || ':' || gen_random_uuid()::text,
+             'member', member."organizationId", member."userId", now() + interval '2 minutes'
+           from member join "user" on "user".id = member."userId"
+-          where member.role = 'owner' and "user"."emailVerified" = true`,
++          where member.role = 'owner' and "user"."emailVerified" = true
++            and member."userId" <> ${acceptanceIdentity.user}`,
+       },
+     ];
+     // Fresh isolates read only the journal when both rollouts have already completed.
