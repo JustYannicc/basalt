@@ -1,0 +1,148 @@
+diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
+--- a/patches/alchemy@2.0.0-beta.80.patch
++++ b/patches/alchemy@2.0.0-beta.80.patch
+@@ -9136,3 +9136,144 @@
+              if (application &&
+                  (application.id !== output.applicationId ||
+                      application.name !== output.applicationName ||
++diff --git a/src/Cloudflare/Containers/ContainerProvider.ts b/src/Cloudflare/Containers/ContainerProvider.ts
++--- a/src/Cloudflare/Containers/ContainerProvider.ts
+++++ b/src/Cloudflare/Containers/ContainerProvider.ts
++@@ -1185,7 +1185,7 @@
++             if (output && typeof news.context === "string") {
++               const { imageHash } = yield* computeImage(id, news, {});
++               if (imageHash !== output.hash?.image) {
++-                return { action: "update" } as const;
+++                return { action: "update", reason: "image-input-unresolved" } as const;
++               }
++             }
++             return undefined;
++@@ -1232,7 +1232,11 @@
++           // an update so reconcile creates the live application.
++           if (!isLiveId(output.applicationId)) {
++             // Override stables to only include the accountId because the applicationId is going to change.
++-            return { action: "update", stables: ["accountId"] } as const;
+++            return {
+++              action: "update",
+++              stables: ["accountId"],
+++              reason: "placeholder-application",
+++            } as const;
++           }
++ 
++           // A just-created application can read as not found for a moment.
++@@ -1263,15 +1267,23 @@
++             news,
++             makeContainerEnv(news, accountId, newBindings),
++           );
++-          if (!application || !output.hash?.digest || !isRegistryDigest(output.hash.digest)) {
++-            return { action: "update" } as const;
+++          // Each bare update names its branch with one word of a closed set, so a plan that
+++          // still wants it says why without carrying any value.
+++          if (!application) {
+++            return { action: "update", reason: "application-not-found" } as const;
+++          }
+++          if (!output.hash?.digest || !isRegistryDigest(output.hash.digest)) {
+++            return { action: "update", reason: "digest-unrecorded" } as const;
++           }
++           const observed = yield* resolvePublishedImageRef(news, application.configuration.image);
++           if (observed.digest !== output.hash.digest) {
++-            return { action: "update" } as const;
+++            return { action: "update", reason: "running-digest-differs" } as const;
+++          }
+++          if (imageHash !== output.hash?.image) {
+++            return { action: "update", reason: "image-input-differs" } as const;
++           }
++-          if (imageHash !== output.hash?.image || !deepEqual(dev, output.dev)) {
++-            return { action: "update" } as const;
+++          if (!deepEqual(dev, output.dev)) {
+++            return { action: "update", reason: "dev-differs" } as const;
++           }
++         }),
++         precreate: Effect.fn(function* ({ id, news = {}, session }) {
++diff --git a/lib/Cloudflare/Containers/ContainerProvider.js b/lib/Cloudflare/Containers/ContainerProvider.js
++--- a/lib/Cloudflare/Containers/ContainerProvider.js
+++++ b/lib/Cloudflare/Containers/ContainerProvider.js
++@@ -791,7 +791,7 @@
++                 if (output && typeof news.context === "string") {
++                     const { imageHash } = yield* computeImage(id, news, {});
++                     if (imageHash !== output.hash?.image) {
++-                        return { action: "update" };
+++                        return { action: "update", reason: "image-input-unresolved" };
++                     }
++                 }
++                 return undefined;
++@@ -823,7 +823,7 @@
++             // an update so reconcile creates the live application.
++             if (!isLiveId(output.applicationId)) {
++                 // Override stables to only include the accountId because the applicationId is going to change.
++-                return { action: "update", stables: ["accountId"] };
+++                return { action: "update", stables: ["accountId"], reason: "placeholder-application" };
++             }
++             // A just-created application can read as not found for a moment.
++             // Wait that out, as update and rollout do, before calling it gone.
++@@ -838,15 +838,23 @@
++                 return { action: "replace" };
++             }
++             const { imageHash, dev } = yield* computeImage(id, news, makeContainerEnv(news, accountId, newBindings));
++-            if (!application || !output.hash?.digest || !isRegistryDigest(output.hash.digest)) {
++-                return { action: "update" };
+++            // Each bare update names its branch with one word of a closed set, so a plan that
+++            // still wants it says why without carrying any value.
+++            if (!application) {
+++                return { action: "update", reason: "application-not-found" };
+++            }
+++            if (!output.hash?.digest || !isRegistryDigest(output.hash.digest)) {
+++                return { action: "update", reason: "digest-unrecorded" };
++             }
++             const observed = yield* resolvePublishedImageRef(news, application.configuration.image);
++             if (observed.digest !== output.hash.digest) {
++-                return { action: "update" };
+++                return { action: "update", reason: "running-digest-differs" };
+++            }
+++            if (imageHash !== output.hash?.image) {
+++                return { action: "update", reason: "image-input-differs" };
++             }
++-            if (imageHash !== output.hash?.image || !deepEqual(dev, output.dev)) {
++-                return { action: "update" };
+++            if (!deepEqual(dev, output.dev)) {
+++                return { action: "update", reason: "dev-differs" };
++             }
++         }),
++         precreate: Effect.fn(function* ({ id, news = {}, session }) {
++diff --git a/src/Plan.ts b/src/Plan.ts
++--- a/src/Plan.ts
+++++ b/src/Plan.ts
++@@ -184,6 +184,8 @@
++   action: "update" | "adopted";
++   /** True while this is the first reconcile after a cold adoption. */
++   adopting?: boolean;
+++  /** Why the provider's diff asked for this update, when it names a reason. */
+++  providerReason?: string;
++   props: R["Props"];
++   state:
++     | CreatedResourceState
++@@ -1929,6 +1931,10 @@
++         return Node<Update>({
++           action: forceUpdateAfterAdoption ? "adopted" : "update",
++           adopting: forceUpdateAfterAdoption,
+++          // The provider's own word for why it updates, when its diff names one.
+++          ...("reason" in diff && typeof diff.reason === "string"
+++            ? { providerReason: diff.reason }
+++            : {}),
++           props: applyProps,
++           state: oldState,
++         });
++diff --git a/lib/Plan.js b/lib/Plan.js
++--- a/lib/Plan.js
+++++ b/lib/Plan.js
++@@ -1339,6 +1339,10 @@
++             return Node({
++                 action: forceUpdateAfterAdoption ? "adopted" : "update",
++                 adopting: forceUpdateAfterAdoption,
+++                // The provider's own word for why it updates, when its diff names one.
+++                ...("reason" in diff && typeof diff.reason === "string"
+++                    ? { providerReason: diff.reason }
+++                    : {}),
++                 props: applyProps,
++                 state: oldState,
++             });

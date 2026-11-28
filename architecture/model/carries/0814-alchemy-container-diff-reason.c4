@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "A Container's bare update names the branch of its diff that asked for it with one word of a closed set, and the planner keeps that word on the Update node: a read-back row with no named property or binding prints the word in place of no named property, and a word outside the release's closed set is dropped, so no value, id, host or provider text reaches the public line."
+    }
+  }
+}

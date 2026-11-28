@@ -360,6 +360,31 @@ test("only the release entry's own public lines are echoed", () => {
   ]);
 });
 
+test("a read-back failure naming the provider's word passes the filter unchanged, and a log line does not", async () => {
+  const { failureReport } = await import("../release/public-report.ts");
+  const { ChangesRemainAfterApply } = await import("../release/plan-summary.ts");
+  const error = ChangesRemainAfterApply.of([
+    {
+      fqn: "Mock",
+      type: "Cloudflare.Container",
+      action: "update",
+      changedProps: [],
+      bindings: [],
+      reasons: [],
+      providerReason: "application-not-found",
+    },
+  ]);
+  const report = failureReport(error, { phase: "read-back", resources: [] }).publicText;
+  const lines = report.split("\n");
+  assert.match(
+    lines.at(-1),
+    /remaining=Mock \(Cloudflare\.Container update: provider application-not-found\)$/u,
+  );
+  // The word travels through the plan row: a provider's own log line carrying it is still dropped.
+  const log = "[01:00:20.700] INFO (#314): Cloudflare Container diff: application-not-found app-1";
+  assert.deepEqual(publicEntryLines([log, report, log].join("\n"), report), lines);
+});
+
 test("a provider's error line, an id carrying a URL and an account id never reach the log", () => {
   const account = "0123456789abcdef0123456789abcdef";
   const dropped = [
