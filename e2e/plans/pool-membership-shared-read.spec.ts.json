@@ -1,0 +1,48 @@
+{
+  "scenarios": {
+    "poolMembershipSharedRead": {
+      "fixtures": "actors",
+      "appOrigin": true,
+      "deferOnboarding": true,
+      "title": "The pool's membership read takes the organization lock shared, beside a usage read in flight, and the pool view keeps its membership",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Uses the managed Cloud Postgres lock fixture, its wire observer and a synthetic external pool backend."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host organization pools."
+        }
+      }
+    }
+  },
+  "runs": {
+    "poolMembershipSharedRead": [
+      "declared:cloud"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/implementation/organization-access-lock.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-membership.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-membership-reconcile.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-membership-rows.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-membership-mirrors.ts",
+    ".upstream/e2e/support/cloud-locks.ts",
+    ".upstream/e2e/support/sql-wire-proof.ts",
+    ".upstream/e2e/support/legacy-pool-handoff-setup.ts",
+    ".upstream/e2e/support/legacy-pool-home.ts",
+    ".upstream/e2e/support/pool-worker-runtime.ts",
+    ".upstream/e2e/support/pool-history-database.ts",
+    "src/pool/control.ts",
+    "src/pool/membership-read.ts",
+    "scripts/pool-tests/history-schema-fixture.ts",
+    ".upstream/e2e/support/cloud-pool-gateway.ts",
+    "src/pool/token.ts"
+  ],
+  "fixture": "pool-setup"
+}
