@@ -52,7 +52,7 @@ test("accounts connected under the catalog app's first declaration link to a sec
       // explicit adoption of the refs it leaves behind before new apps can share those accounts.
       assert.equal(
         w.family,
-        "prv_723ba6038ee84547f30e619eae5d182081e413ff4088bf26c8d567c45facfa47",
+        "prv_889b2b58030f973c969bc67d076bb0e6f584e026f443a4f8a3e3c8b6175ba5f4",
         "the Cloudflare family's provider ref changed; ship an adoption for the previous ref",
       );
       assert.equal(

@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/cloudflare-scopes.ts
-@@ -0,0 +1,406 @@
+@@ -0,0 +1,408 @@
 +// The reviewed authorization-server scope catalog. Update with the OAuth metadata snapshot.
 +export const cloudflareOAuthScopes = [
 +  "offline_access",
@@ -405,7 +405,9 @@
 +  "zone-waf.read",
 +  "zone-waf.write",
 +  "zone.read",
-+  "zone.write"
++  "zone.write",
++  "billing:read",
++  "billing:write"
 +] as const;
 --- a/index.ts
 +++ b/index.ts

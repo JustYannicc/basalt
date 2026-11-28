@@ -258,7 +258,11 @@ run this repair automatically.
 
 An app keeps its provider ref when a version only adds OAuth scopes, so a
 Cloudflare app installed before the full-scope declaration still holds the ref
-its first definition derived. Every app that declares Cloudflare now derives
+its first definition derived. The same holds each time the shared declaration
+gains scopes later, for example when Cloudflare publishes new ones: apps that
+existed before that release keep the previous family ref, and apps installed
+after it derive the new one and cannot see the older accounts until this
+migration moves them, with `from` set to the previous family ref. Every app that declares Cloudflare now derives
 the family's canonical ref, so those apps cannot link the older accounts.
 `cloudflare-family-adoption-v1` moves one organization's accounts and the
 versions that name the retained ref onto the family ref:
@@ -328,7 +332,8 @@ it with the `accounts` inventory and adopt it with a new exact selection), and
 a plan with changes lists the versions to move; review it and GO it. Two
 refusals mean the check could not run rather than that something names `from`:
 `family-ref-changed` (a release changed the shared Cloudflare declaration, which
-ships with its own adoption) and `retained-provider-not-family` (another
+ships with its own adoption: run this migration again for each organization, with
+`from` set to the family ref before that release) and `retained-provider-not-family` (another
 organization's deploy changed the shared provider row under `from`). Then read
 the `accounts` inventory and the `pools` backup for rows that still name `from`.
 

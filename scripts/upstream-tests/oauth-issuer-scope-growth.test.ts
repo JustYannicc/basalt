@@ -47,8 +47,16 @@ const issuer = JSON.parse(
   token_endpoint: string;
   scopes_supported: string[];
 };
-const reviewed = issuer.scopes_supported;
-const added = ["billing:read", "billing:write"];
+/** What every Cloudflare grant asked for from full access until billing was added: the baseline. */
+const reviewed = JSON.parse(
+  readFileSync(
+    new URL("../../src/catalog/cloudflare.oauth-scope-baseline.json", import.meta.url),
+    "utf8",
+  ),
+) as string[];
+/** The scopes Cloudflare published since, which today's declarations also ask for. */
+const added = issuer.scopes_supported.filter((scope) => !reviewed.includes(scope));
+assert.ok(added.includes("billing:read") && added.includes("billing:write"));
 /** What the Cloudflare app asked for before carry 0541 requested the issuer's whole list. */
 const beforeFullAccess = ["user:read", "account:read", "offline_access"];
 const owner = sdk.OwnerId.make("organization:team-a");
@@ -108,7 +116,11 @@ const asking = (
   scopes: readonly string[],
 ): sdk.ProviderDefinition => {
   const oauth = oauthOf(definition);
-  assert.deepEqual(oauth.scopes, reviewed, "the declaration mirrors the reviewed issuer list");
+  assert.deepEqual(
+    oauth.scopes,
+    issuer.scopes_supported,
+    "the declaration mirrors the reviewed issuer list",
+  );
   return { ...definition, auth: { ...definition.auth, oauth: { ...oauth, scopes: [...scopes] } } };
 };
 
@@ -128,7 +140,7 @@ type Saved = {
   readonly expired?: boolean;
 };
 
-/** The generated issuers once the reviewed list grew: today's list plus the two new scopes. */
+/** The generated issuers once the reviewed list grew: the baseline plus the new scopes. */
 const grownIssuers = [
   { issuer: issuer.issuer, scopes: [...reviewed, ...added], baseline: reviewed },
 ];
@@ -331,14 +343,17 @@ test("a scope the issuer does not publish stays required on a whole-list grant",
 
 test("the generated issuers name Cloudflare with its reviewed list and frozen baseline", async () => {
   const { issuers } = await Effect.runPromise(Effect.service(WholeListScopeIssuers));
-  const baseline = JSON.parse(
+  const history = JSON.parse(
     readFileSync(
-      new URL("../../src/catalog/cloudflare.oauth-scope-baseline.json", import.meta.url),
+      new URL("../../src/catalog/cloudflare.oauth-scope-history.json", import.meta.url),
       "utf8",
     ),
   ) as string[];
   // Preparation digests with its own copy of the SDK's function; this holds the two equal.
-  assert.deepEqual(issuers, digested([{ issuer: issuer.issuer, scopes: reviewed, baseline }]));
+  const lists = [
+    ...new Set([scopeListDigest(reviewed), ...history, scopeListDigest(issuer.scopes_supported)]),
+  ];
+  assert.deepEqual(issuers, [{ issuer: issuer.issuer, lists }]);
 });
 
 test("a grant that recorded no request is held to every requested scope", async () => {

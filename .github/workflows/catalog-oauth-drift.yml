@@ -74,8 +74,9 @@ jobs:
           body-path: ${{ runner.temp }}/catalog-oauth-drift.md
           draft: false
           labels: oauth-metadata-drift
+          # The snapshot, and for a whole-list connection the scope history its re-pin extends.
           add-paths: |
-            src/catalog/${{ matrix.entry }}.oauth-metadata.json
+            src/catalog/${{ matrix.entry }}.oauth-*.json
             src/catalog/oauth-reviews.json
 
   catalog:

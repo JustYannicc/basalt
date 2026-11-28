@@ -1,4 +1,4 @@
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
@@ -10,6 +10,11 @@ import {
   liveOAuthMetadata,
   metadataSnapshotFile,
 } from "./catalog-oauth-metadata.ts";
+import {
+  scopeBaselineFile,
+  scopeHistoryFile,
+  scopeListDigest,
+} from "./oauth-whole-list-issuers-source.ts";
 
 type Evidence = Awaited<ReturnType<typeof liveOAuthMetadata>>;
 type Fields = Record<string, unknown>;
@@ -94,6 +99,8 @@ export interface Drift {
   signIn: string[];
   /** The published document no longer passes the reviewed protocol rules. */
   problems: string[];
+  /** The connection asks for its issuer's whole scope list, so its requested scopes follow it. */
+  wholeList: boolean;
 }
 
 /** Compare today's published documents with the committed snapshots their pins review. */
@@ -141,17 +148,36 @@ export function metadataDrift(
           metadata: published.metadata,
         },
       ),
+      wholeList: decision.scopeRequest === "issuer-list",
     });
   }
   return { drift, unavailable };
 }
 
-/** Rewrite one entry's snapshot and pin; the registry keeps its committed formatting. */
+/**
+ * Rewrite one entry's snapshot and pin; the registry keeps its committed formatting. A whole-list
+ * connection's new scope list joins its history, which saved grants are recognized by.
+ */
 export function repinMetadata(directory: string, drift: Drift) {
   writeFileSync(
     join(directory, metadataSnapshotFile(drift.entry)),
     JSON.stringify(drift.document, null, 2) + "\n",
   );
+  const scopes = list(fields(drift.document).scopes_supported);
+  if (drift.wholeList && scopes?.every((scope): scope is string => typeof scope === "string")) {
+    const file = join(directory, scopeHistoryFile(drift.entry));
+    const history: string[] = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : [];
+    const baseline = join(directory, scopeBaselineFile(drift.entry));
+    // The list grants are now recognized by: the history's last entry, else the baseline.
+    const latest =
+      history.at(-1) ??
+      (existsSync(baseline)
+        ? scopeListDigest(JSON.parse(readFileSync(baseline, "utf8")))
+        : undefined);
+    const digest = scopeListDigest(scopes);
+    if (latest !== digest)
+      writeFileSync(file, JSON.stringify([...history, digest], null, 2) + "\n");
+  }
   const file = join(directory, "oauth-reviews.json");
   const registry = JSON.parse(readFileSync(file, "utf8"));
   for (const entry of registry.entries)
@@ -163,6 +189,9 @@ export function repinMetadata(directory: string, drift: Drift) {
 
 export function driftReport(drift: Drift): string {
   const alert = drift.signIn.length + drift.problems.length > 0;
+  // Such a connection's requested scopes must equal the document's, so its catalog test fails.
+  const followsList =
+    drift.wholeList && drift.changes.some((line) => line.startsWith("`scopes_supported`"));
   return [
     `## ${drift.entry}/${drift.method}: published OAuth metadata changed`,
     "",
@@ -173,9 +202,17 @@ export function driftReport(drift: Drift): string {
     "",
     ...drift.changes.map((line) => `- ${line}`),
     "",
+    ...(followsList
+      ? [
+          "This connection asks for its issuer's whole scope list, so its requested scopes must change with `scopes_supported`: land this re-pin together with that change in a pull request of its own (each run rewrites this branch), then close this one. Its catalog test fails until they match. Until then, sign-in keeps asking for the previous list, and saved grants are held to what they asked for.",
+          "",
+        ]
+      : []),
     alert
       ? "**Sign-in already behaves differently.** Values sign-in reads changed:"
-      : "Values sign-in reads are unchanged, so sign-in behaves as reviewed.",
+      : followsList
+        ? "Values sign-in reads are otherwise unchanged."
+        : "Values sign-in reads are unchanged, so sign-in behaves as reviewed.",
     ...(alert ? ["", ...[...drift.signIn, ...drift.problems].map((line) => `- ${line}`)] : []),
     "",
   ].join("\n");
@@ -186,7 +223,7 @@ const prBody = (drift: Drift) =>
     driftReport(drift),
     "The scheduled OAuth metadata drift job opened this re-pin. Merging it accepts the new document",
     `as reviewed: it replaces \`src/catalog/${metadataSnapshotFile(drift.entry)}\` and its pin in`,
-    "`src/catalog/oauth-reviews.json`. A different decision has to land in that registry on main;",
+    `\`src/catalog/oauth-reviews.json\`${drift.wholeList ? `, and adds the new list to \`src/catalog/${scopeHistoryFile(drift.entry)}\`` : ""}. A different decision has to land in that registry on main;`,
     "while the published document still differs from the pin, the next run reopens this re-pin.",
     "",
   ].join("\n");

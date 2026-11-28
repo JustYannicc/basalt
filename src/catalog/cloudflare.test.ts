@@ -12,7 +12,7 @@ import { oauthFitness, oauthReviews } from "./oauth-policy.ts";
 const scopeFile = source.files.find((file) => file.path === "cloudflare-scopes.ts")!;
 
 test("Cloudflare requests every reviewed issuer scope, including account token management", async () => {
-  assert.equal(cloudflareOAuthScopes.length, 403);
+  assert.equal(cloudflareOAuthScopes.length, 405);
   assert.equal(new Set(cloudflareOAuthScopes).size, cloudflareOAuthScopes.length);
   assert.deepEqual(cloudflareOAuthScopes, metadata.scopes_supported);
   // Mirroring the issuer's list is reviewed, so the issuer growing never asks a grant to reconnect.

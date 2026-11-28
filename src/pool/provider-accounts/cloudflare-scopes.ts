@@ -403,4 +403,6 @@ export const cloudflareOAuthScopes = [
   "zone-waf.write",
   "zone.read",
   "zone.write",
+  "billing:read",
+  "billing:write",
 ] as const;
