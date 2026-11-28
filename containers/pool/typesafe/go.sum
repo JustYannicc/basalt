@@ -1,4 +1,4 @@
 github.com/MoeForge/moego v0.1.0-alpha.5 h1:/pFyEhm0GYdOGfwawNjzLx+DoDQVoCI0dLsu8Sbpac8=
 github.com/MoeForge/moego v0.1.0-alpha.5/go.mod h1:SBNiQjCpWC3IEBMKFBOwOyhhQ3jywMrISqCwJTdr4aA=
-github.com/router-for-me/CLIProxyAPI/v8 v8.1.7 h1:OMhpSZBjHg0Cb5/RT6mz1jWfoRHwi4oOQR8XywrfRoE=
-github.com/router-for-me/CLIProxyAPI/v8 v8.1.7/go.mod h1:6wsM59rPo+/w22SY93kn/125VJlEsvMTuFCOHGKX4do=
+github.com/router-for-me/CLIProxyAPI/v8 v8.1.8 h1:AQ21LB3zuh0Kez1uPSjGFrgLVEwipJ3jITPEjMxi2MA=
+github.com/router-for-me/CLIProxyAPI/v8 v8.1.8/go.mod h1:6wsM59rPo+/w22SY93kn/125VJlEsvMTuFCOHGKX4do=
