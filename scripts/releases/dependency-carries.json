@@ -125,6 +125,11 @@
       "packages": ["alchemy"],
       "upstream": "https://github.com/alchemy-run/alchemy/issues/3653",
       "owner": "release owner"
+    },
+    "0813-alchemy-container-readback-retry": {
+      "packages": ["alchemy"],
+      "upstream": "https://github.com/alchemy-run/alchemy/issues/3840",
+      "owner": "release owner"
     }
   }
 }
