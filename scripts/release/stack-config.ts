@@ -39,6 +39,12 @@ export const stackConfigs: ReadonlyArray<{
     state: "runner-local",
     stages: /^test-emulated-upstream$/u,
   },
+  // The route gateway proof's scratch stages, test-route-scratch-1 and -2.
+  {
+    path: "scripts/route-scratch/stack.ts",
+    state: "runner-local",
+    stages: /^test-route-scratch-[12]$/u,
+  },
 ];
 /** Whether a known stack may run on a stage; the scale stack keeps its own `scale-<n>` rule. */
 export const stackRunsOn = (config: string, stage: string) =>
