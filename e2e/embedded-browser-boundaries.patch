@@ -72,16 +72,54 @@ diff --git a/e2e/support/app-activation-observer.ts b/e2e/support/app-activation
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/app-activation-observer.ts
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,132 @@
 +import { errors, type Page, type Request, type Response } from "playwright";
++
++/**
++ * The active versions an answer names for one app. Dashboard batch answers are ndjson lines whose
++ * `text` holds each endpoint's body as a string, so nested JSON strings are opened too.
++ */
++const appVersions = (text: string, app: string | undefined) => {
++  const found = new Set<string>();
++  const visit = (value: unknown): void => {
++    if (typeof value === "string") {
++      if (!/^\s*[[{]/u.test(value)) return;
++      try {
++        visit(JSON.parse(value));
++      } catch {}
++      return;
++    }
++    if (Array.isArray(value)) return value.forEach(visit);
++    if (value === null || typeof value !== "object") return;
++    const record = value as Record<string, unknown>;
++    if (typeof record["activeVersion"] === "string" && (app === undefined || record["id"] === app))
++      found.add(record["activeVersion"]);
++    Object.values(record).forEach(visit);
++  };
++  for (const line of text.split("\n")) visit(line);
++  return found;
++};
 +
 +/** Arm before deployment: either the version body or both location reads confirms activation. */
 +export const observeAppActivation = (
 +  page: Page,
 +  appRead: (response: Response) => boolean,
 +  locationReads: (request: Request) => number,
++  // Scopes the record's versions to this app's own reads; the confirmation rule ignores it.
++  app?: string,
 +) => {
 +  const bodies: string[] = [];
++  // What each matched answer said, kept past dispose as counts and flags, never the body.
++  const armed = Date.now();
++  let waitBegan: number | undefined;
++  const answers: {
++    at: number;
++    read: "batch" | "app";
++    completed: boolean;
++    versions: ReadonlySet<string>;
++    // The same test the wait applies, when the version was already known on arrival.
++    includedExpected?: boolean;
++  }[] = [];
 +  let reads = 0;
 +  let expected: string | undefined;
 +  let confirm: (() => void) | undefined;
@@ -98,8 +136,19 @@ new file mode 100644
 +  };
 +  const body = (response: Response) => {
 +    if (!appRead(response)) return;
++    // Recorded when the answer starts, so a body that never completes still shows.
++    const answer: (typeof answers)[number] = {
++      at: Date.now(),
++      read: new URL(response.url()).pathname.includes("/batch") ? "batch" : "app",
++      completed: false,
++      versions: new Set(),
++    };
++    answers.push(answer);
 +    void response.text().then(
 +      (text) => {
++        answer.completed = true;
++        if (expected !== undefined) answer.includedExpected = text.includes(expected);
++        answer.versions = appVersions(text, app);
 +        if (disposed) return;
 +        bodies.push(text);
 +        check();
@@ -118,8 +167,22 @@ new file mode 100644
 +  page.on("response", body);
 +  return {
 +    dispose,
++    /** Each matched answer since arming: when, which read, and whether it carried the version. */
++    answers: () =>
++      answers.map((answer) => ({
++        afterArmedMs: answer.at - armed,
++        afterWaitBeganMs: waitBegan === undefined ? null : answer.at - waitBegan,
++        read: answer.read,
++        bodyCompleted: answer.completed,
++        carriedExpectedVersion:
++          !answer.completed || expected === undefined
++            ? null
++            : (answer.includedExpected ?? answer.versions.has(expected)),
++        otherVersions: [...answer.versions].filter((version) => version !== expected).length,
++      })),
 +    waitForVersion: (version: string) => {
 +      expected = version;
++      waitBegan = Date.now();
 +      // The fallback counts only the returning-tab window, not earlier deployment traffic.
 +      reads = 0;
 +      const ready = new Promise<void>((resolve, reject) => {
@@ -145,7 +208,7 @@ new file mode 100644
 diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.ts
 --- a/e2e/tests/embedded-app-ui.spec.ts
 +++ b/e2e/tests/embedded-app-ui.spec.ts
-@@ -14,6 +14,7 @@
+@@ -16,6 +16,7 @@ import { saveAndDeploy } from "../support/app-authoring.ts";
  import { observeFrameDeadline, waitForFrameDeadline } from "../support/frame-deadline.ts";
  import { batchPath, batchedReads } from "../support/read-batches.ts";
  import { Target } from "../support/platform.ts";
@@ -153,7 +216,7 @@ diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.
  
  const files = [
    {
-@@ -284,6 +285,24 @@
+@@ -286,6 +287,25 @@ layer(HostedLive, { excludeTestServices: true })("Embedded app screens", (it) =>
          const original = yield* browser.use("Keep the open App frame", (page) =>
            page.locator(`iframe[title="${first.app.name} app"]`).elementHandle(),
          );
@@ -170,6 +233,7 @@ diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.
 +                  );
 +                },
 +                (request) => locationReads(first.app.id, request),
++                first.app.id,
 +              ),
 +            ),
 +          ),
@@ -178,7 +242,7 @@ diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.
          const updated = yield* saveAndDeploy(actors.owner, `${prefix}/apps/${first.app.id}`, {
            files: files.map((file) =>
              file.path === "ui/index.html"
-@@ -308,34 +327,9 @@
+@@ -310,43 +330,30 @@ layer(HostedLive, { excludeTestServices: true })("Embedded app screens", (it) =>
              .getByRole("heading", { name: "Embedded fixture screen updated" })
              .waitFor({ timeout: 20_000 }),
          );
@@ -210,20 +274,38 @@ diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.
 -            )
 -            .then(() => Promise.race([appRead, reread2]))
 -            .finally(() => page.off("request", countReads))
-+        yield* browser.use("The dashboard reads the activated version", (page) =>
-+          activation
-+            .waitForVersion(activated.activeVersion)
-             .then(() =>
-               page.evaluate(
-                 () =>
-@@ -343,8 +337,8 @@
-                     requestAnimationFrame(() => requestAnimationFrame(resolve)),
-                   ),
+-            .then(() =>
+-              page.evaluate(
+-                () =>
+-                  new Promise((resolve) =>
+-                    requestAnimationFrame(() => requestAnimationFrame(resolve)),
+-                  ),
++        yield* browser
++          .use("The dashboard reads the activated version", (page) =>
++            activation
++              .waitForVersion(activated.activeVersion)
++              .then(() =>
++                page.evaluate(
++                  () =>
++                    new Promise((resolve) =>
++                      requestAnimationFrame(() => requestAnimationFrame(resolve)),
++                    ),
++                ),
                ),
 -            );
 -        });
++          )
++          .pipe(
++            // A timeout alone cannot say whether the dashboard was answered the old version.
++            Effect.tapError(() =>
++              Effect.gen(function* () {
++                yield* (yield* Evidence).json(
++                  "dashboard-activation-answers.json",
++                  activation.answers(),
++                );
++              }),
 +            ),
-+        );
++          );
          yield* browser.use("Activation keeps the mounted frame without a loading state", (page) =>
            Promise.all([
              frameChanges(page),
