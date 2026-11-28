@@ -7,15 +7,42 @@ import { Data } from "effect";
  */
 export type StackState = "shared" | "runner-local";
 
-/** The stacks the entry deploys or destroys, relative to the repository root, and their State. */
-export const stackConfigs: ReadonlyArray<{ readonly path: string; readonly state: StackState }> = [
-  { path: "alchemy.run.ts", state: "shared" },
-  { path: "scripts/preview/stack/alchemy.database.ts", state: "shared" },
-  { path: "scripts/preview/stack/alchemy.cleanup.ts", state: "shared" },
-  { path: "scripts/preview/stack/alchemy.rehearsal-fixture.ts", state: "shared" },
+/**
+ * The stacks the entry deploys or destroys, relative to the repository root: their State, and the
+ * stages each may run on. The entry refuses any other stage before it loads an environment or reads
+ * anything: a stack's own stage check runs only once the stack is evaluated, after both.
+ */
+export const stackConfigs: ReadonlyArray<{
+  readonly path: string;
+  readonly state: StackState;
+  readonly stages: RegExp;
+}> = [
+  { path: "alchemy.run.ts", state: "shared", stages: /^(?:production|test-[a-z0-9-]+)$/u },
+  {
+    path: "scripts/preview/stack/alchemy.database.ts",
+    state: "shared",
+    stages: /^test-pr-[1-9][0-9]*$/u,
+  },
+  {
+    path: "scripts/preview/stack/alchemy.cleanup.ts",
+    state: "shared",
+    stages: /^test-pr-[1-9][0-9]*$/u,
+  },
+  {
+    path: "scripts/preview/stack/alchemy.rehearsal-fixture.ts",
+    state: "shared",
+    stages: /^test-rehearsal-[1-9]$/u,
+  },
   // The load proof's emulated model upstream, stage test-emulated-upstream.
-  { path: "scripts/emulated-upstream/stack.ts", state: "runner-local" },
+  {
+    path: "scripts/emulated-upstream/stack.ts",
+    state: "runner-local",
+    stages: /^test-emulated-upstream$/u,
+  },
 ];
+/** Whether a known stack may run on a stage; the scale stack keeps its own `scale-<n>` rule. */
+export const stackRunsOn = (config: string, stage: string) =>
+  stackConfigs.some((stack) => stack.path === config && stack.stages.test(stage));
 
 /**
  * The stack a `--config` names: one of the known stacks, relative to the working directory (the

@@ -10,6 +10,7 @@ import {
   SHARED_STATE_VERSION,
   stackConfig,
   stackConfigs,
+  stackRunsOn,
   stateStoreRefusal,
 } from "./stack-config.ts";
 
@@ -181,8 +182,7 @@ test("the entry admits the emulated stack only on a test-* stage and refuses eve
   const admitted = runEntry("teardown", "--stage", "test-emulated-upstream", "--config", emulated);
   assert.notEqual(admitted.status, 0);
   assert.match(admitted.output, /A teardown runs only on a test-rehearsal-<n> stage/u);
-  const stageRefusal =
-    /Use --stage production, a disposable test-\* stage, or scale-<n> for the scale stack/u;
+  const stageRefusal = /The stack scripts\/emulated-upstream\/stack\.ts does not run on stage/u;
   for (const stage of ["emulated-upstream", "scale-1", "Test-emulated-upstream", ""]) {
     const refused = runEntry("plan", "--stage", stage, "--config", emulated);
     assert.notEqual(refused.status, 0, stage);
@@ -204,6 +204,35 @@ test("the entry admits the emulated stack only on a test-* stage and refuses eve
   }
 });
 
+test("a test-only stack is refused on production and on any stage but its own, before anything loads", () => {
+  // As a production run inside Actions: the stage checks after this one would let a plan through.
+  const actions = { GITHUB_ACTIONS: "true", BASALT_RELEASE_CANDIDATE: "a".repeat(40) };
+  for (const [config, own, other] of [
+    ["scripts/preview/stack/alchemy.database.ts", "test-pr-7", "test-rehearsal-1"],
+    ["scripts/preview/stack/alchemy.cleanup.ts", "test-pr-7", "test-emulated-upstream"],
+    ["scripts/preview/stack/alchemy.rehearsal-fixture.ts", "test-rehearsal-1", "test-pr-7"],
+    ["scripts/emulated-upstream/stack.ts", "test-emulated-upstream", "test-pr-7"],
+  ] as const) {
+    for (const stage of ["production", other]) {
+      const refused = runEntryWith(actions, "plan", "--stage", stage, "--config", config);
+      assert.notEqual(refused.status, 0, `${config} on ${stage}`);
+      // A runner-local stack meets the State rule on production first; either refusal holds it.
+      assert.match(
+        refused.output,
+        new RegExp(
+          `The stack ${config.replaceAll(".", "\\.")} does not run on stage ${stage}|A stack on runner-local State never deploys to production`,
+          "u",
+        ),
+      );
+    }
+    // On its own stage the rule admits it; nothing past it is run here, since that would load.
+    assert.equal(stackRunsOn(config, own), true, `${config} on ${own}`);
+  }
+  // The production stack still runs on production: it gets past this check to the next one.
+  const production = runEntryWith(actions, "deploy", "--stage", "production");
+  assert.match(production.output, /Production applies only a reviewed plan digest/u);
+});
+
 test("the entry refuses a runner-local stack on production before anything loads, and only that", () => {
   // What a production job carries, so the refusal is the State rule's, not the job check's.
   const job = { GITHUB_ACTIONS: "true", BASALT_RELEASE_CANDIDATE: "a".repeat(40) };
@@ -218,10 +247,13 @@ test("the entry refuses a runner-local stack on production before anything loads
         assert.notEqual(refused.status, 0, `${command} ${config}`);
         assert.match(refused.output, refusal, `${command} ${config}`);
       }
-  // A shared stack on production passes the rule and stops at the production check after it.
+  // A shared stack that runs on production passes the rule and stops at the production check after
+  // it; the test-only shared stacks are refused by the stage rule instead (the test above).
   for (const config of [
     undefined,
-    ...stackConfigs.filter((s) => s.state === "shared").map((s) => s.path),
+    ...stackConfigs
+      .filter((s) => s.state === "shared" && s.stages.test("production"))
+      .map((s) => s.path),
   ]) {
     const args = ["deploy", "--stage", "production", ...(config ? ["--config", config] : [])];
     const stopped = runEntryWith(job, ...args);

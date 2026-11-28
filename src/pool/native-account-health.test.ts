@@ -31,6 +31,7 @@ function fixture(
     windows?: Json[];
     stalled?: boolean;
     wait?: (ms: number, signal: AbortSignal) => Promise<void>;
+    refused?: boolean;
   } = {},
 ) {
   const calls: string[] = [],
@@ -124,7 +125,13 @@ function fixture(
     client,
     { now: () => now, ...(options.wait ? { wait: options.wait } : {}) },
   );
-  const input = { client, collection, signingKey: key, now: () => now };
+  const input = {
+    client,
+    collection,
+    signingKey: key,
+    now: () => now,
+    refusals: { refusesUse: async () => options.refused === true },
+  };
   return {
     calls,
     async check(changes: Json = {}) {
@@ -541,4 +548,24 @@ test("native checks project only closed parser stages from collection failures",
     errorMessage: "xAI monthly billing response could not be parsed.",
   }).check())!.json();
   assert.equal(Object.hasOwn(body.diagnostic, "parserStage"), false);
+});
+
+test("a credential its route refuses is never read for its health and answers as a provider with no usage reading", async () => {
+  // Codex has a usage reader, so a check would read Home and the provider's quota: the guard is
+  // what keeps a refused one from doing either.
+  const refused = fixture({ refused: true });
+  const observed = await refused.check({ action: "observe" });
+  assert.deepEqual(await observed!.json(), { result: null });
+  const checked = await (await refused.check({ action: "check" }))!.json();
+  assert.deepEqual(refused.calls, []);
+  // The same answer a provider with no usage reading gives, whatever that path answers.
+  const unread = fixture({ provider: "gemini-cli" });
+  const quotaless = await (await unread.check({ action: "check", provider: "gemini-cli" }))!.json();
+  assert.deepEqual(checked, quotaless);
+  // Unrouted, the same check reads Home and the provider exactly as before.
+  const routed = fixture();
+  const healthy = await (await routed.check({ action: "check" }))!.json();
+  assert.ok(routed.calls.some((path) => path.endsWith("/credentials")));
+  assert.ok(routed.calls.some((path) => path.includes("/quota/")));
+  assert.equal(healthy.failure, undefined);
 });

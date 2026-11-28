@@ -21,6 +21,7 @@ import {
   envelope,
   resolvedApplication,
   scriptListItem,
+  workerDeployment,
   workerSettings,
 } from "./cloudflare-shapes.ts";
 
@@ -88,6 +89,11 @@ export interface HarnessOptions {
   lastRecovery?: unknown;
   /** While true, the controller still holds blue's image input from before the settings' deploy. */
   bindingsLag?: () => boolean;
+  /**
+   * When the PoolWorker's latest deployment was made (ms), or how reading it fails: `unanswered` is
+   * an HTTP 503, `none` an empty list. By default it was days before any run.
+   */
+  deployedAt?: number | "unanswered" | "none";
   /** A handoff command the bridge fails: a thrown error, or an answer the Worker never made. */
   handoffFailure?: (action: string) => Error | Response | undefined;
   /** As production's upkeep does, a disabled fleet's rows drain and retire (at once, here). */
@@ -126,6 +132,19 @@ export async function harness(options: HarnessOptions = {}) {
           },
         ]),
       );
+    if (path === `${base}/workers/scripts/${worker}/deployments`) {
+      const at = options.deployedAt ?? Date.parse("2026-11-18T18:51:18Z");
+      if (at === "unanswered") return new Response(null, { status: 503 });
+      // Newest first, as Cloudflare lists them.
+      return Response.json(
+        envelope({
+          deployments:
+            at === "none"
+              ? []
+              : [new Date(at).toISOString(), "2026-11-01T09:00:00Z"].map(workerDeployment),
+        }),
+      );
+    }
     if (path === `${base}/workers/scripts/${worker}/settings`)
       return Response.json(
         envelope({

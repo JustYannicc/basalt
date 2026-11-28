@@ -1,25 +1,222 @@
 diff --git a/internal/pluginhost/adapters_executors.go b/internal/pluginhost/adapters_executors.go
-index 1b452cc9..66f81862 100644
+index f29ad3b9..88da5794 100644
 --- a/internal/pluginhost/adapters_executors.go
 +++ b/internal/pluginhost/adapters_executors.go
-@@ -1039,7 +1039,7 @@ func (a *executorAdapter) executeWithAttribution(ctx context.Context, auth *core
- 		reporter.StartResponseTTFT()
+@@ -1212,7 +1212,7 @@ func (a *executorAdapter) executeWithAttribution(ctx context.Context, auth *core
+ 			return coreexecutor.Response{}, nil, errAvailable
+ 		}
  	}
- 
--	pluginResp, errExecute := a.executor.Execute(ctx, buildExecutorRequest(a.host, a.provider, auth, prepared.req, prepared.opts))
-+	pluginResp, errExecute := a.executor.Execute(withGenerationHTTP(ctx), buildExecutorRequest(a.host, a.provider, auth, prepared.req, prepared.opts))
+-	pluginResp, errExecute := a.executor.Execute(ctx, pluginReq)
++	pluginResp, errExecute := a.executor.Execute(withGenerationHTTP(ctx), pluginReq)
  	if errExecute != nil {
- 		return coreexecutor.Response{}, nil, errExecute
+ 		return coreexecutor.Response{}, nil, a.homeLocalExecutorError(ctx, errExecute)
  	}
-@@ -1104,7 +1104,7 @@ func (a *executorAdapter) executeStreamWithAttribution(ctx context.Context, auth
- 		reporter.StartResponseTTFT()
+@@ -1292,7 +1292,7 @@ func (a *executorAdapter) executeStreamWithAttribution(ctx context.Context, auth
+ 			return nil, nil, errAvailable
+ 		}
  	}
- 
--	pluginResp, errExecuteStream := a.executor.ExecuteStream(ctx, buildExecutorRequest(a.host, a.provider, auth, prepared.req, prepared.opts))
-+	pluginResp, errExecuteStream := a.executor.ExecuteStream(withGenerationHTTP(ctx), buildExecutorRequest(a.host, a.provider, auth, prepared.req, prepared.opts))
+-	pluginResp, errExecuteStream := a.executor.ExecuteStream(ctx, pluginReq)
++	pluginResp, errExecuteStream := a.executor.ExecuteStream(withGenerationHTTP(ctx), pluginReq)
  	if errExecuteStream != nil {
- 		return nil, nil, errExecuteStream
+ 		return nil, nil, a.homeLocalExecutorError(ctx, errExecuteStream)
  	}
+diff --git a/internal/pluginhost/basalt_local_grant_submission_test.go b/internal/pluginhost/basalt_local_grant_submission_test.go
+new file mode 100644
+index 00000000..dd1c546f
+--- /dev/null
++++ b/internal/pluginhost/basalt_local_grant_submission_test.go
+@@ -0,0 +1,191 @@
++package pluginhost
++
++import (
++	"context"
++	"crypto/sha256"
++	"errors"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync/atomic"
++	"testing"
++
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/openai"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
++	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
++)
++
++// A Home-granted local plugin runs outside the conductor, so nothing else stands
++// between its accepted generation and a second send: the grant itself must carry
++// the submission guard. The plugin here sends, its accepted 200 answer is cut, and
++// it retries; the provider must see one send and the caller the unknown outcome.
++func TestPluginSubmissionHomeLocalGrantIsNeverSentAgain(t *testing.T) {
++	for _, stream := range []bool{false, true} {
++		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
++			const model = "local-grant-model"
++			const pluginID = "local-grant"
++			const pluginVersion = "1.0.0"
++			const pluginYAML = "enabled: true\npriority: 100\n"
++			const key = "local-grant-key"
++			configDigest := fmt.Sprintf("%x", sha256.Sum256([]byte(pluginYAML)))
++			var generations atomic.Int32
++			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				_, _ = io.Copy(io.Discard, r.Body)
++				if generations.Add(1) > 1 {
++					w.Header().Set("Content-Type", "application/json")
++					_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"second send"}}]}`)
++					return
++				}
++				// Accept the generation, start the answer, then drop the connection.
++				w.Header().Set("Content-Type", "application/json")
++				w.Header().Set("Content-Length", "4096")
++				w.WriteHeader(http.StatusOK)
++				_, _ = io.WriteString(w, `{"choices":[`)
++				w.(http.Flusher).Flush()
++				conn, _, errHijack := w.(http.Hijacker).Hijack()
++				if errHijack != nil {
++					t.Error(errHijack)
++					return
++				}
++				_ = conn.Close()
++			}))
++			t.Cleanup(upstream.Close)
++			client := newHomeExecutorTestClient(t, func(command, argument string) []byte {
++				if command == "RPOP" {
++					return []byte(`{"error":{"type":"model_not_found","message":"credential route not expected"}}`)
++				}
++				return []byte(fmt.Sprintf(`{"kind":"local-plugin","plugin":%q,"version":%q,"config_digest":%q,"model":%q,"principal":%q,"access_provider":"config-api-key"}`,
++					pluginID, pluginVersion, configDigest, model, key))
++			})
++			manager := coreauth.NewManager(nil, nil, nil)
++			manager.SetConfig(&config.Config{Home: config.HomeConfig{Enabled: true}})
++			manager.PublishHomeDispatch(client, executionregistry.New(), 1)
++			// Send the generation; when its accepted answer is cut, retry once as a
++			// plugin's own retry would, and fail if that does not answer either.
++			sendTwiceThenFail := func(ctx context.Context, req pluginapi.ExecutorRequest) error {
++				var errSend error
++				for range 2 {
++					generation := pluginapi.HTTPRequest{Method: http.MethodPost, URL: upstream.URL + "/generate", Body: []byte(`{}`)}
++					if _, errSend = req.HTTPClient.Do(ctx, generation); errSend == nil {
++						return testHostStatusError{error: errors.New("synthetic plugin failure after a retried send"), status: http.StatusServiceUnavailable}
++					}
++				}
++				return errSend
++			}
++			executor := &fakeExecutor{
++				identifier: pluginID,
++				execute: func(ctx context.Context, req pluginapi.ExecutorRequest) (pluginapi.ExecutorResponse, error) {
++					return pluginapi.ExecutorResponse{}, sendTwiceThenFail(ctx, req)
++				},
++				executeStream: func(ctx context.Context, req pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
++					return pluginapi.ExecutorStreamResponse{}, sendTwiceThenFail(ctx, req)
++				},
++			}
++			record := normalizeTestCapabilityRecord(capabilityRecord{id: pluginID, version: pluginVersion, plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
++				Executor: executor, ExecutorModelScope: pluginapi.ExecutorModelScopeBoth,
++				ExecutorInputFormats: []string{"openai"}, ExecutorOutputFormats: []string{"openai"},
++				ModelProvider: modelProviderFunc{staticModels: func(context.Context, pluginapi.StaticModelRequest) (pluginapi.ModelResponse, error) {
++					return pluginapi.ModelResponse{Provider: pluginID, Models: []pluginapi.ModelInfo{{ID: model}}}, nil
++				}},
++			}}})
++			record.loaded = &loadedPlugin{id: record.id, path: record.path, version: record.version, configYAML: []byte(pluginYAML)}
++			host := newHostWithRecords(record)
++			host.loaded[record.id] = record.loaded
++			host.RegisterModels(t.Context(), registry.GetGlobalRegistry())
++			handler := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
++			handler.SetModelRouterHost(host)
++			router := gin.New()
++			router.POST("/v1/chat/completions", openai.NewOpenAIAPIHandler(handler).ChatCompletions)
++
++			body := fmt.Sprintf(`{"model":"acp/%s","stream":%t,"messages":[{"role":"user","content":"hello"}]}`, model, stream)
++			recorder := httptest.NewRecorder()
++			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
++			req.Header.Set("Content-Type", "application/json")
++			req.Header.Set("Authorization", "Bearer "+key)
++			router.ServeHTTP(recorder, req)
++
++			if got := generations.Load(); got != 1 {
++				t.Fatalf("generation sends = %d, want 1 (response %d %s)", got, recorder.Code, recorder.Body.String())
++			}
++			if !strings.Contains(recorder.Body.String(), "upstream_outcome_unknown") {
++				t.Fatalf("caller got %d %s, want the unknown outcome", recorder.Code, recorder.Body.String())
++			}
++		})
++	}
++}
++
++// The pool's pinned Home has no local-plugin dispatch: it answers the grant request with its
++// GET default handler's bulk JSON, {"error":{"type":"error","message":"unsupported type"}}.
++// The node must then never run the plugin itself and must take credential dispatch, the
++// conductor path the submission guard already covers.
++func TestPluginSubmissionHomeLocalGrantUnreachableFromPinnedHome(t *testing.T) {
++	const model = "local-grant-model"
++	const pluginID = "local-grant"
++	const key = "local-grant-key"
++	var grants, credentialPops, pluginCalls atomic.Int32
++	client := newHomeExecutorTestClient(t, func(command, argument string) []byte {
++		if command == "RPOP" {
++			credentialPops.Add(1)
++			return []byte(`{"error":{"type":"model_not_found","message":"credential route checked"}}`)
++		}
++		grants.Add(1)
++		return []byte(`{"error":{"type":"error","message":"unsupported type"}}`)
++	})
++	manager := coreauth.NewManager(nil, nil, nil)
++	manager.SetConfig(&config.Config{Home: config.HomeConfig{Enabled: true}})
++	manager.PublishHomeDispatch(client, executionregistry.New(), 1)
++	executor := &fakeExecutor{
++		identifier: pluginID,
++		execute: func(context.Context, pluginapi.ExecutorRequest) (pluginapi.ExecutorResponse, error) {
++			pluginCalls.Add(1)
++			return pluginapi.ExecutorResponse{Payload: []byte(`{}`)}, nil
++		},
++		executeStream: func(context.Context, pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
++			pluginCalls.Add(1)
++			chunks := make(chan pluginapi.ExecutorStreamChunk)
++			close(chunks)
++			return pluginapi.ExecutorStreamResponse{Chunks: chunks}, nil
++		},
++	}
++	record := normalizeTestCapabilityRecord(capabilityRecord{id: pluginID, version: "1.0.0", plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
++		Executor: executor, ExecutorModelScope: pluginapi.ExecutorModelScopeBoth,
++		ExecutorInputFormats: []string{"openai"}, ExecutorOutputFormats: []string{"openai"},
++		ModelProvider: modelProviderFunc{staticModels: func(context.Context, pluginapi.StaticModelRequest) (pluginapi.ModelResponse, error) {
++			return pluginapi.ModelResponse{Provider: pluginID, Models: []pluginapi.ModelInfo{{ID: model}}}, nil
++		}},
++	}}})
++	record.loaded = &loadedPlugin{id: record.id, path: record.path, version: record.version, configYAML: []byte("enabled: true\n")}
++	host := newHostWithRecords(record)
++	host.loaded[record.id] = record.loaded
++	host.RegisterModels(t.Context(), registry.GetGlobalRegistry())
++	handler := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
++	handler.SetModelRouterHost(host)
++	router := gin.New()
++	router.POST("/v1/chat/completions", openai.NewOpenAIAPIHandler(handler).ChatCompletions)
++	for _, stream := range []bool{false, true} {
++		body := fmt.Sprintf(`{"model":"acp/%s","stream":%t,"messages":[{"role":"user","content":"hello"}]}`, model, stream)
++		recorder := httptest.NewRecorder()
++		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
++		req.Header.Set("Content-Type", "application/json")
++		req.Header.Set("Authorization", "Bearer "+key)
++		router.ServeHTTP(recorder, req)
++		if grants.Load() == 0 {
++			t.Fatalf("stream=%t: the node never asked Home for a local grant", stream)
++		}
++		if pluginCalls.Load() != 0 {
++			t.Fatalf("stream=%t: the local plugin ran without a grant (response %d %s)", stream, recorder.Code, recorder.Body.String())
++		}
++		if credentialPops.Load() == 0 {
++			t.Fatalf("stream=%t: no credential dispatch after Home refused the grant (response %d %s)", stream, recorder.Code, recorder.Body.String())
++		}
++	}
++}
 diff --git a/internal/pluginhost/host_callbacks.go b/internal/pluginhost/host_callbacks.go
 index 1ff25a4a..674ffa47 100644
 --- a/internal/pluginhost/host_callbacks.go
@@ -250,7 +447,7 @@ index 00000000..7431c46e
 +	}
 +}
 diff --git a/internal/runtime/executor/aistudio_executor.go b/internal/runtime/executor/aistudio_executor.go
-index e92a0577..11d24a6a 100644
+index e18a29c1..cf5cab9e 100644
 --- a/internal/runtime/executor/aistudio_executor.go
 +++ b/internal/runtime/executor/aistudio_executor.go
 @@ -189,7 +189,7 @@ func (e *AIStudioExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth,
@@ -279,8 +476,8 @@ index e92a0577..11d24a6a 100644
 +		return nil, statusErr{code: firstEvent.Status, msg: errBody.String(), providerErrorPayload: firstEvent.Status >= 400 && firstEvent.Status < 600}
  	}
  	replayAccumulator := newAntigravityReasoningReplayAccumulator(body.replayScope, body.replayRequestPayload)
- 	out := make(chan cliproxyexecutor.StreamChunk, 1)
-@@ -534,7 +534,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
+ 	out := e.consumeStream(ctx, cancelStream, req, opts, body, translatedReq, reporter, replayAccumulator, firstEvent, wsStream)
+@@ -552,7 +552,7 @@ func (e *AIStudioExecutor) consumeStream(
  					if errClear := clearAntigravityReasoningReplayOnInvalidSignature(ctx, body.replayScope, event.Status, event.Payload); errClear != nil {
  						logAntigravityReasoningReplayDegraded(body.replayScope, "invalidate", errClear)
  					}
@@ -290,10 +487,10 @@ index e92a0577..11d24a6a 100644
  					reporter.PublishFailure(ctx, errResponse)
  					select {
 diff --git a/internal/runtime/executor/antigravity_executor_credits.go b/internal/runtime/executor/antigravity_executor_credits.go
-index c83b2e4d..8cbb7178 100644
+index 85842faa..2fd5fde9 100644
 --- a/internal/runtime/executor/antigravity_executor_credits.go
 +++ b/internal/runtime/executor/antigravity_executor_credits.go
-@@ -465,7 +465,7 @@ func newAntigravityStatusErr(statusCode int, body []byte) statusErr {
+@@ -687,7 +687,7 @@ func newAntigravityStatusErr(statusCode int, body []byte) statusErr {
  }
  
  func newAntigravityStatusErrWithHeaders(statusCode int, headers http.Header, body []byte) statusErr {
@@ -303,7 +500,7 @@ index c83b2e4d..8cbb7178 100644
  		if retryAfter, parseErr := helps.ParseRetryDelayWithHeaders(headers, body, time.Now()); parseErr == nil && retryAfter != nil {
  			err.retryAfter = retryAfter
 diff --git a/internal/runtime/executor/antigravity_executor_execute.go b/internal/runtime/executor/antigravity_executor_execute.go
-index b8badeb2..7859e32f 100644
+index 5df7abbb..ebd29af7 100644
 --- a/internal/runtime/executor/antigravity_executor_execute.go
 +++ b/internal/runtime/executor/antigravity_executor_execute.go
 @@ -404,7 +404,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
@@ -316,10 +513,10 @@ index b8badeb2..7859e32f 100644
  		reporter.PublishFailure(ctx, filterErr)
  		return resp, filterErr
 diff --git a/internal/runtime/executor/antigravity_executor_stream.go b/internal/runtime/executor/antigravity_executor_stream.go
-index 4ff85b86..06902bc3 100644
+index 73be70df..931baf4c 100644
 --- a/internal/runtime/executor/antigravity_executor_stream.go
 +++ b/internal/runtime/executor/antigravity_executor_stream.go
-@@ -382,7 +382,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
+@@ -384,7 +384,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
  			}
  		}
  		if pendingFilterMsg != "" && scanner.Err() == nil && !terminalDelivered {
@@ -328,6 +525,308 @@ index 4ff85b86..06902bc3 100644
  			stopDeliverySupport()
  			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
  			select {
+diff --git a/internal/runtime/executor/basalt_accepted_cut_no_replay_test.go b/internal/runtime/executor/basalt_accepted_cut_no_replay_test.go
+new file mode 100644
+index 00000000..cb49057b
+--- /dev/null
++++ b/internal/runtime/executor/basalt_accepted_cut_no_replay_test.go
+@@ -0,0 +1,296 @@
++package executor
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"net/url"
++	"strings"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/MoeForge/moego/ojson"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
++	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
++	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
++	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
++	"google.golang.org/protobuf/encoding/protowire"
++)
++
++// Upstream turns each of these accepted-then-cut generations into a retryable
++// failure that rotates to the next credential. The provider may already have run
++// the generation, so a pool must never send it again: the caller gets the
++// unknown outcome, and the second credential is never called.
++
++type acceptedCutCase struct {
++	name     string
++	provider string
++	model    string
++	stream   bool
++	format   sdktranslator.Format
++	payload  string
++	executor func(*config.Config) cliproxyauth.ProviderExecutor
++	// cut answers the first credential with HTTP 200 and a body that ends the
++	// generation without output or terminal; the second credential would succeed.
++	cut  func(w http.ResponseWriter)
++	good func(w http.ResponseWriter)
++	// auth fills one credential that sends to the test server.
++	auth func(id, secret, baseURL string) *cliproxyauth.Auth
++	// route recognises which credential a request came from.
++	isFirst func(r *http.Request) bool
++}
++
++func acceptedCutAPIKeyAuth(provider string) func(id, secret, baseURL string) *cliproxyauth.Auth {
++	return func(id, secret, baseURL string) *cliproxyauth.Auth {
++		return &cliproxyauth.Auth{ID: id, Provider: provider, Status: cliproxyauth.StatusActive,
++			Attributes: map[string]string{"api_key": secret, "base_url": baseURL}, Metadata: map[string]any{"disable_cooling": true}}
++	}
++}
++
++func acceptedCutBearerIs(secret string) func(*http.Request) bool {
++	return func(r *http.Request) bool { return strings.Contains(r.Header.Get("Authorization"), secret) }
++}
++
++func acceptedCutEventStream(w http.ResponseWriter, body string) {
++	w.Header().Set("Content-Type", "text/event-stream")
++	w.WriteHeader(http.StatusOK)
++	_, _ = io.WriteString(w, body)
++	if flusher, ok := w.(http.Flusher); ok {
++		flusher.Flush()
++	}
++}
++
++func acceptedCutDevinFrames(text string) []byte {
++	var frames []byte
++	if text != "" {
++		var textFrame []byte
++		textFrame = protowire.AppendTag(textFrame, 3, protowire.BytesType)
++		textFrame = protowire.AppendString(textFrame, text)
++		frames = append(frames, helps.WrapConnectEnvelope(textFrame)...)
++	}
++	var usage []byte
++	usage = protowire.AppendTag(usage, 2, protowire.VarintType)
++	usage = protowire.AppendVarint(usage, 10)
++	usage = protowire.AppendTag(usage, 3, protowire.VarintType)
++	usage = protowire.AppendVarint(usage, uint64(len(text)))
++	var usageFrame []byte
++	usageFrame = protowire.AppendTag(usageFrame, 7, protowire.BytesType)
++	usageFrame = protowire.AppendBytes(usageFrame, usage)
++	frames = append(frames, helps.WrapConnectEnvelope(usageFrame)...)
++	return append(frames, helps.WrapConnectEnvelopeWithFlag(helps.ConnectFlagEndStream, []byte(`{}`))...)
++}
++
++func acceptedCutDevinMetadataOnly() []byte {
++	var metadata []byte
++	metadata = protowire.AppendTag(metadata, 1, protowire.BytesType)
++	metadata = protowire.AppendString(metadata, "out_dead_slot")
++	return helps.WrapConnectEnvelope(metadata)
++}
++
++func acceptedCutCases() []acceptedCutCase {
++	const geminiDone = `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"second credential"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5}}` + "\n\n"
++	const geminiPartial = `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"partial"}]}}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":1,"totalTokenCount":4}}` + "\n\n"
++	const codexDone = "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_b\",\"model\":\"gpt-5.2-codex\"}}\n\n" +
++		"data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"item_id\":\"msg_b\",\"delta\":\"second credential\"}\n\n" +
++		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_b\",\"status\":\"completed\",\"output\":[]}}\n\n"
++	const antigravityZeroOutput = `data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"thoughtSignature":"opaque-sig","text":""}]}}],"usageMetadata":{"promptTokenCount":3,"totalTokenCount":3},"responseId":"resp-zero"},"metadata":{}}` + "\n\n"
++	const antigravityDone = `data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"second credential"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5}}}` + "\n\n"
++	codex := func(buffered bool) func(*config.Config) cliproxyauth.ProviderExecutor {
++		return func(cfg *config.Config) cliproxyauth.ProviderExecutor {
++			cfg.Codex.StreamBootstrapBuffering = buffered
++			return NewCodexExecutor(cfg)
++		}
++	}
++	gemini := func(cfg *config.Config) cliproxyauth.ProviderExecutor { return NewGeminiExecutor(cfg) }
++	devin := func(cfg *config.Config) cliproxyauth.ProviderExecutor { return NewDevinExecutor(cfg) }
++	antigravity := func(cfg *config.Config) cliproxyauth.ProviderExecutor { return NewAntigravityExecutor(cfg) }
++	antigravityAuth := func(id, secret, baseURL string) *cliproxyauth.Auth {
++		return &cliproxyauth.Auth{ID: id, Provider: "antigravity", Status: cliproxyauth.StatusActive,
++			Attributes: map[string]string{"base_url": baseURL},
++			Metadata: map[string]any{"access_token": secret, "project_id": "project-" + secret, "disable_cooling": true,
++				"expired": time.Now().Add(24 * time.Hour).Format(time.RFC3339)}}
++	}
++	devinCut := func(frames []byte) func(w http.ResponseWriter) {
++		return func(w http.ResponseWriter) {
++			w.Header().Set("Content-Type", "application/connect+proto")
++			_, _ = w.Write(frames)
++		}
++	}
++	devinGood := devinCut(acceptedCutDevinFrames("second credential"))
++	openAIChat := func(model string, stream bool) string {
++		return fmt.Sprintf(`{"model":%q,"stream":%t,"messages":[{"role":"user","content":"hello"}]}`, model, stream)
++	}
++	var cases []acceptedCutCase
++	for _, buffered := range []bool{false, true} {
++		cases = append(cases, acceptedCutCase{
++			name: fmt.Sprintf("codex HTTP stream closes after headers (buffered=%t)", buffered), provider: "codex", model: "gpt-5.2-codex",
++			stream: true, format: sdktranslator.FormatOpenAIResponse, payload: `{"model":"gpt-5.2-codex","input":"hello","stream":true}`,
++			executor: codex(buffered), auth: acceptedCutAPIKeyAuth("codex"), isFirst: acceptedCutBearerIs("first-secret"),
++			cut:  func(w http.ResponseWriter) { acceptedCutEventStream(w, "") },
++			good: func(w http.ResponseWriter) { acceptedCutEventStream(w, codexDone) },
++		})
++	}
++	for _, body := range []struct{ name, sse string }{{"empty", ""}, {"partial", geminiPartial}} {
++		cases = append(cases, acceptedCutCase{
++			name: "gemini 200 stream ends without finishReason (" + body.name + ")", provider: "gemini", model: "gemini-2.5-flash",
++			stream: true, format: sdktranslator.FormatClaude, payload: `{"model":"gemini-2.5-flash","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hello"}]}`,
++			executor: gemini, auth: acceptedCutAPIKeyAuth("gemini"),
++			isFirst: func(r *http.Request) bool {
++				return r.Header.Get("x-goog-api-key") == "first-secret" || r.URL.Query().Get("key") == "first-secret"
++			},
++			cut:  func(w http.ResponseWriter) { acceptedCutEventStream(w, body.sse) },
++			good: func(w http.ResponseWriter) { acceptedCutEventStream(w, geminiDone) },
++		})
++	}
++	for _, stream := range []bool{true, false} {
++		for _, cut := range []struct {
++			name   string
++			frames []byte
++		}{{"zero-output clean EOS", acceptedCutDevinFrames("")}, {"drop before any output", acceptedCutDevinMetadataOnly()}} {
++			cases = append(cases, acceptedCutCase{
++				name: fmt.Sprintf("devin %s (stream=%t)", cut.name, stream), provider: "devin", model: "devin/swe-2",
++				stream: stream, format: sdktranslator.FormatOpenAI, payload: openAIChat("devin/swe-2", stream),
++				executor: devin, auth: acceptedCutAPIKeyAuth("devin"), isFirst: acceptedCutBearerIs("first-secret"),
++				cut: devinCut(cut.frames), good: devinGood,
++			})
++		}
++	}
++	cases = append(cases, acceptedCutCase{
++		name: "antigravity signature-only zero-output stream", provider: "antigravity", model: "gemini-2.5-flash",
++		stream: true, format: sdktranslator.FormatOpenAI, payload: openAIChat("gemini-2.5-flash", true),
++		executor: antigravity, auth: antigravityAuth, isFirst: acceptedCutBearerIs("first-secret"),
++		cut:  func(w http.ResponseWriter) { acceptedCutEventStream(w, antigravityZeroOutput) },
++		good: func(w http.ResponseWriter) { acceptedCutEventStream(w, antigravityDone) },
++	})
++	return cases
++}
++
++func TestSubmissionGuardAcceptedCutIsNeverSentAgain(t *testing.T) {
++	for _, tc := range acceptedCutCases() {
++		t.Run(tc.name, func(t *testing.T) {
++			var first, second atomic.Int32
++			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				_, _ = io.Copy(io.Discard, r.Body)
++				if tc.isFirst(r) {
++					first.Add(1)
++					tc.cut(w)
++					return
++				}
++				second.Add(1)
++				tc.good(w)
++			}))
++			t.Cleanup(server.Close)
++			cfg := &config.Config{}
++			manager := cliproxyauth.NewManager(nil, &cliproxyauth.FillFirstSelector{}, nil)
++			manager.SetConfig(cfg)
++			manager.SetRetryConfig(1, 0, 2)
++			manager.RegisterExecutor(tc.executor(cfg))
++			for i, secret := range []string{"first-secret", "second-secret"} {
++				auth := tc.auth(fmt.Sprintf("%s-%d", t.Name(), i), secret, server.URL)
++				auth.Attributes["priority"] = fmt.Sprint(10 - i)
++				registry.GetGlobalRegistry().RegisterClient(auth.ID, tc.provider, []*registry.ModelInfo{{ID: tc.model}})
++				t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
++				if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
++					t.Fatal(errRegister)
++				}
++			}
++			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++			defer cancel()
++			req := cliproxyexecutor.Request{Model: tc.model, Payload: []byte(tc.payload)}
++			opts := cliproxyexecutor.Options{Stream: tc.stream, SourceFormat: tc.format, ResponseFormat: tc.format, OriginalRequest: req.Payload}
++			var got error
++			var output strings.Builder
++			if tc.stream {
++				result, errStream := manager.ExecuteStream(ctx, []string{tc.provider}, req, opts)
++				got = errStream
++				if result != nil {
++					for chunk := range result.Chunks {
++						output.Write(chunk.Payload)
++						if chunk.Err != nil && got == nil {
++							got = chunk.Err
++						}
++					}
++				}
++			} else {
++				resp, errExecute := manager.Execute(ctx, []string{tc.provider}, req, opts)
++				got = errExecute
++				output.Write(resp.Payload)
++			}
++			if first.Load() != 1 || second.Load() != 0 {
++				t.Fatalf("generation sends: first credential %d, second %d; want 1 and 0 (error=%v, output=%q)", first.Load(), second.Load(), got, output.String())
++			}
++			var unknown *httptransport.OutcomeUnknownError
++			if !errors.As(got, &unknown) {
++				t.Fatalf("caller got %v, want the unknown outcome (output=%q)", got, output.String())
++			}
++			if strings.Contains(output.String(), "second credential") {
++				t.Fatalf("caller received the second credential's answer: %q", output.String())
++			}
++		})
++	}
++}
++
++// A Vertex service-account stream takes a token from its own endpoint first; the
++// accepted generation, not the token, is what must not be sent again.
++func TestSubmissionGuardAcceptedCutVertexIsNeverSentAgain(t *testing.T) {
++	var tokens, generations atomic.Int32
++	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		_, _ = io.Copy(io.Discard, r.Body)
++		if r.URL.Path == "/token" {
++			tokens.Add(1)
++			w.Header().Set("Content-Type", "application/json")
++			_, _ = io.WriteString(w, `{"access_token":"synthetic","token_type":"Bearer","expires_in":3600}`)
++			return
++		}
++		generations.Add(1)
++		acceptedCutEventStream(w, "")
++	}))
++	defer upstream.Close()
++	sa := map[string]any{}
++	for k, v := range ojson.ParseBytes(testVertexServiceAccountJSON(t, upstream.URL+"/token")).Map() {
++		sa[k] = v.String()
++	}
++	manager := cliproxyauth.NewManager(nil, &cliproxyauth.FillFirstSelector{}, nil)
++	manager.SetRetryConfig(1, 0, 2)
++	manager.RegisterExecutor(NewGeminiVertexExecutor(&config.Config{}))
++	const model = "gemini-2.5-flash"
++	for _, suffix := range []string{"a", "b"} {
++		auth := &cliproxyauth.Auth{ID: t.Name() + suffix, Provider: "vertex", Status: cliproxyauth.StatusActive, ProxyURL: "direct",
++			Metadata: map[string]any{"project_id": "synthetic", "service_account": sa, "disable_cooling": true}}
++		if _, err := manager.Register(context.Background(), auth); err != nil {
++			t.Fatal(err)
++		}
++		registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: model}})
++		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
++	}
++	target, _ := url.Parse(upstream.URL)
++	ctx := httptransport.WithDecorator(context.Background(), func(next http.RoundTripper) http.RoundTripper {
++		return vertexSubmissionRoute{next, target, nil}
++	})
++	result, errStream := manager.ExecuteStream(ctx, []string{"vertex"}, cliproxyexecutor.Request{Model: model,
++		Payload: []byte(`{"model":"gemini-2.5-flash","stream":true,"messages":[{"role":"user","content":"hello"}]}`)},
++		cliproxyexecutor.Options{Stream: true, SourceFormat: sdktranslator.FormatOpenAI, ResponseFormat: sdktranslator.FormatOpenAI})
++	got := errStream
++	if result != nil {
++		for chunk := range result.Chunks {
++			if chunk.Err != nil && got == nil {
++				got = chunk.Err
++			}
++		}
++	}
++	if generations.Load() != 1 {
++		t.Fatalf("generation sends = %d, want 1 (tokens=%d, error=%v)", generations.Load(), tokens.Load(), got)
++	}
++	var unknown *httptransport.OutcomeUnknownError
++	if !errors.As(got, &unknown) {
++		t.Fatalf("caller got %v, want the unknown outcome", got)
++	}
++}
 diff --git a/internal/runtime/executor/claude_executor_diagnostics.go b/internal/runtime/executor/claude_executor_diagnostics.go
 index 47b05df8..72a33f15 100644
 --- a/internal/runtime/executor/claude_executor_diagnostics.go
@@ -358,10 +857,10 @@ index 9390136b..cdd0b7d2 100644
  			reporter.PublishFailureWithDetail(ctx, helps.ParseClaudeUsage(data), errRefusal)
  			return resp, errRefusal
 diff --git a/internal/runtime/executor/claude_executor_request.go b/internal/runtime/executor/claude_executor_request.go
-index 5a11869a..f1725992 100644
+index 205e9697..d7a328d7 100644
 --- a/internal/runtime/executor/claude_executor_request.go
 +++ b/internal/runtime/executor/claude_executor_request.go
-@@ -891,7 +891,7 @@ func classifyClaudeUpstreamErrorWithCooling(statusCode int, headers http.Header,
+@@ -901,7 +901,7 @@ func classifyClaudeUpstreamErrorWithCooling(statusCode int, headers http.Header,
  	if statusCode == http.StatusTooManyRequests || (statusCode >= 400 && statusCode < 600) {
  		retryAfter = helps.ParseClaudeRateLimitResetForError(headers, body, time.Now())
  	}
@@ -443,7 +942,7 @@ index 4ba09c5a..318059f0 100644
  	// the generic Retry-After header. Other 429s and recoverable transient
  	// upstream errors honour the upstream header so capacity rejections cool
 diff --git a/internal/runtime/executor/codex_websockets_connection.go b/internal/runtime/executor/codex_websockets_connection.go
-index 05d22e9b..ec6be337 100644
+index ee47f89c..d4a1456b 100644
 --- a/internal/runtime/executor/codex_websockets_connection.go
 +++ b/internal/runtime/executor/codex_websockets_connection.go
 @@ -20,6 +20,7 @@ import (
@@ -528,22 +1027,22 @@ index 05d22e9b..ec6be337 100644
  	if errors.As(err, &status) && status.StatusCode() != 0 {
  		return err
 diff --git a/internal/runtime/executor/codex_websockets_duplex.go b/internal/runtime/executor/codex_websockets_duplex.go
-index 93381bce..522c9342 100644
+index 28e5caf9..6528f2ea 100644
 --- a/internal/runtime/executor/codex_websockets_duplex.go
 +++ b/internal/runtime/executor/codex_websockets_duplex.go
-@@ -657,7 +657,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
- 			helps.RecordAPIWebsocketRequest(streamCtx, e.cfg, helps.UpstreamRequestLog{
- 				URL: initial.wsURL, Method: "WEBSOCKET", Body: prepared.sessionInstructions.LogBody(payload), Provider: e.Identifier(), AuthID: auth.ID,
- 			})
+@@ -661,7 +661,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 			if !sess.beginDuplexCreate(conn) {
+ 				extendCodexWebsocketReadDeadline(conn)
+ 			}
 -			if errWrite := writeCodexWebsocketMessage(sess, conn, payload); errWrite != nil {
 +			if errWrite := writeCodexWebsocketMessage(streamCtx, sess, conn, payload); errWrite != nil {
  				fail(mapCodexWebsocketWriteError(sess, conn, errWrite))
  				return false
  			}
-@@ -802,7 +802,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
- 					helps.RecordAPIWebsocketRequest(streamCtx, e.cfg, helps.UpstreamRequestLog{
- 						URL: initial.wsURL, Method: "WEBSOCKET", Body: payload, Provider: e.Identifier(), AuthID: auth.ID,
- 					})
+@@ -809,7 +809,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 					if !sess.beginDuplexSteer(conn) {
+ 						extendCodexWebsocketReadDeadline(conn)
+ 					}
 -					if errWrite := writeCodexWebsocketMessage(sess, conn, payload); errWrite != nil {
 +					if errWrite := writeCodexWebsocketMessage(streamCtx, sess, conn, payload); errWrite != nil {
  						fail(mapCodexWebsocketWriteError(sess, conn, errWrite))
@@ -605,7 +1104,7 @@ index 8a94b509..4e19a766 100644
  	}
  	log.WithField("outcome", "forwarded").Debug("codex websockets: response.interrupt handled")
 diff --git a/internal/runtime/executor/codex_websockets_executor_test.go b/internal/runtime/executor/codex_websockets_executor_test.go
-index 9c39d062..a5c8ae81 100644
+index 011ff048..e9f00e43 100644
 --- a/internal/runtime/executor/codex_websockets_executor_test.go
 +++ b/internal/runtime/executor/codex_websockets_executor_test.go
 @@ -25,6 +25,7 @@ import (
@@ -616,7 +1115,7 @@ index 9c39d062..a5c8ae81 100644
  	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
  	log "github.com/sirupsen/logrus"
  )
-@@ -3349,7 +3350,7 @@ func TestCodexWebsockets_SendErrorLogsSessionObject(t *testing.T) {
+@@ -3399,7 +3400,7 @@ func TestCodexWebsockets_SendErrorLogsSessionObject(t *testing.T) {
  	}
  }
  
@@ -625,7 +1124,7 @@ index 9c39d062..a5c8ae81 100644
  	gin.SetMode(gin.TestMode)
  	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
  
-@@ -3366,7 +3367,11 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
+@@ -3416,7 +3417,11 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
  					if errUpgrade != nil {
  						return
  					}
@@ -638,7 +1137,7 @@ index 9c39d062..a5c8ae81 100644
  					for {
  						if _, _, errRead := conn.ReadMessage(); errRead != nil {
  							return
-@@ -3417,8 +3422,8 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
+@@ -3467,8 +3472,8 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
  			} else {
  				_, errExec = exec.Execute(ctx, auth, req, opts)
  			}
@@ -649,7 +1148,7 @@ index 9c39d062..a5c8ae81 100644
  			}
  
  			value, exists := ginCtx.Get(logging.DeferredAPIResponseContextKey)
-@@ -3433,16 +3438,16 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
+@@ -3483,16 +3488,16 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
  			for _, want := range []string{
  				"=== API RESPONSE 1 ===",
  				"Status: 101",
@@ -670,7 +1169,7 @@ index 9c39d062..a5c8ae81 100644
  			var transportDials atomic.Int32
  			transportServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
  				if transportDials.Add(1) == 1 {
-@@ -3450,7 +3455,11 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
+@@ -3500,7 +3505,11 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
  					if errUpgrade != nil {
  						return
  					}
@@ -683,7 +1182,7 @@ index 9c39d062..a5c8ae81 100644
  					for {
  						if _, _, errRead := conn.ReadMessage(); errRead != nil {
  							return
-@@ -3484,8 +3493,8 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
+@@ -3534,8 +3543,8 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
  			} else {
  				_, errExec = exec.Execute(subCtx, subAuth, req, subOpts)
  			}
@@ -694,7 +1193,7 @@ index 9c39d062..a5c8ae81 100644
  			}
  			subVal, ok := subGinCtx.Get(logging.DeferredAPIResponseContextKey)
  			if !ok {
-@@ -3494,12 +3503,17 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
+@@ -3544,12 +3553,17 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
  			subRendered := string(subVal.(logging.DeferredAPIResponse).RenderAPIResponse())
  			for _, want := range []string{
  				"=== API RESPONSE 1 ===",
@@ -712,11 +1211,24 @@ index 9c39d062..a5c8ae81 100644
  			initServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
  				hijacker, ok := w.(http.Hijacker)
  				if !ok {
+diff --git a/internal/runtime/executor/codex_websockets_liveness_test.go b/internal/runtime/executor/codex_websockets_liveness_test.go
+index 3df18c12..f489e699 100644
+--- a/internal/runtime/executor/codex_websockets_liveness_test.go
++++ b/internal/runtime/executor/codex_websockets_liveness_test.go
+@@ -512,7 +512,7 @@ func TestCodexWebsocketReusedSessionRefreshesDeadlineForNewTurn(t *testing.T) {
+ 
+ 	readCh2 := sess.activate(client)
+ 	waitForRenewedDeadline(t, observed.deadlines, shortDeadline.Add(time.Minute))
+-	if errSend := writeCodexWebsocketMessage(sess, client, []byte(`{"type":"response.create","model":"gpt-6-astra","input":[]}`)); errSend != nil {
++	if errSend := writeCodexWebsocketMessage(context.Background(), sess, client, []byte(`{"type":"response.create","model":"gpt-6-astra","input":[]}`)); errSend != nil {
+ 		t.Fatalf("write turn 2 request: %v", errSend)
+ 	}
+ 	select {
 diff --git a/internal/runtime/executor/codex_websockets_stream.go b/internal/runtime/executor/codex_websockets_stream.go
-index 61b4b737..f67c9ae4 100644
+index e59305f3..45928540 100644
 --- a/internal/runtime/executor/codex_websockets_stream.go
 +++ b/internal/runtime/executor/codex_websockets_stream.go
-@@ -214,7 +214,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
+@@ -219,7 +219,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
  	}
  	prepared.sessionReceipt = sess.sessionInstructions.Sent(conn, prepared.sessionInstructions)
  	cliproxyexecutor.MarkUpstreamAttempt(ctx)
@@ -725,7 +1237,7 @@ index 61b4b737..f67c9ae4 100644
  		errSend = mapCodexWebsocketWriteError(sess, conn, errSend)
  		helps.RecordAPIWebsocketError(ctx, e.cfg, "send", errSend)
  		if sess != nil && !isEphemeralSession && cliproxyexecutor.DownstreamWebsocket(ctx) {
-@@ -288,7 +288,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
+@@ -293,7 +293,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
  			reporter.StartResponseTTFT()
  			prepared.sessionReceipt = sess.sessionInstructions.Sent(conn, prepared.sessionInstructions)
  			cliproxyexecutor.MarkUpstreamAttempt(ctx)
@@ -734,7 +1246,7 @@ index 61b4b737..f67c9ae4 100644
  				errSendRetry = mapCodexWebsocketWriteError(sess, conn, errSendRetry)
  				helps.RecordAPIWebsocketError(ctx, e.cfg, "send_retry", errSendRetry)
  				e.invalidateUpstreamConn(sess, conn, "send_error", errSendRetry)
-@@ -518,7 +518,10 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
+@@ -523,7 +523,10 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
  						if streamErr.StatusCode() == http.StatusTooManyRequests && streamErr.RetryAfter() != nil {
  							return nil, streamErr
  						}
@@ -760,10 +1272,10 @@ index 1bcac577..6168e121 100644
  		if raw := strings.TrimSpace(headers.Get("Retry-After")); raw != "" {
  			if seconds, errParse := strconv.ParseInt(raw, 10, 64); errParse == nil && seconds >= 0 {
 diff --git a/internal/runtime/executor/gemini_executor.go b/internal/runtime/executor/gemini_executor.go
-index 42eb3c12..5a8af7e8 100644
+index dae0f701..9537109b 100644
 --- a/internal/runtime/executor/gemini_executor.go
 +++ b/internal/runtime/executor/gemini_executor.go
-@@ -273,7 +273,7 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
+@@ -274,7 +274,7 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
  	}
  	reporter.ObserveResponseModel(data)
  	if blockMsg, blocked := geminiPromptBlockErrorMessage(data); blocked {
@@ -772,16 +1284,16 @@ index 42eb3c12..5a8af7e8 100644
  		helps.RecordAPIResponseError(ctx, e.cfg, err)
  		reporter.PublishFailureWithDetail(ctx, helps.ParseGeminiUsage(data), err)
  		return cliproxyexecutor.Response{}, err
-@@ -545,7 +545,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
+@@ -540,7 +540,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
  			}
- 			streamUsage.ObserveGeminiStream(rawPayload)
  			if blockMsg, blocked := geminiPromptBlockErrorMessage(rawPayload); blocked {
+ 				streamUsage.ObserveGeminiStream(rawPayload)
 -				blockErr := statusErr{code: http.StatusBadGateway, msg: blockMsg}
 +				blockErr := statusErr{code: http.StatusBadGateway, msg: blockMsg, providerErrorPayload: true}
  				helps.RecordAPIResponseError(ctx, e.cfg, blockErr)
  				if !streamUsage.PublishFailure(ctx, reporter, blockErr) {
  					reporter.PublishFailure(ctx, blockErr)
-@@ -569,7 +569,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
+@@ -574,7 +574,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
  			}
  		}
  		if pendingFilterMsg != "" && scanner.Err() == nil && !sawFinishReason {
@@ -790,7 +1302,7 @@ index 42eb3c12..5a8af7e8 100644
  			helps.RecordAPIResponseError(ctx, e.cfg, filterErr)
  			if !streamUsage.PublishFailure(ctx, reporter, filterErr) {
  				reporter.PublishFailure(ctx, filterErr)
-@@ -683,7 +683,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
+@@ -688,7 +688,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
  }
  
  func geminiPromptBlockErrorMessage(payload []byte) (string, bool) {
@@ -800,10 +1312,10 @@ index 42eb3c12..5a8af7e8 100644
  	}
  	for _, cPath := range []string{"candidates", "response.candidates"} {
 diff --git a/internal/runtime/executor/gemini_vertex_executor.go b/internal/runtime/executor/gemini_vertex_executor.go
-index f83534f6..2ac1d1a9 100644
+index 8e5d2816..00e6ef48 100644
 --- a/internal/runtime/executor/gemini_vertex_executor.go
 +++ b/internal/runtime/executor/gemini_vertex_executor.go
-@@ -600,7 +600,7 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
+@@ -620,7 +620,7 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
  	}
  
  	if blockMsg, blocked := geminiPromptBlockErrorMessage(data); blocked {
@@ -812,7 +1324,7 @@ index f83534f6..2ac1d1a9 100644
  		helps.RecordAPIResponseError(ctx, e.cfg, err)
  		reporter.PublishFailureWithDetail(ctx, helps.ParseGeminiUsage(data), err)
  		return cliproxyexecutor.Response{}, err
-@@ -793,7 +793,7 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
+@@ -813,7 +813,7 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
  		data = convertImagenToGeminiResponse(data, baseModel)
  	}
  	if blockMsg, blocked := geminiPromptBlockErrorMessage(data); blocked {
@@ -821,16 +1333,16 @@ index f83534f6..2ac1d1a9 100644
  		helps.RecordAPIResponseError(ctx, e.cfg, err)
  		reporter.PublishFailureWithDetail(ctx, helps.ParseGeminiUsage(data), err)
  		return cliproxyexecutor.Response{}, err
-@@ -1109,7 +1109,7 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
+@@ -1125,7 +1125,7 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
  			}
- 			streamUsage.ObserveGeminiStream(line)
  			if blockMsg, blocked := geminiPromptBlockErrorMessage(rawPayload); blocked {
+ 				streamUsage.ObserveGeminiStream(line)
 -				blockErr := statusErr{code: http.StatusBadGateway, msg: blockMsg}
 +				blockErr := statusErr{code: http.StatusBadGateway, msg: blockMsg, providerErrorPayload: true}
  				helps.RecordAPIResponseError(ctx, e.cfg, blockErr)
  				if !streamUsage.PublishFailure(ctx, reporter, blockErr) {
  					reporter.PublishFailure(ctx, blockErr)
-@@ -1133,7 +1133,7 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
+@@ -1159,7 +1159,7 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
  			}
  		}
  		if pendingFilterMsg != "" && (isImagenModel(baseModel) || scanner.Err() == nil) && !sawFinishReason {
@@ -839,16 +1351,16 @@ index f83534f6..2ac1d1a9 100644
  			helps.RecordAPIResponseError(ctx, e.cfg, filterErr)
  			if !streamUsage.PublishFailure(ctx, reporter, filterErr) {
  				reporter.PublishFailure(ctx, filterErr)
-@@ -1525,7 +1525,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
+@@ -1547,7 +1547,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
  			}
- 			streamUsage.ObserveGeminiStream(line)
  			if blockMsg, blocked := geminiPromptBlockErrorMessage(rawPayload); blocked {
+ 				streamUsage.ObserveGeminiStream(line)
 -				blockErr := statusErr{code: http.StatusBadGateway, msg: blockMsg}
 +				blockErr := statusErr{code: http.StatusBadGateway, msg: blockMsg, providerErrorPayload: true}
  				helps.RecordAPIResponseError(ctx, e.cfg, blockErr)
  				if !streamUsage.PublishFailure(ctx, reporter, blockErr) {
  					reporter.PublishFailure(ctx, blockErr)
-@@ -1549,7 +1549,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
+@@ -1581,7 +1581,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
  			}
  		}
  		if pendingFilterMsg != "" && (isImagenModel(baseModel) || scanner.Err() == nil) && !sawFinishReason {
@@ -1067,7 +1579,7 @@ index 00000000..2d620fa7
 +	}
 +}
 diff --git a/internal/runtime/executor/helps/usage_helpers.go b/internal/runtime/executor/helps/usage_helpers.go
-index 99aac855..95ce4d7d 100644
+index c8d17dc0..649d671f 100644
 --- a/internal/runtime/executor/helps/usage_helpers.go
 +++ b/internal/runtime/executor/helps/usage_helpers.go
 @@ -27,6 +27,7 @@ import (
@@ -1088,10 +1600,10 @@ index 99aac855..95ce4d7d 100644
  		return resp, errRoundTrip
  	}
 diff --git a/internal/runtime/executor/meta_executor_execute.go b/internal/runtime/executor/meta_executor_execute.go
-index 09177ac3..7b161aff 100644
+index d64e305e..42f4ee6b 100644
 --- a/internal/runtime/executor/meta_executor_execute.go
 +++ b/internal/runtime/executor/meta_executor_execute.go
-@@ -482,7 +482,7 @@ func isMetaSubscriptionUsageEvent(eventType string, eventData []byte) bool {
+@@ -483,7 +483,7 @@ func isMetaSubscriptionUsageEvent(eventType string, eventData []byte) bool {
  }
  
  func wrapMetaUpstreamError(statusCode int, body []byte) error {
@@ -1101,10 +1613,10 @@ index 09177ac3..7b161aff 100644
  		if retryAfter := parseMetaRetryAfter(statusCode, body, time.Now()); retryAfter != nil {
  			se.retryAfter = retryAfter
 diff --git a/internal/runtime/executor/openai_compat_executor.go b/internal/runtime/executor/openai_compat_executor.go
-index a61bb6f2..1f580636 100644
+index 4f9ace34..9ee4a950 100644
 --- a/internal/runtime/executor/openai_compat_executor.go
 +++ b/internal/runtime/executor/openai_compat_executor.go
-@@ -251,7 +251,7 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth
+@@ -252,7 +252,7 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth
  	var param any
  	out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translated, body, &param)
  	if helps.ApplyPatchTranslationError(param) != nil || len(out) == 0 {
@@ -1113,7 +1625,7 @@ index a61bb6f2..1f580636 100644
  	}
  	reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
  	if responseFormat == sdktranslator.FormatOpenAIResponse {
-@@ -615,7 +615,7 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
+@@ -632,7 +632,7 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
  				continue
  			}
  			if bytes.HasPrefix(trimmedLine, []byte("{")) || bytes.HasPrefix(trimmedLine, []byte("[")) {
@@ -1122,7 +1634,7 @@ index a61bb6f2..1f580636 100644
  				break
  			}
  		}
-@@ -1272,22 +1272,23 @@ func openAICompatStreamDataError(payload []byte, eventName string) (statusErr, b
+@@ -1379,22 +1379,23 @@ func openAICompatStreamDataError(payload []byte, eventName string) (statusErr, b
  	if status < http.StatusBadRequest || status > 599 {
  		status = http.StatusBadGateway
  	}
@@ -1159,7 +1671,7 @@ index a61bb6f2..1f580636 100644
  	// diagnostic is a content-free detail for logs only; it never reaches clients.
  	diagnostic string
  }
-@@ -1311,6 +1312,9 @@ func (e statusErr) LogDiagnostic() string { return e.diagnostic }
+@@ -1418,6 +1419,9 @@ func (e statusErr) LogDiagnostic() string { return e.diagnostic }
  // upstream stream that ended without its terminal frame.
  func (e statusErr) IsStreamTruncated() bool { return e.streamTruncated }
  
@@ -1169,7 +1681,7 @@ index a61bb6f2..1f580636 100644
  // IsTransientRateLimit marks a transient per-model capacity/admission 429
  // that must not be recorded as credential quota exhaustion.
  func (e statusErr) IsTransientRateLimit() bool { return e.transientRateLimit }
-@@ -1373,9 +1377,10 @@ const openAICompatTPMFallbackRetryAfter = time.Minute
+@@ -1480,9 +1484,10 @@ const openAICompatTPMFallbackRetryAfter = time.Minute
  
  func newOpenAICompatStatusError(status int, headers http.Header, body []byte) statusErr {
  	return statusErr{
@@ -1994,6 +2506,65 @@ index 698e4297..05426070 100644
  	if httptransport.IsOutcomeUnknown(err) {
  		return []byte((&httptransport.OutcomeUnknownError{}).Error())
  	}
+diff --git a/sdk/api/handlers/handlers_execution.go b/sdk/api/handlers/handlers_execution.go
+index f04aeafa..8178f111 100644
+--- a/sdk/api/handlers/handlers_execution.go
++++ b/sdk/api/handlers/handlers_execution.go
+@@ -14,6 +14,7 @@ import (
+ 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+ 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+ 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+ 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+ 	"golang.org/x/net/context"
+@@ -265,6 +266,8 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
+ 	execCtx = enrichContextWithSessionHierarchy(execCtx, opts.Headers, req.Payload, opts.Metadata)
+ 	if grant != nil {
+ 		execCtx = grant.prepare(execCtx, &req, originalRequestedModel)
++		// A granted local plugin runs outside the conductor, so the grant carries the submission guard.
++		execCtx = httptransport.WithSubmissionTracking(execCtx)
+ 	}
+ 	var reporter *helps.UsageReporter
+ 	if !execOptions.InternalSource {
+@@ -283,6 +286,7 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
+ 	} else {
+ 		resp, errExecute = host.ExecutePluginExecutor(execCtx, executorPluginID, req, opts)
+ 	}
++	errExecute = httptransport.ClassifySubmissionError(execCtx, errExecute)
+ 	if errExecute != nil {
+ 		if reporter != nil && !nestedTracker.hasNestedExecution() {
+ 			reporter.PublishFailure(execCtx, errExecute)
+diff --git a/sdk/api/handlers/handlers_stream.go b/sdk/api/handlers/handlers_stream.go
+index 4a52815b..d8955811 100644
+--- a/sdk/api/handlers/handlers_stream.go
++++ b/sdk/api/handlers/handlers_stream.go
+@@ -119,6 +119,8 @@ func (h *BaseAPIHandler) streamWithPluginExecutor(ctx context.Context, entryProt
+ 	execCtx = enrichContextWithSessionHierarchy(execCtx, opts.Headers, req.Payload, opts.Metadata)
+ 	if grant != nil {
+ 		execCtx = grant.prepare(execCtx, &req, originalRequestedModel)
++		// A granted local plugin runs outside the conductor, so the grant carries the submission guard.
++		execCtx = httptransport.WithSubmissionTracking(execCtx)
+ 	}
+ 	var reporter *helps.UsageReporter
+ 	if !execOptions.InternalSource {
+@@ -137,6 +139,7 @@ func (h *BaseAPIHandler) streamWithPluginExecutor(ctx context.Context, entryProt
+ 	} else {
+ 		streamResult, errStream = host.ExecutePluginExecutorStream(execCtx, executorPluginID, req, opts)
+ 	}
++	errStream = httptransport.ClassifySubmissionError(execCtx, errStream)
+ 	if errStream != nil {
+ 		if reporter != nil && !nestedTracker.hasNestedExecution() {
+ 			reporter.PublishFailure(execCtx, errStream)
+@@ -264,7 +267,7 @@ func (h *BaseAPIHandler) streamWithPluginExecutor(ctx context.Context, entryProt
+ 				return
+ 			}
+ 			if chunk.Err != nil {
+-				errMsg := executionErrorMessage(chunk.Err)
++				errMsg := executionErrorMessage(httptransport.ClassifySubmissionError(execCtx, chunk.Err))
+ 				completionOutcome = pluginapi.RequestCompletionFailed
+ 				completionStatus = errMsg.StatusCode
+ 				completionErr = chunk.Err
 diff --git a/sdk/api/handlers/openai/http_submission_accepted_default_test.go b/sdk/api/handlers/openai/http_submission_accepted_default_test.go
 new file mode 100644
 index 00000000..04401a0e
@@ -3028,10 +3599,10 @@ index 1dde55d8..46ade9e6 100644
 +	}
 +}
 diff --git a/sdk/pluginapi/types.go b/sdk/pluginapi/types.go
-index 74e78fb6..32f95334 100644
+index ae3dc1aa..786e73e7 100644
 --- a/sdk/pluginapi/types.go
 +++ b/sdk/pluginapi/types.go
-@@ -1219,6 +1219,9 @@ type HTTPRequest struct {
+@@ -1222,6 +1222,9 @@ type HTTPRequest struct {
  	Body []byte
  	// WireProfile specifies optional outbound HTTP wire profile settings.
  	WireProfile *HTTPWireProfile `json:"wire_profile,omitempty"`

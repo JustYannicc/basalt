@@ -38,18 +38,63 @@ const observedAt = (jobs) =>
     ? new Date(jobs[0].observed_at).getTime()
     : Date.now();
 
-/** The organization's rollouts still open: they run before a proof starts, never inside it. */
-export const openRollouts = (jobs) => jobs.filter((job) => open(job) && rolloutJob(job));
+/** A release's catalog sweep builds each catalog copy's repository. */
+export const catalogSweep = ({ id }) => id.startsWith("basalt-catalog-apps:");
+/**
+ * The organization's rollouts still open: they run before a proof starts, never inside it. A stack
+ * without a repository service can never finish a catalog sweep, so there the sweeps are neither
+ * brought forward nor waited for; every other stack runs and waits for all of them.
+ */
+export const openRollouts = (jobs, { repositoryService = true } = {}) =>
+  jobs.filter((job) => open(job) && rolloutJob(job) && (repositoryService || !catalogSweep(job)));
+/** Catalog sweeps still open, which a stack without a repository service leaves unproved. */
+export const openCatalogSweeps = (jobs) => jobs.filter((job) => open(job) && catalogSweep(job));
 
-/** Run the organization's waiting rollouts now: each is queued once per release, delayed. */
-export const bringRolloutsForward = (database, organization) =>
+/**
+ * Run the organization's waiting rollouts now: each is queued once per release, delayed. Without a
+ * repository service the catalog sweeps keep their delay, so they stay deferred past the proof.
+ */
+export const bringRolloutsForward = (database, organization, { repositoryService = true } = {}) =>
   database.run({
     sql: `update hosted_provisioning set available_at = now()
       where organization_id = $1 and status = 'queued' and available_at > now()
-        and (id like 'basalt-pool-bundle:%' or id like 'basalt-pool-token:%'
-          or id like 'basalt-catalog-apps:%')`,
+        and (id like 'basalt-pool-bundle:%' or id like 'basalt-pool-token:%'${
+          repositoryService
+            ? `
+          or id like 'basalt-catalog-apps:%'`
+            : ""
+        })`,
     params: [organization],
   });
+
+/**
+ * How a proof runs the organization's rollouts on a stack. A stack that declares no repository
+ * service can never finish a catalog sweep (#2122): its sweeps keep their release delay, are not
+ * waited for, and are reported as not proved. Every other stack runs and waits for all of them.
+ */
+export const stackRollouts = (services) => {
+  const repositoryService = services?.repository !== false;
+  return {
+    bringForward: (database, organization) =>
+      bringRolloutsForward(database, organization, { repositoryService }),
+    open: (jobs) => openRollouts(jobs, { repositoryService }),
+    /** Sweeps that will run within the proof, which a stack without repositories can't leave out. */
+    unavoidable: (jobs) =>
+      repositoryService
+        ? []
+        : openCatalogSweeps(jobs).filter((job) => !deferred(job, observedAt(jobs))),
+    notProved: (jobs) =>
+      repositoryService
+        ? undefined
+        : {
+            proof: "The organization's rollouts finished",
+            notWaitedFor: "catalog sweeps, left at their release delay",
+            open: openCatalogSweeps(jobs).length,
+            reason: "no repository service in the local stack",
+            issue: "#2122",
+          },
+  };
+};
 
 /** Changes committed for the organization and not yet delivered to its live subscribers. */
 export const changeOutboxEmpty = (database, organization) =>

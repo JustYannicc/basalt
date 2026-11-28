@@ -361,8 +361,8 @@
     },
     "node": {
       "repository": "router-for-me/CLIProxyAPI",
-      "commit": "8cd6817b831f34caa593c76242d2c1f0674bf794",
-      "sha256": "f80d62bfbb9d8466834d05f671262c32efe68269d67d1d5119128e10ad25f58c",
+      "commit": "47f18e4d82bd72f7d2b5ecf5ede93e4837a4625e",
+      "sha256": "a4f7b758ce83d4a2a344eb60169838b9c2046168c569a1e85c0b79b9a9c517e4",
       "patches": [
         {
           "identity": "cliproxy-node-metadata-only-diagnostics",
@@ -403,7 +403,7 @@
         {
           "identity": "cliproxy-node-dispatch-timing-header",
           "file": "0516-node-dispatch-timing-header.patch",
-          "sha256": "03ea5c326510534c081272a31223e10236898c3fc21c9b07c76a90d9d47b89cb",
+          "sha256": "755deb40b29aab15573cc3140f0116560cce3e649d87f889d02e29876cc38cdd",
           "retirement": {
             "mode": "manual",
             "requires": "Retire only when the pinned sources preserve the opt-in primary dispatch reply, bounded closed timing transport, failure fencing, legacy compatibility and synthetic-provider response proof through Worker logs without exposing diagnostic headers to clients."
@@ -448,10 +448,10 @@
         {
           "identity": "cliproxy-node-no-postwrite-replay",
           "file": "0649-node-no-postwrite-replay.patch",
-          "sha256": "6b071e77387bfb1917b8b247e347e76d175fe17f655a19ff4834ba4d86b1a4fe",
+          "sha256": "d14df992b2e25f9b2bccedb322ee70fedbd7e971fbfc3130471871981084de8d",
           "retirement": {
             "mode": "manual",
-            "requires": "Retire when the pinned upstream release includes terminal unknown-outcome classification after HTTP submission and passes the real post-write EOF, empty accepted model-pool stream, late truncation, incomplete SSE frames, malformed accepted decoding, submitted POST redirects, header-only framing, terminal request-body closure, generation-only submission tracking with replayable token counting, exactly one request-scoped failed stream result for local and Home observers, JSON document error envelopes, terminal Antigravity credits fallback across model pools and credentials, buffered Claude incomplete-response classification, direct Fast credential-rate-limit result recording and cooldown, internal POST replay, pre-write connect failure and explicit HTTP and SSE refusal regressions. Preserve no replay across models, credentials and retry rounds, public 502 upstream_outcome_unknown with retryable false, existing proxy and protocol selection, and release updates. Re-apply on each source update until the upstream fix is released; remove this carry when that release supplies the same behavior."
+            "requires": "Permanent: the pool must never send a request twice after an upstream accepted it, and upstream chooses to fail over in that case and declined no-replay as a default or an option, so this carry does not retire and is re-cut at every pin move. Each re-cut keeps terminal unknown-outcome classification after HTTP submission and passes the real post-write EOF, empty accepted model-pool stream, late truncation, incomplete SSE frames, malformed accepted decoding, submitted POST redirects, header-only framing, terminal request-body closure, generation-only submission tracking with replayable token counting, exactly one request-scoped failed stream result for local and Home observers, JSON document error envelopes, terminal Antigravity credits fallback across model pools and credentials, buffered Claude incomplete-response classification, direct Fast credential-rate-limit result recording and cooldown, internal POST replay, pre-write connect failure and explicit HTTP and SSE refusal regressions. Preserve no replay across models, credentials and retry rounds, public 502 upstream_outcome_unknown with retryable false, existing proxy and protocol selection, and release updates. Re-apply on every source update."
           }
         },
         {
@@ -466,28 +466,28 @@
         {
           "identity": "cliproxy-node-generation-submission",
           "file": "0650-node-generation-submission.patch",
-          "sha256": "8181a41c37d2c4e92963d67dfc832523ad96dd1220c356491edc5b244fdc7a4d",
+          "sha256": "09553496e4832d3576499c529ae2a7924894f21c95caedce7eaa0fefa2537baf",
           "retirement": {
             "mode": "manual",
-            "requires": "Retire after the pinned upstream release guards only generation sends, treats every local failure after accepted HTTP responses or ambiguous WebSocket frame writes as terminal unknown, and positively validates provider refusal payloads before allowing failover. Pass actual provider and native public error projections, two-credential HTTP and WebSocket disconnect and partial-write proofs, nil-connection pre-write recovery, plugin and token-count auxiliary controls, and retained Home funding fixtures without weakening assertions. Preserve no automatic replay across models, credentials or retry rounds, native error envelopes and correlation identities. Generic credential, refresh and auxiliary HTTP calls remain untracked. Re-apply on each source update until the upstream release supplies the same behavior."
+            "requires": "Permanent: the pool must never send a request twice after an upstream accepted it, and upstream chooses to fail over in that case and declined no-replay as a default or an option, so this carry does not retire and is re-cut at every pin move. Each re-cut guards only generation sends, treats every local failure after accepted HTTP responses or ambiguous WebSocket frame writes as terminal unknown, and positively validates provider refusal payloads before allowing failover. Pass actual provider and native public error projections, two-credential HTTP and WebSocket disconnect and partial-write proofs, nil-connection pre-write recovery, plugin and token-count auxiliary controls, and retained Home funding fixtures without weakening assertions. Preserve no automatic replay across models, credentials or retry rounds, native error envelopes and correlation identities. Generic credential, refresh and auxiliary HTTP calls remain untracked. Re-apply on every source update."
           }
         },
         {
           "identity": "cliproxy-node-provider-retry-time",
           "file": "0764-node-provider-retry-time.patch",
-          "sha256": "1a73d05ef90c580e5159cdf16c99c6f2e3b4a6364ad05fb804c78b0bc4087cc7",
+          "sha256": "53d91fe60dd7948488e2a16ea3345f153db1c93434bfff7bc596ea872858eaf3",
           "retirement": {
             "mode": "manual",
-            "requires": "Carry 0764 puts the provider's own retry time on the node's usage record. It assumes carry 0646's metadata-only failure keeps only the status, so it adds one closed number beside it. Retire when the pinned node sends Home a 429's provider retry time as whole milliseconds rounded up, capped at 60 days and absent when there is none, without any provider body or header, and passes the Claude, Codex and Antigravity on-the-wire regression."
+            "requires": "Carry 0764 puts the provider's own retry time on the node's usage record. It assumes carry 0646's metadata-only failure keeps only the status, so it adds one closed number beside it. Retire when the pinned node sends Home a 429's provider retry time as whole milliseconds rounded up, capped at 60 days and absent when there is none, without any provider body or header, and passes the Claude, Codex and Antigravity on-the-wire regression and the credential-setup one."
           }
         },
         {
           "identity": "cliproxy-node-websocket-terminal-frame",
           "file": "0765-node-websocket-terminal-frame.patch",
-          "sha256": "dcddbb9e4a9b78c92dbd4b41a404bb33c09a5e408002c37f466f4a7e16ae9784",
+          "sha256": "936140be8e92f34b52fd0505f06a076da06975d2a805cb9acdc41de143ad2573",
           "retirement": {
             "mode": "manual",
-            "requires": "Carry 0765 keeps a Responses websocket's terminal frame from being dropped. Its close used to take the write lock only if it was free at that instant and otherwise closed the socket bare, so a terminal error or the 1012 replay close that landed while a ping or the previous frame's write still held the lock reached the client as a 1006 with no reason. Retire when the pinned node's terminal closes wait a bounded time for a finishing write and still cut off a blocked one, the session's own teardown never closes the socket under a terminal frame already being written, and the node passes the finishing-writer, replay-close, teardown and blocked-writer regressions and upstream's committed-429 websocket test in 50 race runs in a row."
+            "requires": "Carry 0765 keeps a Responses websocket's terminal frame from being dropped. Its close used to take the write lock only if it was free at that instant and otherwise closed the socket bare, so a terminal error or the 1012 replay close that landed while a ping or the previous frame's write still held the lock reached the client as a 1006 with no reason. Retire when the pinned node's terminal closes wait a bounded time for a finishing write and still cut off a blocked one, the session's own teardown never closes the socket under a terminal frame already being written, and the node passes the finishing-writer, replay-close, teardown and blocked-writer regressions and upstream's committed-429 websocket test in 50 race runs in a row. Its done channel and 250 ms teardown wait follow upstream pull request #8570; retire that part when an upstream release contains #8570. The terminal frame's 1-second write deadline is Basalt's own and does not retire with it: upstream allows no network timeout after a connection is up, and in this handler the terminal frame is written on the goroutine that tears the connection down, so the teardown's wait never reaches a write stuck on a client that stopped reading. Keep the deadline as its own small carry at that pin move."
           }
         },
         {
@@ -511,7 +511,7 @@
         {
           "identity": "cliproxy-node-limit-failover",
           "file": "0769-node-limit-failover.patch",
-          "sha256": "bd46092f0c83537f5d6edb475b557db677848cca332ef749605a656f8beead3c",
+          "sha256": "3033c2aeb1c7278738583e82c45bcaaf49f643d7a7b42c6e161e4607265998db",
           "retirement": {
             "mode": "manual",
             "requires": "Carry 0769 keeps an account's limit from reaching the caller while another account of that lab is eligible. Retire when the pinned node holds a Claude stream's message_start, ping and empty block starts until the first generating event, within 48 frames, 1 MiB and 5 s, except for fast requests, turns a rate_limit_error that arrives while holding into the account's own 429 with the 200's retry time so the conductor fails over, releases everything held in order on any other error, end of stream or bound, answers a limit a non-streamed translated call buffered as the account's 429, lets a Home redispatch go ahead when Home did not acknowledge the release of a credential the next pick excludes, never waits twice for that release when a websocket session still holds the credential's selection, makes one more pick within one cancel bound after a retryable home_unavailable and answers the account's own 429 only when that pick fails with home_unavailable again, and passes the bootstrap-hold, realistic-limit, time-bound, byte-identity, off-switch, excluded-release, websocket-release, extra-pick and 25-call burst regressions."
@@ -532,7 +532,7 @@
           "sha256": "84c393f9d8e3fe43a60fea7e0887953bbbd9a752a0c2209ba1d9c27bd7df171a",
           "retirement": {
             "mode": "manual",
-            "requires": "Carry 0790 ends a non-streamed generation on its credential once its outcome is unknown, whatever scope the failure behind it has: the caller gets the unknown outcome itself and no other credential or retry round receives the request, while the attempt's result is still recorded once with its credential scope. It builds on carry 0649's unknown outcome. Retire with carry 0649, or when the pinned node does the same for local credentials and Home dispatch and passes the non-streamed credential-scoped unknown-outcome regression."
+            "requires": "Carry 0790 ends a non-streamed generation on its credential once its outcome is unknown, whatever scope the failure behind it has: the caller gets the unknown outcome itself and no other credential or retry round receives the request, while the attempt's result is still recorded once with its credential scope. It builds on carry 0649's unknown outcome. Permanent: the pool must never send a request twice after an upstream accepted it, and upstream chooses to fail over in that case and declined no-replay as a default or an option, so this carry does not retire and is re-cut at every pin move. Each re-cut does the same for local credentials and Home dispatch and passes the non-streamed credential-scoped unknown-outcome regression."
           }
         }
       ]

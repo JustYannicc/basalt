@@ -39,6 +39,7 @@ export async function runModelHistoryPass(pass: ModelHistoryPass, progress: Repo
     pages: 0,
     newRows: 0,
     sweptRows: 0,
+    sweepDeferred: 0,
   };
   progress.split = split;
   progress.rows = 0;
@@ -57,7 +58,10 @@ export async function runModelHistoryPass(pass: ModelHistoryPass, progress: Repo
         progress.rows = (progress.rows ?? 0) + result.scanned;
         split.pages += result.pages;
         split.newRows += result.fresh;
+        // The ids the late-commit sweep checked; it reads in full only the rows history lacks.
         split.sweptRows += result.swept;
+        // Sessions whose check ran out its full limit and left the rest of their range for the next.
+        if (result.sweepDeferred) split.sweepDeferred++;
         caughtUp = result.caughtUp;
       } else caughtUp = true;
       const delivering = now();

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { onLightRunners, queuedMinutes } from "./light-lane.ts";
+import { checkMinutes, onLightRunners, queuedMinutes } from "./light-lane.ts";
 import { isCheckJob } from "./retry-history.ts";
 import {
   attemptJobs,
@@ -17,11 +17,11 @@ import {
 // box-watch cancelled that run because the box took none of its box jobs, proven by a verdict for
 // that run's first attempt whose stuck jobs really are box jobs of it that never got a runner, or
 // when a light job of it waited for the light runners and was cancelled before any took it, which
-// is the state light-rescue.yml's cancel leaves, or when main's push Check failed only on the light
-// runners. A re-run is a later attempt, which never routes and is never re-run here, so nothing
-// loops. Any other cancelled Check has neither; one with a genuine
-// failure stays as it is for a person to classify, and its stuck jobs run on GitHub's runners when
-// that person re-runs it.
+// is the state light-rescue.yml's cancel leaves, or when main's or a batch's push Check failed only
+// on the light runners or its aggregate hung on one past its timeout. A re-run is a later attempt,
+// which never routes and is never re-run here, so nothing loops. Any other cancelled Check has
+// neither; one with a genuine failure stays as it is for a person to classify, and its stuck jobs
+// run on GitHub's runners when that person re-runs it.
 
 export type { Run };
 export { retried } from "./workflow-run.ts";
@@ -76,6 +76,9 @@ export function rerunDecision(
   /** Who cancelled the run, from a held light job's annotation; read only for a run with one. */
   canceller?: string,
 ): RerunDecision {
+  // Whatever conclusion GitHub gives a run that ended at its aggregate's timeout.
+  const hung = lightHung(run, jobs);
+  if (hung.length) return { action: "rerun", stuck: hung };
   if (run.conclusion === "failure" && run.attempt === 1) return lightFailure(run, jobs);
   if (run.conclusion !== "cancelled") return { action: "none", why: "the run was not cancelled" };
   if (run.attempt !== 1) return { action: "none", why: "only a first attempt routes to the box" };
@@ -138,27 +141,62 @@ export function lightHeld(jobs: readonly RerunJob[]) {
     .map((job) => job.id);
 }
 
+/** The pushes whose Checks use the light runners: main's, and a batch's aggregate. */
+const lightPush = (run: Run) =>
+  run.event === "push" && (run.branch === "main" || !!run.branch?.startsWith("batch/"));
+const passed = ["success", "skipped", "neutral"];
+const onLight = (job: RerunJob) => !!job.runnerName && onLightRunners(job.labels);
+
 /**
- * A failed first attempt of main's push Check is re-run hosted when every job that failed, the
- * aggregate aside, ran on the light runners. The lane is main's alone, and a light runner that
- * breaks under a job (a tool it lacks, a lost connection) must not leave red the Check every release
- * waits on until someone looks. The aggregate fails whenever a need does, so its own failure
+ * The aggregate of a main or batch push's first attempt that ran out its timeout-minutes on a light
+ * runner while every need had passed: the runner hung under it. The run ends cancelled, and the
+ * timeout's annotation names nobody. A person's cancel isn't one: it lands while jobs still run, so
+ * a need ends cancelled, or within the seconds an aggregate runs, before its bound.
+ */
+export function lightHung(run: Run, jobs: readonly RerunJob[]) {
+  if (run.attempt !== 1 || !lightPush(run)) return [];
+  if (jobs.some((job) => !isCheckJob(job.name) && !passed.includes(job.conclusion ?? "")))
+    return [];
+  const bound = (run.branch === "main" ? checkMinutes.main : checkMinutes.batch) * 60_000;
+  return jobs
+    .filter(
+      (job) =>
+        isCheckJob(job.name) &&
+        ["cancelled", "timed_out"].includes(job.conclusion ?? "") &&
+        onLight(job) &&
+        Date.parse(job.completedAt ?? "") - Date.parse(job.startedAt ?? "") >= bound,
+    )
+    .map((job) => job.id);
+}
+
+/**
+ * A failed first attempt of main's or a batch's push Check is re-run hosted when every job that
+ * failed or timed out, the aggregate aside, ran on the light runners. A light runner that breaks
+ * under a job (a tool it lacks, a lost connection) must not leave red the Check every release or
+ * merge waits on until someone looks. The aggregate fails whenever a need does, so its own failure
  * counts only when every need passed. A job anywhere else that didn't pass is a real failure: the
  * run stays red for a person. The re-run is attempt 2: it runs every re-run job hosted,
  * passes only if they pass there, and is never re-run here.
  */
 function lightFailure(run: Run, jobs: readonly RerunJob[]): RerunDecision {
-  if (run.event !== "push" || run.branch !== "main")
-    return { action: "none", why: "only main's push Check uses the light runners" };
-  const onLight = (job: RerunJob) => !!job.runnerName && onLightRunners(job.labels);
-  const failed = jobs.filter((job) => job.conclusion === "failure");
-  const needs = failed.filter((job) => !isCheckJob(job.name));
+  if (!lightPush(run))
+    return {
+      action: "none",
+      why: "only main's and the batches' push Checks use the light runners",
+    };
+  // A light job past its timeout-minutes, or whose runner went away, ends cancelled after it took a
+  // runner: on a push Check that is the light runner breaking too (a person's cancel ends the run
+  // cancelled, which never comes here).
+  const broke = (job: RerunJob) =>
+    ["failure", "cancelled", "timed_out"].includes(job.conclusion ?? "");
+  const needs = jobs.filter((job) => !isCheckJob(job.name) && broke(job));
   // With every need passed, an aggregate that failed on a light runner broke there.
-  const light = (needs.length ? needs : failed).filter(onLight);
-  if (!light.length) return { action: "none", why: "no job failed on the light runners" };
+  const aggregate = jobs.filter((job) => isCheckJob(job.name) && job.conclusion === "failure");
+  const light = (needs.length ? needs : aggregate).filter(onLight);
+  if (!light.length)
+    return { action: "none", why: "no job failed or timed out on the light runners" };
   // rerun-failed-jobs re-runs cancelled jobs too, and a job past its timeout reads as cancelled:
   // any job off the light runners that didn't pass is a real failure, kept red for a person.
-  const passed = ["success", "skipped", "neutral"];
   const elsewhere = jobs
     .filter(
       (job) => !isCheckJob(job.name) && !onLight(job) && !passed.includes(job.conclusion ?? ""),
@@ -266,7 +304,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     say(
       `Box re-run: not re-running, because ${decision.why} (${decision.failed.join(", ")}). ` +
         (run.conclusion === "failure"
-          ? `Jobs that failed on the light runners: ${decision.stuck.join(", ")}; they run on GitHub's runners when the run is re-run.`
+          ? `Jobs that failed or timed out on the light runners: ${decision.stuck.join(", ")}; they run on GitHub's runners when the run is re-run.`
           : `Jobs that never got a runner: ${decision.stuck.join(", ")}; they run on GitHub's runners when the run is re-run.`),
     );
   else {
@@ -282,9 +320,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     else {
       await api.call(`/actions/runs/${run.id}/rerun-failed-jobs`, { method: "POST" });
       say(
-        run.conclusion === "failure"
-          ? `Box re-run: re-running main's Check on GitHub's runners, because only jobs on the light runners failed (${decision.stuck.length}).`
-          : `Box re-run: re-running the jobs the cancel stopped, ${decision.stuck.length} of them jobs that never got a runner, on GitHub's runners.`,
+        lightHung(run, jobs).length
+          ? "Box re-run: re-running the Check's aggregate on GitHub's runners, because it hung on a light runner past its timeout."
+          : run.conclusion === "failure"
+            ? `Box re-run: re-running the Check on GitHub's runners, because only jobs on the light runners failed or timed out (${decision.stuck.length}).`
+            : `Box re-run: re-running the jobs the cancel stopped, ${decision.stuck.length} of them jobs that never got a runner, on GitHub's runners.`,
       );
     }
   }

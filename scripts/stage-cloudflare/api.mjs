@@ -5,9 +5,9 @@
 // read, change or delete a resource the release stack or another stage owns.
 import { registryOperations } from "./registry.mjs";
 import { fail, isCloudflareApiError } from "./answers.mjs";
-import { stageRequests } from "./request.mjs";
+import { REQUEST_TIMEOUT_MS, stageRequests } from "./request.mjs";
 
-export { isCloudflareApiError };
+export { isCloudflareApiError, REQUEST_TIMEOUT_MS };
 export const WORKER_KINDS = Object.freeze(["applications", "namespaces", "scripts"]);
 
 /** An operation that takes no argument, refusing any it is handed. */
@@ -50,6 +50,8 @@ export function stageCloudflare(options) {
     remove: (kind, row) => send({ kind, operation: "delete", target: row }),
     images: noArguments("images", registry.images),
     removeImage: registry.removeImage,
+    /** One repository as it stands now, each entry read again by its own reference. */
+    standing: registry.standing,
     /** The account's workers.dev subdomain, from which a stage Worker's origin follows. */
     subdomain: noArguments("subdomain", () => send({ kind: "account", operation: "subdomain" })),
     /**
