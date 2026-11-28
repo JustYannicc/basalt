@@ -55,12 +55,20 @@ test("a first start refused by a runtime object on older code leaves unstarted a
   assert.equal(failure?.path, "start");
   assert.equal(failure?.rule, "deployment");
   assert.equal(failure?.reads[0]?.step, "endpoint_route");
-  assert.equal(failure?.reads[0]?.cause, "slot_identity");
+  // Refused for its controller code, as such, not as a real identity mismatch.
+  assert.equal(failure?.reads[0]?.cause, "slot_controller_code");
   assert.deepEqual(
     warn.mock.calls
       .filter((call) => call.arguments[0] === "POOL_FLEET_GROWTH_REFUSED")
       .map((call) => call.arguments[1]),
-    [{ step: "endpoint_route", reason: "slot_identity", cause: null, error: "SlotRefused" }],
+    [
+      {
+        step: "endpoint_route",
+        reason: "slot_controller_code",
+        cause: null,
+        error: "SlotRefused",
+      },
+    ],
   );
   assert.equal(
     warn.mock.calls.filter((call) => call.arguments[0] === "POOL_FLEET_QUARANTINE").length,

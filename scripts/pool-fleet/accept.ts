@@ -1,7 +1,8 @@
 import type { ModelAuth, PoolAcceptanceClient } from "../pool-acceptance/client.ts";
 import { AcceptanceFailure, type PoolAccess } from "../pool-acceptance/types.ts";
-import { refuse } from "./errors.ts";
+import { describeError, FleetLaneRefused, refuse } from "./errors.ts";
 import { shortHash, type ControllerView, type FleetView } from "./controller.ts";
+import { OwnTraffic, turnBudgetSpent, turnBudgets } from "./own-traffic.ts";
 import { quotaRefusal, smokeModels, turnFailure } from "../release/smoke-models.ts";
 
 /*
@@ -23,15 +24,16 @@ export interface AcceptanceInput {
   access?: PoolAccess;
   controller: () => Promise<ControllerView>;
   fleet: () => Promise<FleetView>;
+  sleep: (ms: number) => Promise<void>;
   burst?: number;
   rounds?: number;
+  /**
+   * Mode accept only: when no fleet cell served, the turns the root served still have their usage
+   * read and judged by the same rules before the run ends without a cell proof.
+   */
+  rootUsage?: boolean;
   log: (line: string) => void;
 }
-
-const conversation = (expectedRecords = 1) => ({
-  id: crypto.randomUUID().toLowerCase(),
-  expectedRecords,
-});
 
 function selectModel(ids: string[], requested?: string) {
   if (requested) {
@@ -63,6 +65,12 @@ export const cellBoots = (fleet: FleetView, primary: string) =>
       .filter((boot) => boot !== primary),
   );
 
+/** The runtimes the controller reports serving: the selected primary and the fleet's cells. */
+export async function servingBoots(input: Pick<AcceptanceInput, "controller" | "fleet">) {
+  const primary = primaryBoot(await input.controller());
+  return { primary, cells: cellBoots(await input.fleet(), primary) };
+}
+
 /**
  * Every acceptance model the pool lists was refused for funding: Home's decision from the pool's
  * accounts in the shared database, which a cell answers as the root would, so nothing proved or
@@ -77,68 +85,151 @@ export const quotaRefused = "acceptance-quota-refused";
 export const cooldownRefused = "acceptance-cooldown-refused";
 
 /**
- * A burst's turns, all settled: a failure stands for the burst, and one that is not the pool's
- * quota refusal goes first, so a quota refusal never hides another turn's failure.
+ * A burst's turns, all settled: a failure stands for the burst. One that is neither the pool's
+ * quota refusal nor the run's spent turn budget goes first, so neither hides another turn's
+ * failure; a quota refusal comes before a spent budget, so a cooldown is never hidden by it.
  */
 async function settledBurst<A>(turns: readonly Promise<A>[]) {
   const results = await Promise.allSettled(turns);
   const failures = results.flatMap((result) =>
     result.status === "rejected" ? [result.reason] : [],
   );
-  const failure = failures.find((reason) => !quotaRefusal(reason)) ?? failures[0];
+  const failure =
+    failures.find((reason) => !quotaRefusal(reason) && !turnBudgetSpent(reason)) ??
+    failures.find((reason) => quotaRefusal(reason)) ??
+    failures[0];
   if (failures.length) throw failure;
   return results.map((result) => (result as PromiseFulfilledResult<A>).value);
 }
 
 /**
  * The deploy smoke's order: the configured model, then the other acceptance models the pool lists.
- * A model the pool refuses for quota moves to the next; any other failure is the answer.
+ * A model the pool refuses for quota moves to the next; any other failure is the answer. Usage
+ * isolation is proven by the lane's own requests on the device's existing pool: each of its turns
+ * is read back with the same device assertion, and only a dedicated acceptance pool's owner token
+ * adds the pool-wide check on top. Each model the run tries has the whole turn budget, as on main:
+ * a turn refused for quota ran nowhere, so the served turns bound what a run spends.
  */
 export async function runFleetAcceptance(input: AcceptanceInput) {
-  const catalog = await input.client.modelCatalog(input.credential);
+  const traffic = new OwnTraffic(input.client, input.credential, turnBudgets.accept);
+  const catalog = await traffic.catalog();
   const first = selectModel(catalog.ids, input.model);
   const accounts = input.access ? await input.client.testAccountIds(input.access) : undefined;
   input.log(`models status=200 count=${catalog.ids.length}`);
+  // Every runtime the controller reported over the whole run, the turns of refused models included.
+  const known = new Set<string>();
+  const observe = async () => {
+    const serving = await servingBoots(input);
+    for (const boot of [serving.primary, ...serving.cells]) known.add(boot);
+    return serving;
+  };
   const tried: string[] = [];
   let cooled = false;
   for (const model of smokeModels(first).filter((id) => catalog.ids.includes(id)))
     try {
-      const accepted = await acceptOn(input, model, accounts);
+      const accepted = await acceptOn(input, model, accounts, traffic, known, observe);
       return tried.length ? { ...accepted, quotaRefused: tried } : accepted;
     } catch (error) {
       const quota = quotaRefusal(error);
       if (!quota) throw error;
+      // A refused model's served turns are vouched for by a read now, not only by later ones. Main
+      // makes no read here, so losing it must not turn a quota refusal into a failed acceptance:
+      // a later model's own reads still judge the run.
+      await observe().catch(() =>
+        input.log(`model=${model} fleet read after the refusal failed; later reads still vouch`),
+      );
       if (quota === "model_cooldown") cooled = true;
       tried.push(`${model}: ${turnFailure(error)}`);
       input.log(`model=${model} refused for quota; trying the next acceptance model`);
     }
+  // Turns served before the refusals are judged too, so a breach never hides behind them.
+  const note = input.rootUsage ? await rootUsage(input, traffic, known, accounts) : "";
   throw cooled
     ? refuse(
         cooldownRefused,
-        `Every acceptance model the pool lists was refused for quota, at least one as model_cooldown (${tried.join("; ")}). A node cools a model after its provider refuses every credential, so the cell may be what fails.`,
+        `Every acceptance model the pool lists was refused for quota, at least one as model_cooldown (${tried.join("; ")}). A node cools a model after its provider refuses every credential, so the cell may be what fails.${note}`,
         "Read the cell's log for the provider refusals; once a model has quota on the root, run the fleet lane's configure-and-accept with a new GO.",
       )
     : refuse(
         quotaRefused,
-        `Every acceptance model the pool lists was refused for funding (${tried.join("; ")}), so no turn proved a cell serves.`,
+        `Every acceptance model the pool lists was refused for funding (${tried.join("; ")}), so no turn proved a cell serves.${note}`,
         "Wait for the acceptance pool's funding, then run the fleet lane's accept mode. The permission stays as configured.",
       );
 }
 
-async function acceptOn(input: AcceptanceInput, model: string, accounts: Set<string> | undefined) {
-  const { client, credential, log, access } = input;
+/** Every turn's boot is known and every turn's usage keeps the isolation rule, or the run fails. */
+async function judgeOwnUsage(
+  input: AcceptanceInput,
+  traffic: OwnTraffic,
+  known: ReadonlySet<string>,
+  accounts: Set<string> | undefined,
+) {
+  const { client, log, access } = input;
+  // Checked against every read, so a cell first reported after it served is still known.
+  traffic.requireKnownBoots(known);
+  const usage = await traffic.verifyUsage(input.sleep);
+  log(
+    `usage_records status=200 sessions=${usage.sessions} matched=${usage.records} accounts=${usage.accounts}`,
+  );
+  let ownerUsageRecords: number | "skipped" = "skipped";
+  if (access && accounts) {
+    // With an owner token, the pool-wide check stays mandatory: every record in the test pool's accounts.
+    const records = await Promise.all(
+      traffic.servedSessions.map((id) =>
+        client.waitForUsageRecords(access, { id, expectedRecords: 1 }),
+      ),
+    );
+    if (records.flat().some((record) => !accounts.has(record.account)))
+      throw refuse(
+        "usage-outside-pool",
+        "Usage contained an account outside the dedicated test pool.",
+        "Read the PoolWorker routing for the acceptance device's key: its turns must be served only by its own pool's accounts.",
+      );
+    ownerUsageRecords = records.flat().length;
+    log(`owner_usage_records status=200 matched=${ownerUsageRecords}`);
+  } else
+    log("owner_usage_records skipped; the acceptance device is not in a dedicated acceptance pool");
+  return { usage, ownerUsageRecords };
+}
+
+/**
+ * Mode accept, when no cell served: the turns the run served are judged as a run with a cell would
+ * judge them. The lane's own verdicts on boots and usage end the run with their cause; a read that
+ * only failed (no answer, an unexpected status, an unreadable body) is reported beside the run's own
+ * ending instead of replacing it. Returns the sentence that reports it.
+ */
+async function rootUsage(
+  input: AcceptanceInput,
+  traffic: OwnTraffic,
+  known: ReadonlySet<string>,
+  accounts: Set<string> | undefined,
+) {
+  const served = traffic.servedSessions.length;
+  if (!served) return "";
+  try {
+    const { usage } = await judgeOwnUsage(input, traffic, known, accounts);
+    return ` The ${served} served turns kept the usage rule: ${usage.records} rows, on ${usage.accounts} of the pool's accounts.`;
+  } catch (error) {
+    if (error instanceof FleetLaneRefused) throw error;
+    return ` The usage read of the ${served} served turns did not complete: ${describeError(error)}.`;
+  }
+}
+
+async function acceptOn(
+  input: AcceptanceInput,
+  model: string,
+  accounts: Set<string> | undefined,
+  traffic: OwnTraffic,
+  known: ReadonlySet<string>,
+  observe: () => Promise<{ primary: string; cells: Set<string> }>,
+) {
+  const { log } = input;
   const burst = input.burst ?? 6;
   let served: { round: number; cell: number; primary: number; other: number } | undefined;
-  const conversations = [];
   for (let round = 1; round <= (input.rounds ?? 3) && !served; round++) {
     // Ready cells take every turn; the root serves only while no cell is ready.
-    const batch = Array.from({ length: burst }, () => conversation());
-    conversations.push(...batch);
-    const results = await settledBurst(
-      batch.map((value) => client.sendTurn(credential, model, value)),
-    );
-    const primary = primaryBoot(await input.controller());
-    const cells = cellBoots(await input.fleet(), primary);
+    const results = await settledBurst(Array.from({ length: burst }, () => traffic.turn(model)));
+    const { primary, cells } = await observe();
     const count = { round, cell: 0, primary: 0, other: 0 };
     for (const result of results)
       if (cells.has(result.boot)) count.cell++;
@@ -149,33 +240,44 @@ async function acceptOn(input: AcceptanceInput, model: string, accounts: Set<str
     );
     if (count.cell > 0) served = count;
   }
-  if (!served)
-    throw refuse(
-      "cell-served-proof-missing",
-      `No streamed turn in ${input.rounds ?? 3} bursts of ${burst} carried a fleet cell's X-Signalbox-Pool-Boot; every response came from the primary or an unknown runtime.`,
-      "Check fleet-inspect for a ready cell; if one is ready and still unused, the balancer never routed to it.",
-    );
-  let usageRecords: number | "skipped" = "skipped";
-  if (access && accounts) {
-    // With an owner token, the usage check stays mandatory: every record in the test pool's accounts.
-    const records = await Promise.all(
-      conversations.map((value) => client.waitForUsageRecords(access, value)),
-    );
-    if (records.flat().some((record) => !accounts.has(record.account)))
-      throw new AcceptanceFailure("Usage contained an account outside the dedicated test pool");
-    usageRecords = records.flat().length;
-    log(`usage_records status=200 matched=${usageRecords}`);
-  } else log("usage_records skipped; the acceptance device is not in a dedicated acceptance pool");
-  const final = await client.sendTurn(credential, model, conversation());
+  if (!served) {
+    const missing = `No streamed turn in ${input.rounds ?? 3} bursts of ${burst} carried a fleet cell's X-Signalbox-Pool-Boot; every response came from the primary or an unknown runtime.`;
+    const fix =
+      "Check fleet-inspect for a ready cell; if one is ready and still unused, the balancer never routed to it.";
+    // No final turn: the root's turns are read as they are, and a breach outranks the missing cell.
+    const note = input.rootUsage ? await rootUsage(input, traffic, known, accounts) : "";
+    throw refuse("cell-served-proof-missing", `${missing}${note}`, fix);
+  }
+  const final = await traffic.turn(model);
+  await observe();
   log(`final_request status=200 first_byte_ms=${Math.round(final.firstByteMs)}`);
-  return { model, servedByCell: served, usageRecords };
+  const { usage, ownerUsageRecords } = await judgeOwnUsage(input, traffic, known, accounts);
+  return { model, servedByCell: served, usageRecords: usage.records, ownerUsageRecords };
+}
+
+/**
+ * crash-cell's own traffic: every response came from the primary or a cell reported before or
+ * after the kill, and every turn's usage stayed in the device's pool.
+ */
+export async function crashTrafficAccepted(
+  input: Pick<AcceptanceInput, "controller" | "fleet" | "sleep"> & {
+    traffic: OwnTraffic;
+    before: FleetView;
+  },
+) {
+  const { primary, cells } = await servingBoots(input);
+  input.traffic.requireKnownBoots(
+    new Set([primary, ...cells, ...cellBoots(input.before, primary)]),
+  );
+  return input.traffic.verifyUsage(input.sleep);
 }
 
 /** After a disable: one plain streamed turn must come back from the selected primary. */
-export async function rootServes(input: Omit<AcceptanceInput, "fleet" | "access">) {
-  const catalog = await input.client.modelCatalog(input.credential);
+export async function rootServes(input: Omit<AcceptanceInput, "fleet" | "sleep" | "access">) {
+  const traffic = new OwnTraffic(input.client, input.credential, turnBudgets.rootServes);
+  const catalog = await traffic.catalog();
   const model = selectModel(catalog.ids, input.model);
-  const result = await input.client.sendTurn(input.credential, model, conversation());
+  const result = await traffic.turn(model);
   const primary = primaryBoot(await input.controller());
   if (result.boot !== primary)
     throw refuse(

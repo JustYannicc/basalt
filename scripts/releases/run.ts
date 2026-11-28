@@ -5,7 +5,7 @@ import { GitHubApi } from "./github.ts";
 import { repositoryFromOrigin, resetToLatestMain } from "./git.ts";
 import { reconcileReleasePullRequest, type ReconcileResult } from "./reconcile.ts";
 import { sanitizePublicPreparationFailure } from "./metadata.ts";
-import { applyUpdatePlan, planUpdate, type UpdatePlan, type UpdateSource } from "./update.ts";
+import { applyUpdatePlan, planUpdate, type UpdateSource } from "./update.ts";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
@@ -31,12 +31,28 @@ export type ReleaseUpdateRun = {
 };
 
 const preparationCommands = [
-  { step: "install architecture dependencies", command: "bun", args: ["install", "--cwd", "scripts/architecture", "--frozen-lockfile"] },
+  {
+    step: "install architecture dependencies",
+    command: "bun",
+    args: ["install", "--cwd", "scripts/architecture", "--frozen-lockfile"],
+  },
   { step: "prepare pinned upstream source", command: "npm", args: ["run", "prepare:upstream"] },
   { step: "check the pinned provider table", command: "npm", args: ["run", "check:providers"] },
-  { step: "build the pinned hosted framework", command: "bun", args: ["run", "--cwd", ".upstream/apps/hosted/cloud", "framework:build"] },
-  { step: "regenerate deployment architecture", command: "npm", args: ["run", "architecture:deployment"] },
-  { step: "validate deployment architecture", command: "npm", args: ["run", "architecture:validate"] },
+  {
+    step: "build the pinned hosted framework",
+    command: "bun",
+    args: ["run", "--cwd", ".upstream/apps/hosted/cloud", "framework:build"],
+  },
+  {
+    step: "regenerate deployment architecture",
+    command: "npm",
+    args: ["run", "architecture:deployment"],
+  },
+  {
+    step: "validate deployment architecture",
+    command: "npm",
+    args: ["run", "architecture:validate"],
+  },
 ] as const;
 
 export async function runReleaseUpdate(
@@ -83,8 +99,11 @@ export async function runReleaseUpdate(
 }
 
 export function releaseBuildEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return Object.fromEntries(Object.entries(environment).filter(([key]) =>
-    !/(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|PRIVATE[_-]?KEY|API[_-]?KEY)/i.test(key)));
+  return Object.fromEntries(
+    Object.entries(environment).filter(
+      ([key]) => !/(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|PRIVATE[_-]?KEY|API[_-]?KEY)/i.test(key),
+    ),
+  );
 }
 
 async function prepareCandidate(repositoryRoot: string, run: CommandRunner): Promise<void> {
@@ -101,6 +120,17 @@ function runCommand(repositoryRoot: string, step: string, command: string, args:
   if (result.error || result.status !== 0) throw new Error(`${step} failed`);
 }
 
+/**
+ * The run's log is public, so a failure is reported by its message alone, with the token cut out;
+ * the message is the only place a failed reconciliation says why.
+ */
+export function publicRunFailure(error: unknown, token: string | undefined): string {
+  let message = error instanceof Error ? error.message : String(error);
+  // A secret pasted with a trailing newline reaches the process with it, and messages hold it bare.
+  for (const value of [token, token?.trim()]) if (value) message = message.replaceAll(value, "***");
+  return message;
+}
+
 function sourceFromArgs(args: string[]): UpdateSource {
   const source = args.find((arg) => arg.startsWith("--source="))?.slice("--source=".length);
   if (source !== "tools" && source !== "home" && source !== "node")
@@ -115,8 +145,10 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
     const result = await runReleaseUpdate(root, sourceFromArgs(process.argv.slice(2)), token);
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     if (result.preparationFailed) process.exitCode = 1;
-  } catch {
-    process.stderr.write("Release updater failed before reconciliation. See this workflow run for details.\n");
+  } catch (error) {
+    process.stderr.write(
+      `Release updater failed: ${publicRunFailure(error, process.env.RELEASE_UPDATE_TOKEN)}\n`,
+    );
     process.exitCode = 1;
   }
 }

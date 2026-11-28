@@ -285,11 +285,14 @@ const providerLine = (cause?: ProviderCause) =>
     : ("provider observation: reads" as const);
 type ProviderLine = ReturnType<typeof providerLine>;
 const providerLines = new Set<string>([providerLine(), ...providerCauses.map(providerLine)]);
-// The handoff's refusal for a command naming other controller code, or one it cannot decode.
-const identityRefusal = runtimeFailureCode({
-  runtimeStep: "endpoint_route",
-  runtimeReason: "slot_identity",
-});
+// The handoff's refusal for a command naming other controller code, or one it cannot decode:
+// `slot_controller_code` from a controller that has that reason, `slot_identity` from one before it.
+// The 409 body names the code directly, not through the reason vocabulary, so both stay named here
+// and a checkout whose vocabulary is older still reads a newer controller's refusal.
+const identityRefusals = new Set<string>([
+  "runtime_endpoint_route_slot_controller_code",
+  runtimeFailureCode({ runtimeStep: "endpoint_route", runtimeReason: "slot_identity" }),
+]);
 
 const uncheckedRestart = [
   "selection_unavailable",
@@ -327,7 +330,7 @@ async function providerRead(
     return (
       providerObservationCause(cause) ??
       (cause instanceof ControllerRefused
-        ? cause.reason === identityRefusal
+        ? identityRefusals.has(cause.reason)
           ? "controller_identity"
           : "controller_refused"
         : cause instanceof DispatchRefusal
