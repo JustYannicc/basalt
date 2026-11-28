@@ -403,12 +403,15 @@ export function stageRequests(options) {
           accept: MANIFEST_TYPES,
         });
       }
-      if (!digest) throw refuse("the manifest is not one this stage read from its own repository");
-      // The registry deletes by the digest as written; DIGEST has already allowed only sha256:<hex>.
+      // A delete takes a tag this run's own list named, as the platform's own tool deletes an image,
+      // or a digest this stage read from its own repository, as written (DIGEST allows only
+      // sha256:<hex>).
+      if (!tag && !digest)
+        throw refuse("the manifest is not one this stage read from its own repository");
       return step({
         registry: "push",
         entry,
-        url: `${repository}/manifests/${reference}`,
+        url: `${repository}/manifests/${digest ? reference : encodeURIComponent(reference)}`,
         method: "DELETE",
       });
     }

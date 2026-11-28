@@ -76,6 +76,22 @@ export function emulatedAccount({
   const setApart = new Set(["kept", "gone", "facts"]);
   const empty = (resources) =>
     Object.entries(resources).every(([kind, rows]) => setApart.has(kind) || rows.length === 0);
+  /**
+   * Whether nothing of the stage runs: no prefixed container application, Worker or Durable Object
+   * namespace. Its own image repository may be left; a deploy pushes to that same repository.
+   */
+  const inert = (resources) =>
+    Object.entries(resources).every(
+      ([kind, rows]) => setApart.has(kind) || kind === "images" || rows.length === 0,
+    );
+  /** How many of the stage's own repositories an inventory found, and their listed entries. */
+  const repositoryLeft = (resources) => {
+    const rows = resources.facts ?? [];
+    return Object.freeze({
+      repositories: rows.length,
+      entries: rows.reduce((sum, row) => sum + row.tags + row.digests, 0),
+    });
+  };
   /** Closed counts of what an inventory found, by kind. */
   const counted = (resources) =>
     Object.freeze(
@@ -226,5 +242,15 @@ export function emulatedAccount({
     return Number.isSafeInteger(at) && at > 0 ? at : undefined;
   }
 
-  return { subdomain: stage.subdomain, inventory, destroy, lease, describe, empty, counted };
+  return {
+    subdomain: stage.subdomain,
+    inventory,
+    destroy,
+    lease,
+    describe,
+    empty,
+    inert,
+    repositoryLeft,
+    counted,
+  };
 }
